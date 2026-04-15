@@ -1,0 +1,25 @@
+{
+  "gemini": {
+    "apiKey": "YOUR_GEMINI_API_KEY_HERE",
+    "model": "gemini-2.0-flash"
+  },
+  "server": {
+    "port": 3000,
+    "host": "0.0.0.0"
+  },
+  "scheduler": {
+    "fetchIntervalMinutes": 15,
+    "enabled": true
+  },
+  "usgs": {
+    "sites": [
+      { "id": "14211720", "name": "Willamette River at Portland",      "type": "river",     "lat": 45.5175,  "lon": -122.6784 },
+      { "id": "14211010", "name": "Clackamas River at Oregon City",    "type": "river",     "lat": 45.3568,  "lon": -122.6068 },
+      { "id": "14142500", "name": "Sandy River near Marmot",           "type": "river",     "lat": 45.4026,  "lon": -122.1432 },
+      { "id": "14206950", "name": "Tualatin River at Farmington",      "type": "river",     "lat": 45.4804,  "lon": -122.9026 },
+      { "id": "14138800", "name": "Bull Run River at Bull Run",        "type": "river",     "lat": 45.4748,  "lon": -122.1515 },
+      { "id": "14246900", "name": "Columbia River at Bonneville Dam",  "type": "river",     "lat": 45.6443,  "lon": -121.9404 }
+    ],
+    "parameters": ["00060", "00065", "00010", "00300", "00400"]
+  }
+}

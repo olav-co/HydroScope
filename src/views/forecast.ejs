@@ -1,0 +1,140 @@
+<%- include('partials/head', { title: 'Forecast' }) %>
+<%- include('partials/nav') %>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Forecast</h1>
+      <p class="text-xs text-slate-400 mt-0.5">AI-generated near-term outlook based on current trends</p>
+    </div>
+  </header>
+
+  <div class="flex-1 overflow-y-auto p-6">
+
+    <!-- Controls -->
+    <div class="card mb-6">
+      <div class="flex flex-wrap gap-4 items-end">
+        <div class="flex-1 min-w-48">
+          <label class="label">Select Site</label>
+          <select id="forecastSite" class="input">
+            <% for (const s of sites) { %>
+              <option value="<%= s.site_id %>"><%= s.name %></option>
+            <% } %>
+          </select>
+        </div>
+        <div class="flex-1 min-w-36">
+          <label class="label">Outlook Window</label>
+          <select id="daysAhead" class="input">
+            <option value="1">24-Hour</option>
+            <option value="3" selected>3-Day</option>
+            <option value="7">7-Day</option>
+          </select>
+        </div>
+        <button onclick="generateForecast()" class="btn-primary">Generate Forecast</button>
+      </div>
+    </div>
+
+    <!-- Recent trend chart -->
+    <div class="card mb-6">
+      <h2 class="text-sm font-semibold text-slate-300 mb-4">Recent Discharge Trend (7 days)</h2>
+      <div style="height:220px;"><canvas id="trendChart"></canvas></div>
+    </div>
+
+    <!-- AI Forecast output -->
+    <div id="forecastCard" class="card hidden">
+      <div class="flex items-center gap-2 mb-4">
+        <div class="w-2 h-2 rounded-full bg-hydro-500 animate-pulse"></div>
+        <h2 id="forecastHeader" class="text-sm font-semibold text-slate-200">Forecast</h2>
+        <span id="forecastCached" class="text-xs text-slate-500 hidden">(cached)</span>
+      </div>
+      <div id="forecastBody" class="prose-hydro text-sm text-slate-300 leading-relaxed whitespace-pre-wrap"></div>
+    </div>
+
+    <div id="forecastLoading" class="hidden card text-center py-10">
+      <div class="inline-flex items-center gap-3 text-slate-400">
+        <svg class="animate-spin w-5 h-5 text-hydro-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+        Generating AI forecast...
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+let trendChart = null;
+const sites = <%- JSON.stringify(sites) %>;
+
+async function loadTrend(siteId) {
+  const resp = await fetch(`/api/data/timeseries?site=${siteId}&param=00060&hours=168`);
+  const json = await resp.json();
+  const rows = json.data || [];
+  if (!rows.length) return;
+
+  const labels = rows.map(r => new Date(r.recorded_at + 'Z').toLocaleDateString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }));
+  const values = rows.map(r => r.value);
+
+  if (trendChart) trendChart.destroy();
+  trendChart = new Chart(document.getElementById('trendChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Discharge (ft³/s)',
+        data: values,
+        borderColor: '#0ea5e9',
+        backgroundColor: 'rgba(14,165,233,0.06)',
+        fill: true, tension: 0.3,
+        pointRadius: 0, borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#64748b', maxTicksLimit: 8 }, grid: { color: '#1e293b' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: '#1e293b' } }
+      }
+    }
+  });
+}
+
+async function generateForecast() {
+  const siteId    = document.getElementById('forecastSite').value;
+  const daysAhead = document.getElementById('daysAhead').value;
+  const siteName  = document.getElementById('forecastSite').selectedOptions[0].text;
+
+  document.getElementById('forecastCard').classList.add('hidden');
+  document.getElementById('forecastLoading').classList.remove('hidden');
+
+  await loadTrend(siteId);
+
+  try {
+    const resp = await fetch('/api/insights/forecast', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ site_id: siteId, days_ahead: parseInt(daysAhead) })
+    });
+    const json = await resp.json();
+
+    document.getElementById('forecastLoading').classList.add('hidden');
+    document.getElementById('forecastCard').classList.remove('hidden');
+    document.getElementById('forecastHeader').textContent = `${siteName} — ${daysAhead}-Day Forecast`;
+    document.getElementById('forecastBody').textContent = json.response || json.error || 'No response.';
+    if (json.cached) document.getElementById('forecastCached').classList.remove('hidden');
+    else document.getElementById('forecastCached').classList.add('hidden');
+  } catch (err) {
+    document.getElementById('forecastLoading').classList.add('hidden');
+    document.getElementById('forecastCard').classList.remove('hidden');
+    document.getElementById('forecastBody').textContent = 'Error: ' + err.message;
+  }
+}
+
+// Load trend for default site on page load
+window.addEventListener('DOMContentLoaded', () => {
+  const defaultSite = document.getElementById('forecastSite').value;
+  if (defaultSite) loadTrend(defaultSite);
+  document.getElementById('forecastSite').addEventListener('change', e => loadTrend(e.target.value));
+});
+</script>
+
+<%- include('partials/foot') %>

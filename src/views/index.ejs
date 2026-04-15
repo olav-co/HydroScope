@@ -1,0 +1,142 @@
+<%- include('partials/head', { title: 'Dashboard' }) %>
+<%- include('partials/nav') %>
+
+<!-- Main -->
+<main class="flex-1 flex flex-col overflow-hidden">
+
+  <!-- Top bar -->
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Dashboard</h1>
+      <p class="text-xs text-slate-400 mt-0.5">Portland Region — USGS Real-Time Monitoring</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <% if (lastFetch) { %>
+        <span class="text-xs text-slate-500">
+          Last fetch: <span class="text-slate-300"><%= new Date(lastFetch.executed_at).toLocaleString() %></span>
+          — <span class="<%= lastFetch.status === 'success' ? 'text-emerald-400' : 'text-rose-400' %>"><%= lastFetch.status %></span>
+        </span>
+      <% } %>
+      <button onclick="triggerRefresh()" class="btn-secondary text-xs">Refresh Now</button>
+    </div>
+  </header>
+
+  <div class="flex-1 overflow-y-auto p-6">
+
+    <!-- Site status cards -->
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-8">
+      <% for (const site of sites) {
+           const siteData = bysite[site.site_id];
+           const discharge = siteData?.readings?.['00060'];
+           const temp = siteData?.readings?.['00010'];
+           const gage = siteData?.readings?.['00065'];
+           const ph = siteData?.readings?.['00400'];
+           const hasData = !!siteData;
+      %>
+      <div class="card group cursor-pointer" onclick="window.location='/visualize?site=<%= site.site_id %>'">
+        <div class="flex items-start justify-between mb-3">
+          <div>
+            <div class="text-sm font-medium text-white"><%= site.name %></div>
+            <div class="text-xs text-slate-500 mt-0.5">USGS <%= site.site_id %> · <%= site.type %></div>
+          </div>
+          <span class="text-xs px-2 py-0.5 rounded-full border
+            <%= hasData ? 'border-emerald-700 text-emerald-400 bg-emerald-900/30' : 'border-slate-700 text-slate-500 bg-slate-800' %>">
+            <%= hasData ? 'Live' : 'No data' %>
+          </span>
+        </div>
+
+        <% if (hasData) { %>
+          <div class="grid grid-cols-2 gap-2 mt-3">
+            <% if (discharge) { %>
+            <div class="bg-slate-800/60 rounded-lg p-2.5">
+              <div class="text-xs text-slate-400 mb-1">Discharge</div>
+              <div class="text-lg font-mono font-semibold text-hydro-400"><%= discharge.value.toLocaleString() %></div>
+              <div class="text-xs text-slate-500"><%= discharge.unit %></div>
+            </div>
+            <% } %>
+            <% if (gage) { %>
+            <div class="bg-slate-800/60 rounded-lg p-2.5">
+              <div class="text-xs text-slate-400 mb-1">Gage Height</div>
+              <div class="text-lg font-mono font-semibold text-slate-200"><%= gage.value %></div>
+              <div class="text-xs text-slate-500"><%= gage.unit %></div>
+            </div>
+            <% } %>
+            <% if (temp) { %>
+            <div class="bg-slate-800/60 rounded-lg p-2.5">
+              <div class="text-xs text-slate-400 mb-1">Water Temp</div>
+              <div class="text-lg font-mono font-semibold
+                <%= temp.value < 10 ? 'text-blue-400' : temp.value < 20 ? 'text-emerald-400' : 'text-amber-400' %>">
+                <%= temp.value %>°C
+              </div>
+              <div class="text-xs text-slate-500"><%= temp.value < 10 ? 'Cold' : temp.value < 20 ? 'Moderate' : 'Warm' %></div>
+            </div>
+            <% } %>
+            <% if (ph) { %>
+            <div class="bg-slate-800/60 rounded-lg p-2.5">
+              <div class="text-xs text-slate-400 mb-1">pH</div>
+              <div class="text-lg font-mono font-semibold
+                <%= (ph.value >= 6.5 && ph.value <= 8.5) ? 'text-emerald-400' : 'text-amber-400' %>">
+                <%= ph.value %>
+              </div>
+              <div class="text-xs text-slate-500"><%= (ph.value >= 6.5 && ph.value <= 8.5) ? 'Normal' : 'Atypical' %></div>
+            </div>
+            <% } %>
+          </div>
+          <% if (discharge) { %>
+          <div class="mt-3 text-xs text-slate-500">
+            Updated <span class="text-slate-400"><%= new Date(discharge.recorded_at).toLocaleString() %></span>
+          </div>
+          <% } %>
+        <% } else { %>
+          <div class="text-xs text-slate-600 mt-3">Awaiting first data fetch...</div>
+        <% } %>
+      </div>
+      <% } %>
+    </div>
+
+    <!-- Map -->
+    <div class="card mb-8">
+      <h2 class="text-sm font-semibold text-slate-300 mb-3">Monitoring Locations</h2>
+      <div id="map" class="w-full rounded-lg overflow-hidden" style="height:340px;"></div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+// Map
+const sites = <%- JSON.stringify(sites) %>;
+const map = L.map('map', { zoomControl: true }).setView([45.52, -122.68], 9);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '© OpenStreetMap © CARTO', maxZoom: 19
+}).addTo(map);
+
+const icon = L.divIcon({
+  className: '',
+  html: '<div style="width:12px;height:12px;border-radius:50%;background:#0ea5e9;border:2px solid #38bdf8;box-shadow:0 0 8px #0ea5e9aa;"></div>',
+  iconSize: [12, 12], iconAnchor: [6, 6]
+});
+
+for (const site of sites) {
+  if (site.latitude && site.longitude) {
+    L.marker([site.latitude, site.longitude], { icon })
+      .addTo(map)
+      .bindPopup(`<b>${site.name}</b><br>USGS ${site.site_id}<br><a href="/visualize?site=${site.site_id}" style="color:#38bdf8">View Data →</a>`);
+  }
+}
+
+async function triggerRefresh() {
+  const btn = event.target;
+  btn.textContent = 'Fetching...';
+  btn.disabled = true;
+  try {
+    await fetch('/api/data/refresh', { method: 'POST' });
+    setTimeout(() => location.reload(), 2000);
+  } catch {
+    btn.textContent = 'Error';
+    setTimeout(() => { btn.textContent = 'Refresh Now'; btn.disabled = false; }, 2000);
+  }
+}
+</script>
+
+<%- include('partials/foot') %>

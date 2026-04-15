@@ -1,0 +1,192 @@
+<%- include('partials/head', { title: 'Profile' }) %>
+<%- include('partials/nav') %>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Profile</h1>
+      <p class="text-xs text-slate-400 mt-0.5">Your role and interests shape how AI insights are framed</p>
+    </div>
+    <div id="saveStatus" class="text-xs text-slate-500 hidden"></div>
+  </header>
+
+  <div class="flex-1 overflow-y-auto p-6">
+    <div class="max-w-3xl mx-auto space-y-6">
+
+      <!-- Identity -->
+      <div class="card">
+        <h2 class="section-title">Identity</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="label">Name (optional)</label>
+            <input type="text" id="pName" class="input" placeholder="Your name" value="<%= profile.name || '' %>">
+          </div>
+          <div>
+            <label class="label">Organization (optional)</label>
+            <input type="text" id="pOrg" class="input" placeholder="Agency, company, or affiliation" value="<%= profile.organization || '' %>">
+          </div>
+        </div>
+      </div>
+
+      <!-- Role -->
+      <div class="card">
+        <h2 class="section-title">Role</h2>
+        <p class="text-xs text-slate-500 mb-4">Your role directs how the AI frames its analysis — a regulator sees compliance risks; a kayaker sees safety conditions from the same data.</p>
+        <div id="roleGrid" class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4"></div>
+        <div id="subRoleSection" class="hidden">
+          <label class="label">Specialization</label>
+          <select id="pSubRole" class="input max-w-xs">
+            <option value="">— Select specialization —</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Interests -->
+      <div class="card">
+        <h2 class="section-title">Areas of Interest</h2>
+        <p class="text-xs text-slate-500 mb-4">Check all that apply. Helps the AI prioritize what matters most to you.</p>
+        <div id="interestGrid" class="grid grid-cols-2 md:grid-cols-3 gap-2"></div>
+      </div>
+
+      <!-- Preferred Sites -->
+      <div class="card">
+        <h2 class="section-title">Preferred Monitoring Sites</h2>
+        <p class="text-xs text-slate-500 mb-3">AI insights will default to these sites unless you specify others.</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-2" id="siteGrid"></div>
+      </div>
+
+      <!-- Bio / Context -->
+      <div class="card">
+        <h2 class="section-title">Additional Context for AI</h2>
+        <p class="text-xs text-slate-500 mb-3">Anything else the AI should know about your work, project, or what you care about. This gets included in every analysis prompt.</p>
+        <textarea id="pBio" rows="4" class="input resize-y" placeholder="e.g. 'I manage the Willamette flood control operations and need early warning on rapidly rising flows...'"><%= profile.bio || '' %></textarea>
+      </div>
+
+      <div class="flex justify-end">
+        <button onclick="saveProfile()" class="btn-primary px-8">Save Profile</button>
+      </div>
+
+    </div>
+  </div>
+</main>
+
+<script>
+const ROLES_DATA = null; // will be fetched
+const SITES = <%- JSON.stringify(sites) %>;
+const CURRENT_PROFILE = <%- JSON.stringify(profile) %>;
+
+let currentRole = CURRENT_PROFILE.role || 'general';
+let currentSubRole = CURRENT_PROFILE.sub_role || '';
+let currentInterests = [];
+let currentSites = [];
+
+try { currentInterests = JSON.parse(CURRENT_PROFILE.interests || '[]'); } catch {}
+try { currentSites = JSON.parse(CURRENT_PROFILE.preferred_sites || '[]'); } catch {}
+
+async function init() {
+  const resp = await fetch('/api/profile/roles');
+  const { roles, interests } = await resp.json();
+
+  // Role grid
+  const roleGrid = document.getElementById('roleGrid');
+  for (const [id, role] of Object.entries(roles)) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `role-btn text-left p-3 rounded-lg border text-sm transition-all
+      ${currentRole === id ? 'border-hydro-500 bg-hydro-900/30 text-white' : 'border-slate-700 bg-slate-800/50 text-slate-300 hover:border-slate-500'}`;
+    btn.dataset.id = id;
+    btn.innerHTML = `<div class="font-medium">${role.label}</div>`;
+    btn.onclick = () => selectRole(id, roles);
+    roleGrid.appendChild(btn);
+  }
+
+  // Sub-role for current role
+  if (currentRole && roles[currentRole]?.sub_roles?.length) {
+    renderSubRoles(roles[currentRole].sub_roles);
+  }
+
+  // Interest grid
+  const interestGrid = document.getElementById('interestGrid');
+  for (const interest of interests) {
+    const label = document.createElement('label');
+    label.className = 'flex items-center gap-2 text-sm text-slate-300 cursor-pointer group';
+    label.innerHTML = `
+      <input type="checkbox" value="${interest.id}" class="accent-hydro-500 interest-check"
+        ${currentInterests.includes(interest.id) ? 'checked' : ''}>
+      <span class="group-hover:text-white transition-colors">${interest.label}</span>`;
+    interestGrid.appendChild(label);
+  }
+
+  // Sites grid
+  const siteGrid = document.getElementById('siteGrid');
+  for (const site of SITES) {
+    const label = document.createElement('label');
+    label.className = 'flex items-center gap-2 text-sm text-slate-300 cursor-pointer group';
+    label.innerHTML = `
+      <input type="checkbox" value="${site.site_id}" class="accent-hydro-500 site-check"
+        ${currentSites.includes(site.site_id) ? 'checked' : ''}>
+      <span class="group-hover:text-white transition-colors">${site.name}</span>`;
+    siteGrid.appendChild(label);
+  }
+}
+
+function selectRole(id, roles) {
+  currentRole = id;
+  document.querySelectorAll('.role-btn').forEach(btn => {
+    const active = btn.dataset.id === id;
+    btn.className = btn.className.replace(/border-\S+ bg-\S+ text-\S+/g, '').trim();
+    btn.classList.add(
+      ...(active
+        ? ['border-hydro-500', 'bg-hydro-900/30', 'text-white']
+        : ['border-slate-700', 'bg-slate-800/50', 'text-slate-300', 'hover:border-slate-500'])
+    );
+  });
+  const subRoles = roles[id]?.sub_roles || [];
+  if (subRoles.length) renderSubRoles(subRoles);
+  else document.getElementById('subRoleSection').classList.add('hidden');
+}
+
+function renderSubRoles(subRoles) {
+  const sel = document.getElementById('pSubRole');
+  sel.innerHTML = '<option value="">— Select specialization —</option>';
+  for (const sr of subRoles) {
+    const opt = document.createElement('option');
+    opt.value = sr.id;
+    opt.textContent = sr.label;
+    if (currentSubRole === sr.id) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  document.getElementById('subRoleSection').classList.remove('hidden');
+}
+
+async function saveProfile() {
+  const interests = Array.from(document.querySelectorAll('.interest-check:checked')).map(c => c.value);
+  const preferred_sites = Array.from(document.querySelectorAll('.site-check:checked')).map(c => c.value);
+
+  const payload = {
+    name:            document.getElementById('pName').value.trim() || null,
+    organization:    document.getElementById('pOrg').value.trim() || null,
+    role:            currentRole,
+    sub_role:        document.getElementById('pSubRole')?.value || '',
+    interests,
+    preferred_sites,
+    bio:             document.getElementById('pBio').value.trim() || null,
+  };
+
+  const resp = await fetch('/api/profile', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const json = await resp.json();
+  const status = document.getElementById('saveStatus');
+  status.textContent = json.ok ? 'Saved.' : 'Error saving.';
+  status.className = `text-xs ${json.ok ? 'text-emerald-400' : 'text-rose-400'}`;
+  status.classList.remove('hidden');
+  setTimeout(() => status.classList.add('hidden'), 3000);
+}
+
+init();
+</script>
+
+<%- include('partials/foot') %>

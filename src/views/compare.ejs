@@ -1,0 +1,154 @@
+<%- include('partials/head', { title: 'Compare' }) %>
+<%- include('partials/nav') %>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Compare</h1>
+      <p class="text-xs text-slate-400 mt-0.5">Side-by-side multi-site parameter comparison</p>
+    </div>
+  </header>
+
+  <div class="flex-1 overflow-y-auto p-6">
+
+    <!-- Controls -->
+    <div class="card mb-6">
+      <div class="flex flex-wrap gap-4 items-end">
+        <div class="flex-1 min-w-56">
+          <label class="label">Sites to Compare (hold Ctrl/Cmd for multi-select)</label>
+          <select id="compareSites" class="input" multiple size="4">
+            <% for (const s of sites) { %>
+              <option value="<%= s.site_id %>"><%= s.name %></option>
+            <% } %>
+          </select>
+        </div>
+        <div class="flex-1 min-w-40">
+          <label class="label">Parameter</label>
+          <select id="compareParam" class="input">
+            <option value="00060">Discharge (ft³/s)</option>
+            <option value="00065">Gage Height (ft)</option>
+            <option value="00010">Water Temperature (°C)</option>
+            <option value="00300">Dissolved Oxygen (mg/L)</option>
+            <option value="00400">pH</option>
+          </select>
+        </div>
+        <div class="flex-1 min-w-36">
+          <label class="label">Time Window</label>
+          <select id="compareHours" class="input">
+            <option value="72">3 Days</option>
+            <option value="168" selected>7 Days</option>
+            <option value="336">14 Days</option>
+          </select>
+        </div>
+        <button onclick="loadCompare()" class="btn-primary">Compare</button>
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="card mb-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 id="compareTitle" class="text-sm font-semibold text-slate-200">Select sites above</h2>
+      </div>
+      <div style="height:380px;"><canvas id="compareChart"></canvas></div>
+    </div>
+
+    <!-- Delta table -->
+    <div id="deltaSection" class="card hidden">
+      <h2 class="text-sm font-semibold text-slate-300 mb-3">Latest Values Comparison</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-xs text-slate-500 border-b border-slate-700">
+              <th class="pb-2 font-medium">Site</th>
+              <th class="pb-2 font-medium text-right">Latest Value</th>
+              <th class="pb-2 font-medium text-right">Min</th>
+              <th class="pb-2 font-medium text-right">Max</th>
+              <th class="pb-2 font-medium text-right">Avg</th>
+            </tr>
+          </thead>
+          <tbody id="deltaTable" class="text-slate-300 divide-y divide-slate-800"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+let compareChart = null;
+const COLORS = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15'];
+const PARAM_LABELS = {
+  '00060': 'Discharge (ft³/s)', '00065': 'Gage Height (ft)',
+  '00010': 'Water Temperature (°C)', '00300': 'Dissolved Oxygen (mg/L)', '00400': 'pH',
+};
+
+async function loadCompare() {
+  const siteSelect = document.getElementById('compareSites');
+  const selected = Array.from(siteSelect.selectedOptions).map(o => o.value);
+  if (selected.length < 2) { alert('Select at least 2 sites to compare.'); return; }
+
+  const param = document.getElementById('compareParam').value;
+  const hours = document.getElementById('compareHours').value;
+  const paramLabel = PARAM_LABELS[param] || param;
+
+  const resp = await fetch(`/api/data/compare?sites=${selected.join(',')}&param=${param}&hours=${hours}`);
+  const json = await resp.json();
+  const rows = json.data || [];
+
+  document.getElementById('compareTitle').textContent = `${paramLabel} — ${hours/24}-Day Comparison`;
+
+  // Group by site
+  const bySite = {};
+  for (const row of rows) {
+    if (!bySite[row.site_id]) bySite[row.site_id] = { name: row.site_name, points: [] };
+    bySite[row.site_id].points.push({ x: new Date(row.recorded_at + 'Z'), y: row.value, unit: row.unit });
+  }
+
+  const datasets = Object.entries(bySite).map(([siteId, data], i) => ({
+    label: data.name,
+    data: data.points,
+    borderColor: COLORS[i % COLORS.length],
+    backgroundColor: COLORS[i % COLORS.length] + '15',
+    fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2,
+    parsing: { xAxisKey: 'x', yAxisKey: 'y' }
+  }));
+
+  if (compareChart) compareChart.destroy();
+  compareChart = new Chart(document.getElementById('compareChart'), {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: { labels: { color: '#94a3b8', boxWidth: 12 } },
+        tooltip: { backgroundColor: '#1e293b', titleColor: '#94a3b8', bodyColor: '#f1f5f9' }
+      },
+      scales: {
+        x: { type: 'time', time: { tooltipFormat: 'MMM d, HH:mm' }, ticks: { color: '#64748b' }, grid: { color: '#1e293b' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: '#1e293b' } }
+      }
+    }
+  });
+
+  // Delta table
+  const tbody = document.getElementById('deltaTable');
+  tbody.innerHTML = '';
+  for (const [siteId, data] of Object.entries(bySite)) {
+    const vals = data.points.map(p => p.y);
+    const latest = vals[vals.length-1], min = Math.min(...vals), max = Math.max(...vals);
+    const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+    const unit = data.points[0]?.unit || '';
+    tbody.innerHTML += `<tr>
+      <td class="py-2 font-medium text-slate-200">${data.name}</td>
+      <td class="py-2 text-right font-mono text-hydro-400">${latest?.toFixed(2)} ${unit}</td>
+      <td class="py-2 text-right font-mono text-blue-400">${min.toFixed(2)}</td>
+      <td class="py-2 text-right font-mono text-amber-400">${max.toFixed(2)}</td>
+      <td class="py-2 text-right font-mono text-slate-300">${avg.toFixed(2)}</td>
+    </tr>`;
+  }
+  document.getElementById('deltaSection').classList.remove('hidden');
+}
+</script>
+
+<%- include('partials/foot') %>

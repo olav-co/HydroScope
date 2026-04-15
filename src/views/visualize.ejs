@@ -1,0 +1,170 @@
+<%- include('partials/head', { title: 'Data Visualization' }) %>
+<%- include('partials/nav') %>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Data Visualization</h1>
+      <p class="text-xs text-slate-400 mt-0.5">Time-series charts for individual monitoring sites</p>
+    </div>
+  </header>
+
+  <div class="flex-1 overflow-y-auto p-6">
+
+    <!-- Controls -->
+    <div class="card mb-6">
+      <div class="flex flex-wrap gap-4 items-end">
+        <div class="flex-1 min-w-48">
+          <label class="label">Monitoring Site</label>
+          <select id="siteSelect" class="input">
+            <% for (const s of sites) { %>
+              <option value="<%= s.site_id %>"><%= s.name %></option>
+            <% } %>
+          </select>
+        </div>
+        <div class="flex-1 min-w-40">
+          <label class="label">Parameter</label>
+          <select id="paramSelect" class="input">
+            <option value="00060">Discharge (ft³/s)</option>
+            <option value="00065">Gage Height (ft)</option>
+            <option value="00010">Water Temperature (°C)</option>
+            <option value="00300">Dissolved Oxygen (mg/L)</option>
+            <option value="00400">pH</option>
+          </select>
+        </div>
+        <div class="flex-1 min-w-36">
+          <label class="label">Time Range</label>
+          <select id="hoursSelect" class="input">
+            <option value="24">Last 24 Hours</option>
+            <option value="72">Last 3 Days</option>
+            <option value="168" selected>Last 7 Days</option>
+            <option value="336">Last 14 Days</option>
+            <option value="720">Last 30 Days</option>
+          </select>
+        </div>
+        <button onclick="loadChart()" class="btn-primary">Load</button>
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="card mb-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 id="chartTitle" class="text-sm font-semibold text-slate-200">Select a site and parameter above</h2>
+        <span id="chartBadge" class="text-xs text-slate-500"></span>
+      </div>
+      <div class="relative" style="height:360px;">
+        <canvas id="mainChart"></canvas>
+        <div id="chartEmpty" class="absolute inset-0 flex items-center justify-center text-slate-600 text-sm">
+          No data loaded yet.
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div id="statsRow" class="grid grid-cols-2 md:grid-cols-4 gap-4 hidden">
+      <div class="card text-center">
+        <div class="text-xs text-slate-400 mb-1">Latest</div>
+        <div id="statLatest" class="text-2xl font-mono font-semibold text-hydro-400">—</div>
+      </div>
+      <div class="card text-center">
+        <div class="text-xs text-slate-400 mb-1">Min</div>
+        <div id="statMin" class="text-2xl font-mono font-semibold text-blue-400">—</div>
+      </div>
+      <div class="card text-center">
+        <div class="text-xs text-slate-400 mb-1">Max</div>
+        <div id="statMax" class="text-2xl font-mono font-semibold text-amber-400">—</div>
+      </div>
+      <div class="card text-center">
+        <div class="text-xs text-slate-400 mb-1">Average</div>
+        <div id="statAvg" class="text-2xl font-mono font-semibold text-slate-300">—</div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+let chart = null;
+const PARAM_LABELS = {
+  '00060': 'Discharge (ft³/s)',
+  '00065': 'Gage Height (ft)',
+  '00010': 'Water Temperature (°C)',
+  '00300': 'Dissolved Oxygen (mg/L)',
+  '00400': 'pH',
+};
+
+// Pre-select from URL params
+const urlParams = new URLSearchParams(location.search);
+if (urlParams.get('site')) document.getElementById('siteSelect').value = urlParams.get('site');
+if (urlParams.get('param')) document.getElementById('paramSelect').value = urlParams.get('param');
+
+async function loadChart() {
+  const site  = document.getElementById('siteSelect').value;
+  const param = document.getElementById('paramSelect').value;
+  const hours = document.getElementById('hoursSelect').value;
+
+  const siteLabel = document.getElementById('siteSelect').selectedOptions[0].text;
+  const paramLabel = PARAM_LABELS[param] || param;
+
+  document.getElementById('chartTitle').textContent = `${siteLabel} — ${paramLabel}`;
+  document.getElementById('chartBadge').textContent = 'Loading...';
+  document.getElementById('chartEmpty').classList.add('hidden');
+
+  const resp = await fetch(`/api/data/timeseries?site=${site}&param=${param}&hours=${hours}`);
+  const json = await resp.json();
+  const rows = json.data || [];
+
+  if (!rows.length) {
+    document.getElementById('chartEmpty').classList.remove('hidden');
+    document.getElementById('chartBadge').textContent = 'No data for this range';
+    return;
+  }
+
+  const labels = rows.map(r => new Date(r.recorded_at + 'Z').toLocaleString());
+  const values = rows.map(r => r.value);
+  const unit = rows[0]?.unit || '';
+
+  document.getElementById('chartBadge').textContent = `${rows.length} readings · ${unit}`;
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('mainChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: paramLabel,
+        data: values,
+        borderColor: '#0ea5e9',
+        backgroundColor: 'rgba(14,165,233,0.08)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: rows.length > 200 ? 0 : 2,
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: { legend: { display: false }, tooltip: { backgroundColor: '#1e293b', titleColor: '#94a3b8', bodyColor: '#f1f5f9' } },
+      scales: {
+        x: { ticks: { color: '#64748b', maxTicksLimit: 10, maxRotation: 0 }, grid: { color: '#1e293b' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: '#1e293b' } }
+      }
+    }
+  });
+
+  // Stats
+  const min = Math.min(...values), max = Math.max(...values);
+  const avg = values.reduce((a, b) => a + b, 0) / values.length;
+  document.getElementById('statLatest').textContent = values[values.length-1]?.toFixed(2) + ' ' + unit;
+  document.getElementById('statMin').textContent    = min.toFixed(2) + ' ' + unit;
+  document.getElementById('statMax').textContent    = max.toFixed(2) + ' ' + unit;
+  document.getElementById('statAvg').textContent    = avg.toFixed(2) + ' ' + unit;
+  document.getElementById('statsRow').classList.remove('hidden');
+}
+
+// Auto-load if URL has site param
+if (urlParams.get('site')) loadChart();
+</script>
+
+<%- include('partials/foot') %>
