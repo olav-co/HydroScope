@@ -1,5 +1,41 @@
 {
+  "ai": {
+    "_note": "Set activeProvider to the key of whichever provider you want active. Only providers with a real API key appear in Settings. Remove or leave apiKey blank for providers you don't use.",
+    "_custom_note": "You can add any OpenAI-compatible provider (Groq, Ollama, Mistral, etc.) by setting type:'openai' and a baseUrl. Give it any unique key name.",
+    "activeProvider": "gemini",
+    "providers": {
+      "gemini": {
+        "apiKey": "YOUR_GEMINI_API_KEY_HERE",
+        "model": "gemini-2.0-flash"
+      },
+      "openai": {
+        "apiKey": "",
+        "model": "gpt-4o-mini"
+      },
+      "anthropic": {
+        "apiKey": "",
+        "model": "claude-3-5-haiku-20241022"
+      },
+      "_groq_example": {
+        "_comment": "Remove leading underscore to enable. Groq is OpenAI-compatible.",
+        "type": "openai",
+        "label": "Groq",
+        "apiKey": "",
+        "model": "llama-3.3-70b-versatile",
+        "baseUrl": "https://api.groq.com/openai/v1"
+      },
+      "_ollama_example": {
+        "_comment": "Remove leading underscore to enable. Ollama runs locally.",
+        "type": "openai",
+        "label": "Ollama (local)",
+        "apiKey": "ollama",
+        "model": "llama3.2",
+        "baseUrl": "http://localhost:11434/v1"
+      }
+    }
+  },
   "gemini": {
+    "_note": "Legacy key — kept for backwards compatibility. Use the ai.providers section above instead.",
     "apiKey": "YOUR_GEMINI_API_KEY_HERE",
     "model": "gemini-2.0-flash"
   },
@@ -8,18 +44,37 @@
     "host": "0.0.0.0"
   },
   "scheduler": {
+    "enabled": true,
     "fetchIntervalMinutes": 15,
-    "enabled": true
+    "services": {
+      "usgs":     { "intervalMinutes": 15, "enabled": true },
+      "weather":  { "intervalMinutes": 60, "enabled": true },
+      "topology": { "intervalHours":   24, "enabled": true },
+      "waterways":{ "intervalMinutes":  4, "enabled": true }
+    }
   },
   "usgs": {
+    "_note": "Site types: river | reservoir | dam.  lat/lon drives geographic positioning on the Flow Network page.  Remove the example sub-basin groups below and keep only the sites you actually want to monitor.",
     "sites": [
-      { "id": "14211720", "name": "Willamette River at Portland",      "type": "river",     "lat": 45.5175,  "lon": -122.6784 },
-      { "id": "14211010", "name": "Clackamas River at Oregon City",    "type": "river",     "lat": 45.3568,  "lon": -122.6068 },
-      { "id": "14142500", "name": "Sandy River near Marmot",           "type": "river",     "lat": 45.4026,  "lon": -122.1432 },
-      { "id": "14206950", "name": "Tualatin River at Farmington",      "type": "river",     "lat": 45.4804,  "lon": -122.9026 },
-      { "id": "14138800", "name": "Bull Run River at Bull Run",        "type": "river",     "lat": 45.4748,  "lon": -122.1515 },
-      { "id": "14246900", "name": "Columbia River at Bonneville Dam",  "type": "river",     "lat": 45.6443,  "lon": -121.9404 }
+      { "id": "14162500", "name": "Willamette River at Springfield",        "type": "river",     "lat": 44.0429, "lon": -123.0762 },
+      { "id": "14174000", "name": "Willamette River at Albany",             "type": "river",     "lat": 44.6345, "lon": -123.1089 },
+      { "id": "14191000", "name": "Willamette River at Salem",              "type": "river",     "lat": 44.9248, "lon": -123.0437 },
+      { "id": "14211720", "name": "Willamette River at Portland",           "type": "river",     "lat": 45.5175, "lon": -122.6784 },
+      { "id": "14211010", "name": "Clackamas River at Oregon City",         "type": "river",     "lat": 45.3568, "lon": -122.6068 },
+      { "id": "14206950", "name": "Tualatin River at Farmington",           "type": "river",     "lat": 45.4804, "lon": -122.9026 },
+      { "id": "14142500", "name": "Sandy River near Marmot",               "type": "river",     "lat": 45.4026, "lon": -122.1432 },
+      { "id": "14138800", "name": "Bull Run River at Bull Run",             "type": "river",     "lat": 45.4748, "lon": -122.1515 },
+      { "id": "14246900", "name": "Columbia R at Bonneville Dam",           "type": "dam",       "lat": 45.6443, "lon": -121.9404 },
+
+      { "id": "14178000", "name": "N Santiam R at Detroit (Detroit Dam)",   "type": "dam",       "lat": 44.7237, "lon": -122.1529 },
+      { "id": "14179000", "name": "Detroit Lake",                           "type": "reservoir", "lat": 44.7263, "lon": -122.2347 },
+      { "id": "14181500", "name": "N Santiam River at Mehama",              "type": "river",     "lat": 44.8168, "lon": -122.5834 },
+
+      { "id": "14150800", "name": "Lookout Point Reservoir",                "type": "reservoir", "lat": 43.9126, "lon": -122.7579 },
+      { "id": "14150000", "name": "Middle Fork Willamette nr Dexter (dam)", "type": "dam",       "lat": 43.9115, "lon": -122.8282 },
+      { "id": "14152000", "name": "Middle Fork Willamette at Jasper",       "type": "river",     "lat": 43.9965, "lon": -122.9565 }
     ],
-    "parameters": ["00060", "00065", "00010", "00300", "00400"]
+    "parameters": ["00060", "00065", "00010", "00300", "00400"],
+    "_parameters_note": "00060=discharge(ft³/s)  00065=gage height(ft)  00010=water temp(°C)  00300=dissolved oxygen(mg/L)  00400=pH"
   }
 }

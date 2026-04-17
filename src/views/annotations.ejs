@@ -1,0 +1,272 @@
+<%- include('partials/head', { title: 'Annotations' }) %>
+<%- include('partials/nav') %>
+
+<style>
+.ann-row { display:flex; align-items:flex-start; gap:10px; padding:10px 0; border-bottom:1px solid #1e293b; }
+.ann-row:last-child { border-bottom:none; }
+.cat-badge {
+  font-size:10px; font-weight:600; padding:1px 7px; border-radius:4px;
+  text-transform:uppercase; letter-spacing:.05em; flex-shrink:0;
+}
+.cat-event       { background:rgba(14,165,233,0.15);  color:#38bdf8; }
+.cat-alert       { background:rgba(239,68,68,0.15);   color:#fca5a5; }
+.cat-maintenance { background:rgba(250,204,21,0.15);  color:#fde047; }
+.cat-observation { background:rgba(52,211,153,0.15);  color:#6ee7b7; }
+.filter-chip {
+  padding:4px 12px; border-radius:6px; border:1px solid #334155;
+  background:transparent; color:#64748b; font-size:12px; cursor:pointer; transition:all 0.15s;
+}
+.filter-chip:hover { border-color:#475569; color:#94a3b8; }
+.filter-chip.active { background:#0ea5e9; border-color:#0ea5e9; color:#fff; }
+</style>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Event Annotations</h1>
+      <p class="text-xs text-slate-400 mt-0.5">Log and manage operational events, alerts, and observations</p>
+    </div>
+    <button onclick="showForm()" class="btn-primary">+ New Annotation</button>
+  </header>
+
+  <div class="flex-1 overflow-y-auto p-6">
+
+    <!-- Add/Edit form -->
+    <div id="ann-form-card" class="card mb-5" style="display:none;">
+      <h2 id="form-title" class="text-sm font-semibold text-slate-300 mb-4">New Annotation</h2>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label class="label">Date &amp; Time <span class="text-slate-500">(annotated event time)</span></label>
+          <input id="af-time" type="datetime-local" class="input">
+        </div>
+        <div>
+          <label class="label">Category</label>
+          <select id="af-cat" class="input">
+            <option value="event">Event</option>
+            <option value="alert">Alert</option>
+            <option value="maintenance">Maintenance</option>
+            <option value="observation">Observation</option>
+          </select>
+        </div>
+        <div class="col-span-2">
+          <label class="label">Label <span class="text-slate-500">(short — shown on chart)</span></label>
+          <input id="af-label" type="text" class="input" placeholder="e.g. Valve opened, High turbidity event">
+        </div>
+        <div>
+          <label class="label">Site <span class="text-slate-500">(optional — blank = global)</span></label>
+          <select id="af-site" class="input">
+            <option value="">— All Sites —</option>
+            <% sites.forEach(function(s) { %>
+            <option value="<%= s.site_id %>"><%= s.name %></option>
+            <% }) %>
+          </select>
+        </div>
+        <div>
+          <label class="label">Parameter <span class="text-slate-500">(optional)</span></label>
+          <select id="af-param" class="input">
+            <option value="">— Any —</option>
+            <option value="00060">Discharge (ft³/s)</option>
+            <option value="00065">Gage Height (ft)</option>
+            <option value="00010">Water Temperature (°C)</option>
+            <option value="00300">Dissolved Oxygen (mg/L)</option>
+            <option value="00400">pH</option>
+          </select>
+        </div>
+        <div class="col-span-2">
+          <label class="label">Note <span class="text-slate-500">(optional — full description)</span></label>
+          <textarea id="af-note" class="input" rows="3" placeholder="Detailed description, context, next steps…"></textarea>
+        </div>
+      </div>
+      <input type="hidden" id="af-id">
+      <div class="flex gap-2">
+        <button onclick="saveAnnotation()" class="btn-primary" style="font-size:12px;padding:5px 14px;">Save</button>
+        <button onclick="cancelForm()" style="font-size:12px;padding:5px 14px;background:#1e293b;border:1px solid #334155;border-radius:6px;color:#94a3b8;cursor:pointer;">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="card mb-5">
+      <div class="flex flex-wrap items-center gap-3">
+        <span class="text-xs text-slate-500 mr-1">Filter:</span>
+        <div class="flex gap-2 flex-wrap" id="cat-filters">
+          <button class="filter-chip active" data-cat="" onclick="setCatFilter(this, '')">All</button>
+          <button class="filter-chip" data-cat="event" onclick="setCatFilter(this,'event')">Events</button>
+          <button class="filter-chip" data-cat="alert" onclick="setCatFilter(this,'alert')">Alerts</button>
+          <button class="filter-chip" data-cat="maintenance" onclick="setCatFilter(this,'maintenance')">Maintenance</button>
+          <button class="filter-chip" data-cat="observation" onclick="setCatFilter(this,'observation')">Observations</button>
+        </div>
+        <div class="ml-auto flex gap-2">
+          <select id="filter-site" class="input" style="font-size:12px;padding:4px 8px;" onchange="loadAnnotations()">
+            <option value="">All Sites</option>
+            <% sites.forEach(function(s) { %>
+            <option value="<%= s.site_id %>"><%= s.name %></option>
+            <% }) %>
+          </select>
+          <a id="export-btn" href="#" class="btn-primary" style="font-size:12px;padding:5px 12px;text-decoration:none;" onclick="doExport(event)">↓ Export CSV</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- List -->
+    <div class="card">
+      <div id="ann-count" class="text-xs text-slate-500 mb-3"></div>
+      <div id="ann-list">
+        <div class="text-sm text-slate-500">Loading…</div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+var _allAnnotations = [];
+var _catFilter = '';
+
+var CAT_CLASS = {
+  event:'cat-event', alert:'cat-alert', maintenance:'cat-maintenance', observation:'cat-observation'
+};
+
+var PARAM_LABELS = {
+  '00060':'Discharge','00065':'Gage Height','00010':'Temp (°C)','00300':'DO (mg/L)','00400':'pH'
+};
+
+// ── Load ──────────────────────────────────────────────────────────────────────
+async function loadAnnotations() {
+  var siteId = document.getElementById('filter-site').value;
+  var url = '/api/annotations' + (siteId ? '?site_id=' + siteId : '');
+  try {
+    var resp = await fetch(url);
+    var json = await resp.json();
+    _allAnnotations = (json.data || []).reverse(); // newest first
+    renderList();
+  } catch(e) {
+    document.getElementById('ann-list').innerHTML = '<div class="text-sm text-slate-500">Failed to load annotations.</div>';
+  }
+}
+
+function renderList() {
+  var filtered = _catFilter
+    ? _allAnnotations.filter(a => a.category === _catFilter)
+    : _allAnnotations;
+
+  document.getElementById('ann-count').textContent = filtered.length + ' annotation' + (filtered.length !== 1 ? 's' : '');
+
+  if (!filtered.length) {
+    document.getElementById('ann-list').innerHTML = '<div class="text-sm text-slate-500 py-4 text-center">No annotations found.</div>';
+    return;
+  }
+
+  document.getElementById('ann-list').innerHTML = filtered.map(a => {
+    var dt = new Date(a.annotated_at + (a.annotated_at.includes('Z') ? '' : 'Z'));
+    var dtStr = dt.toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'2-digit', minute:'2-digit' });
+    var paramStr = a.parameter_code ? (PARAM_LABELS[a.parameter_code] || a.parameter_code) : '';
+    var siteStr  = a.site_id || 'Global';
+    return `<div class="ann-row">
+      <div style="flex-shrink:0;padding-top:2px;">
+        <span class="cat-badge ${CAT_CLASS[a.category]||'cat-event'}">${a.category}</span>
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div class="flex items-baseline gap-2 flex-wrap">
+          <span class="font-semibold text-slate-100 text-sm">${escHtml(a.label)}</span>
+          <span class="text-xs text-slate-500">${dtStr}</span>
+        </div>
+        <div class="text-xs text-slate-500 mt-0.5 flex gap-3">
+          <span>${escHtml(siteStr)}</span>
+          ${paramStr ? `<span>${escHtml(paramStr)}</span>` : ''}
+        </div>
+        ${a.note ? `<div class="text-xs text-slate-400 mt-1 leading-relaxed">${escHtml(a.note)}</div>` : ''}
+      </div>
+      <div class="flex gap-2 flex-shrink-0">
+        <button onclick="editAnnotation(${a.id})" style="background:none;border:none;cursor:pointer;color:#475569;font-size:13px;" title="Edit">✎</button>
+        <button onclick="deleteAnnotation(${a.id})" style="background:none;border:none;cursor:pointer;color:#475569;font-size:13px;" title="Delete">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function setCatFilter(btn, cat) {
+  _catFilter = cat;
+  document.querySelectorAll('#cat-filters .filter-chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderList();
+}
+
+// ── Form ──────────────────────────────────────────────────────────────────────
+function showForm(ann) {
+  document.getElementById('ann-form-card').style.display = 'block';
+  document.getElementById('form-title').textContent = ann ? 'Edit Annotation' : 'New Annotation';
+  if (ann) {
+    document.getElementById('af-id').value    = ann.id;
+    var dt = ann.annotated_at.replace(' ','T').substring(0,16);
+    document.getElementById('af-time').value  = dt;
+    document.getElementById('af-cat').value   = ann.category;
+    document.getElementById('af-label').value = ann.label;
+    document.getElementById('af-site').value  = ann.site_id || '';
+    document.getElementById('af-param').value = ann.parameter_code || '';
+    document.getElementById('af-note').value  = ann.note || '';
+  } else {
+    document.getElementById('af-id').value    = '';
+    var now = new Date();
+    now.setSeconds(0,0);
+    document.getElementById('af-time').value  = now.toISOString().substring(0,16);
+    document.getElementById('af-cat').value   = 'event';
+    document.getElementById('af-label').value = '';
+    document.getElementById('af-site').value  = '';
+    document.getElementById('af-param').value = '';
+    document.getElementById('af-note').value  = '';
+  }
+  document.getElementById('af-label').focus();
+}
+
+function cancelForm() {
+  document.getElementById('ann-form-card').style.display = 'none';
+}
+
+async function saveAnnotation() {
+  var label = document.getElementById('af-label').value.trim();
+  var time  = document.getElementById('af-time').value;
+  if (!label || !time) { alert('Label and time are required.'); return; }
+  var id = document.getElementById('af-id').value;
+  var body = {
+    label,
+    annotated_at:   time + ':00',
+    category:       document.getElementById('af-cat').value,
+    site_id:        document.getElementById('af-site').value || null,
+    parameter_code: document.getElementById('af-param').value || null,
+    note:           document.getElementById('af-note').value.trim() || null,
+  };
+  var url    = id ? '/api/annotations/' + id : '/api/annotations';
+  var method = id ? 'PUT' : 'POST';
+  var resp = await fetch(url, { method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  if (!resp.ok) { alert('Failed to save.'); return; }
+  cancelForm();
+  loadAnnotations();
+}
+
+function editAnnotation(id) {
+  var ann = _allAnnotations.find(a => a.id === id);
+  if (ann) showForm(ann);
+}
+
+async function deleteAnnotation(id) {
+  if (!confirm('Delete this annotation?')) return;
+  await fetch('/api/annotations/' + id, { method: 'DELETE' });
+  loadAnnotations();
+}
+
+function doExport(e) {
+  e.preventDefault();
+  var siteId = document.getElementById('filter-site').value;
+  var url = '/api/export/annotations' + (siteId ? '?site_id=' + siteId : '') + '&fmt=csv';
+  window.location.href = url;
+}
+
+function escHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+document.addEventListener('DOMContentLoaded', loadAnnotations);
+</script>
+
+<%- include('partials/foot') %>

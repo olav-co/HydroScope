@@ -1,0 +1,522 @@
+<%- include('partials/head', { title: 'Water Quality' }) %>
+<%- include('partials/nav') %>
+
+<style>
+.wq-chart-wrap { position:relative; height:220px; }
+.limit-badge {
+  display:inline-flex; align-items:center; gap:5px;
+  font-size:11px; padding:2px 8px; border-radius:4px;
+  background:rgba(239,68,68,0.1); color:#fca5a5; border:1px solid rgba(239,68,68,0.2);
+}
+.limit-badge.target { background:rgba(34,197,94,0.1); color:#86efac; border-color:rgba(34,197,94,0.2); }
+.limit-badge.min    { background:rgba(14,165,233,0.1); color:#7dd3fc; border-color:rgba(14,165,233,0.2); }
+.param-tab {
+  padding:6px 14px; border-radius:6px; font-size:12px; font-weight:500;
+  background:transparent; border:1px solid #334155; color:#64748b; cursor:pointer; transition:all 0.15s;
+}
+.param-tab.active { background:#0ea5e9; border-color:#0ea5e9; color:#fff; }
+.param-tab:hover:not(.active) { border-color:#475569; color:#94a3b8; }
+.limit-row { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #1e293b; }
+.limit-row:last-child { border-bottom:none; }
+.compare-chip {
+  display:flex; align-items:center; gap:6px; padding:5px 10px;
+  border-radius:6px; border:1px solid #334155; background:#1e293b;
+  font-size:12px; color:#94a3b8; cursor:pointer; user-select:none; transition:all 0.15s;
+}
+.compare-chip:hover { border-color:#475569; color:#f1f5f9; }
+.compare-chip.selected { color:#fff; background:rgba(255,255,255,0.04); }
+.compare-chip .cdot { width:8px; height:8px; border-radius:50%; background:#334155; flex-shrink:0; }
+</style>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Water Quality</h1>
+      <p class="text-xs text-slate-400 mt-0.5">WQ parameters · permit limits · cross-site comparison</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <select id="wqSite" class="input" style="min-width:180px;" onchange="onSiteChange()">
+        <% sites.forEach(function(s) { %>
+        <option value="<%= s.site_id %>"><%= s.name %></option>
+        <% }) %>
+      </select>
+      <select id="wqHours" class="input" onchange="loadAll()">
+        <option value="72">3 Days</option>
+        <option value="168" selected>7 Days</option>
+        <option value="336">14 Days</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- Tabs: Single Site / Compare -->
+  <div class="px-6 pt-4 flex gap-2">
+    <button class="param-tab active" id="tab-single" onclick="switchTab('single')">Single Site</button>
+    <button class="param-tab" id="tab-compare" onclick="switchTab('compare')">Cross-Site Compare</button>
+  </div>
+
+  <div class="flex-1 overflow-y-auto p-6" id="content-area">
+
+    <!-- ── SINGLE SITE TAB ──────────────────────────────────────── -->
+    <div id="panel-single">
+
+      <%
+    var CMP_COLORS = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15'];
+    %>
+
+    <!-- 2×2 WQ parameter grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+
+        <!-- pH -->
+        <div class="card">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold text-slate-200">pH</h2>
+            <div id="ph-limits-row" class="flex gap-1 flex-wrap"></div>
+          </div>
+          <div class="wq-chart-wrap"><canvas id="chart-ph"></canvas></div>
+          <div id="stat-ph" class="mt-2 flex gap-4 text-xs text-slate-500"></div>
+        </div>
+
+        <!-- Dissolved Oxygen -->
+        <div class="card">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold text-slate-200">Dissolved Oxygen <span class="text-slate-500 font-normal">(mg/L)</span></h2>
+            <div id="do-limits-row" class="flex gap-1 flex-wrap"></div>
+          </div>
+          <div class="wq-chart-wrap"><canvas id="chart-do"></canvas></div>
+          <div id="stat-do" class="mt-2 flex gap-4 text-xs text-slate-500"></div>
+        </div>
+
+        <!-- Water Temperature -->
+        <div class="card">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold text-slate-200">Water Temperature <span class="text-slate-500 font-normal">(°C)</span></h2>
+            <div id="temp-limits-row" class="flex gap-1 flex-wrap"></div>
+          </div>
+          <div class="wq-chart-wrap"><canvas id="chart-temp"></canvas></div>
+          <div id="stat-temp" class="mt-2 flex gap-4 text-xs text-slate-500"></div>
+        </div>
+
+        <!-- Turbidity placeholder (00076) or secondary param -->
+        <div class="card">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold text-slate-200">Discharge <span class="text-slate-500 font-normal">(ft³/s)</span></h2>
+            <div id="dis-limits-row" class="flex gap-1 flex-wrap"></div>
+          </div>
+          <div class="wq-chart-wrap"><canvas id="chart-dis"></canvas></div>
+          <div id="stat-dis" class="mt-2 flex gap-4 text-xs text-slate-500"></div>
+        </div>
+
+      </div>
+
+      <!-- Permit limits management -->
+      <div class="card mb-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold text-slate-300">Permit Limits</h2>
+          <button onclick="showAddLimit()" class="btn-primary" style="font-size:12px;padding:5px 12px;">+ Add Limit</button>
+        </div>
+        <div id="limits-list" class="text-sm text-slate-400">Loading…</div>
+
+        <!-- Add/edit form (hidden by default) -->
+        <div id="limit-form" style="display:none;" class="mt-4 p-4 rounded-lg" style="background:#0f172a;border:1px solid #334155;">
+          <div class="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <label class="label">Parameter</label>
+              <select id="lf-param" class="input">
+                <option value="00400">pH</option>
+                <option value="00300">Dissolved Oxygen (mg/L)</option>
+                <option value="00010">Water Temperature (°C)</option>
+                <option value="00060">Discharge (ft³/s)</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">Limit Type</label>
+              <select id="lf-type" class="input">
+                <option value="max">Max (upper bound)</option>
+                <option value="min">Min (lower bound)</option>
+                <option value="target">Target</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">Value</label>
+              <input id="lf-value" type="number" step="any" class="input" placeholder="e.g. 8.5">
+            </div>
+            <div>
+              <label class="label">Label</label>
+              <input id="lf-label" type="text" class="input" placeholder="e.g. EPA Max">
+            </div>
+            <div>
+              <label class="label">Color</label>
+              <input id="lf-color" type="color" class="input" value="#ef4444" style="height:36px;padding:2px 4px;">
+            </div>
+          </div>
+          <input type="hidden" id="lf-id">
+          <div class="flex gap-2">
+            <button onclick="saveLimit()" class="btn-primary" style="font-size:12px;padding:5px 14px;">Save</button>
+            <button onclick="cancelLimit()" style="font-size:12px;padding:5px 14px;background:#1e293b;border:1px solid #334155;border-radius:6px;color:#94a3b8;cursor:pointer;">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /panel-single -->
+
+    <!-- ── COMPARE TAB ─────────────────────────────────────────── -->
+    <div id="panel-compare" style="display:none;">
+      <div class="card mb-5">
+        <div class="flex flex-col gap-4">
+          <div>
+            <label class="label mb-2">Select Sites</label>
+            <div id="wq-compare-picker" class="flex flex-wrap gap-2">
+              <% sites.forEach(function(s, i) { %>
+              <button class="compare-chip" data-id="<%= s.site_id %>" data-color="<%= CMP_COLORS[i % CMP_COLORS.length] %>" onclick="toggleCmpSite(this)">
+                <span class="cdot"></span>
+                <span><%= s.name %></span>
+                <span style="font-size:10px;opacity:0;" class="cchk">✓</span>
+              </button>
+              <% }) %>
+            </div>
+          </div>
+          <div class="flex flex-wrap gap-4 items-end">
+            <div style="flex:1;min-width:160px;">
+              <label class="label">WQ Parameter</label>
+              <select id="cmpParam" class="input">
+                <option value="00400">pH</option>
+                <option value="00300">Dissolved Oxygen (mg/L)</option>
+                <option value="00010">Water Temperature (°C)</option>
+                <option value="00060">Discharge (ft³/s)</option>
+              </select>
+            </div>
+            <div style="flex:1;min-width:140px;">
+              <label class="label">Time Window</label>
+              <select id="cmpHours" class="input">
+                <option value="72">3 Days</option>
+                <option value="168" selected>7 Days</option>
+                <option value="336">14 Days</option>
+              </select>
+            </div>
+            <button onclick="loadWQCompare()" class="btn-primary" id="cmpBtn" disabled>Compare</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-5">
+        <h2 id="cmpTitle" class="text-sm font-semibold text-slate-300 mb-4">Select 2+ sites to compare</h2>
+        <div style="height:300px;"><canvas id="cmpChart"></canvas></div>
+      </div>
+
+      <div id="cmpStatsSection" class="card" style="display:none;">
+        <h2 class="text-sm font-semibold text-slate-300 mb-3">Latest Values</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-left text-xs text-slate-500 border-b border-slate-700">
+              <th class="pb-2 font-medium">Site</th>
+              <th class="pb-2 font-medium text-right">Latest</th>
+              <th class="pb-2 font-medium text-right">Min</th>
+              <th class="pb-2 font-medium text-right">Max</th>
+              <th class="pb-2 font-medium text-right">Avg</th>
+            </tr></thead>
+            <tbody id="cmpTable" class="text-slate-300 divide-y divide-slate-800"></tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /panel-compare -->
+
+  </div>
+</main>
+
+<script>
+var CMP_COLORS = <%- JSON.stringify(CMP_COLORS) %>;
+var _wqCharts   = {};
+var _wqSiteId   = document.getElementById('wqSite').value;
+var _wqHours    = 168;
+var _cmpChart   = null;
+var _cmpSites   = [];
+
+var WQ_PARAMS = [
+  { code:'00400', key:'ph',   label:'pH',                    color:'#a78bfa' },
+  { code:'00300', key:'do',   label:'Dissolved Oxygen (mg/L)', color:'#34d399' },
+  { code:'00010', key:'temp', label:'Water Temperature (°C)', color:'#f97316' },
+  { code:'00060', key:'dis',  label:'Discharge (ft³/s)',       color:'#0ea5e9' },
+];
+
+var PARAM_LABELS = {
+  '00400':'pH','00300':'Dissolved Oxygen (mg/L)','00010':'Water Temperature (°C)','00060':'Discharge (ft³/s)'
+};
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.getElementById('panel-single').style.display  = tab === 'single'  ? '' : 'none';
+  document.getElementById('panel-compare').style.display = tab === 'compare' ? '' : 'none';
+  document.getElementById('tab-single').classList.toggle('active',  tab === 'single');
+  document.getElementById('tab-compare').classList.toggle('active', tab === 'compare');
+}
+
+function onSiteChange() {
+  _wqSiteId = document.getElementById('wqSite').value;
+  loadAll();
+}
+
+async function loadAll() {
+  _wqSiteId = document.getElementById('wqSite').value;
+  _wqHours  = parseInt(document.getElementById('wqHours').value);
+  const limits = await fetchLimits();
+  for (const p of WQ_PARAMS) {
+    await loadParam(p, limits.filter(l => l.parameter_code === p.code));
+  }
+  renderLimitsList(limits);
+}
+
+// ── Chart per parameter ───────────────────────────────────────────────────────
+async function loadParam(p, limits) {
+  try {
+    var resp = await fetch('/api/data/timeseries?site=' + _wqSiteId + '&param=' + p.code + '&hours=' + _wqHours);
+    var json = await resp.json();
+    var rows = (json.data || []).map(r => ({ x: new Date(r.recorded_at + 'Z'), y: r.value }));
+
+    var isLight = document.body.classList.contains('light');
+    var gridColor = isLight ? 'rgba(0,0,0,0.06)' : '#1e293b';
+    var tickColor = isLight ? '#64748b' : '#475569';
+
+    // Build annotation lines for limits
+    var annotations = {};
+    limits.forEach(function(l, i) {
+      annotations['limit_' + i] = {
+        type: 'line', yMin: l.value, yMax: l.value,
+        borderColor: l.color || '#ef4444',
+        borderWidth: 1.5, borderDash: [5, 3],
+        label: { display: true, content: l.label || l.limit_type, position: 'end',
+                 color: l.color || '#ef4444', font: { size: 10 }, backgroundColor: 'transparent' }
+      };
+    });
+
+    if (_wqCharts[p.key]) _wqCharts[p.key].destroy();
+    _wqCharts[p.key] = new Chart(document.getElementById('chart-' + p.key), {
+      type: 'line',
+      data: { datasets: [{ label: p.label, data: rows, borderColor: p.color,
+        backgroundColor: p.color + '15', fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2,
+        parsing: { xAxisKey: 'x', yAxisKey: 'y' } }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { intersect: false, mode: 'index' },
+        plugins: {
+          legend: { display: false },
+          tooltip: { backgroundColor: '#1e293b', titleColor: '#94a3b8', bodyColor: '#f1f5f9' },
+          annotation: { annotations: annotations }
+        },
+        scales: {
+          x: { type: 'time', ticks: { color: tickColor, maxTicksLimit: 6 }, grid: { color: gridColor } },
+          y: { ticks: { color: tickColor }, grid: { color: gridColor } }
+        }
+      }
+    });
+
+    // Stats
+    var vals = rows.map(r => r.y);
+    var statsEl = document.getElementById('stat-' + p.key);
+    if (vals.length) {
+      var latest = vals[vals.length-1];
+      var mn = Math.min(...vals), mx = Math.max(...vals);
+      var avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+      statsEl.innerHTML = `<span>Latest: <b style="color:#f1f5f9;">${latest.toFixed(2)}</b></span>
+        <span>Min: <span style="color:#60a5fa;">${mn.toFixed(2)}</span></span>
+        <span>Max: <span style="color:#fbbf24;">${mx.toFixed(2)}</span></span>
+        <span>Avg: ${avg.toFixed(2)}</span>
+        <span>${vals.length} pts</span>`;
+    } else {
+      statsEl.textContent = 'No data for selected window.';
+    }
+
+    // Limit badges in header
+    var limRow = document.getElementById(p.key + '-limits-row');
+    limRow.innerHTML = limits.map(l =>
+      `<span class="limit-badge ${l.limit_type}">${l.label || l.limit_type}: ${l.value}</span>`
+    ).join('');
+
+  } catch(e) {
+    console.warn('WQ chart error', p.key, e);
+  }
+}
+
+// ── Permit limits ─────────────────────────────────────────────────────────────
+async function fetchLimits() {
+  try {
+    var r = await fetch('/api/wq/limits?site_id=' + _wqSiteId);
+    var j = await r.json();
+    return j.data || [];
+  } catch(e) { return []; }
+}
+
+function renderLimitsList(limits) {
+  var el = document.getElementById('limits-list');
+  if (!limits.length) {
+    el.textContent = 'No permit limits configured for this site.';
+    return;
+  }
+  el.innerHTML = limits.map(l => `
+    <div class="limit-row">
+      <span style="width:10px;height:10px;border-radius:50%;background:${l.color||'#ef4444'};display:inline-block;flex-shrink:0;"></span>
+      <span class="font-medium text-slate-200" style="flex:1;">${PARAM_LABELS[l.parameter_code]||l.parameter_code}</span>
+      <span class="text-slate-400 text-xs">${l.limit_type}</span>
+      <span class="font-mono text-slate-200">${l.value}</span>
+      <span class="text-slate-500">${l.label||''}</span>
+      <button onclick="editLimit(${l.id})" style="background:none;border:none;cursor:pointer;color:#475569;font-size:12px;padding:0 4px;" title="Edit">✎</button>
+      <button onclick="deleteLimit(${l.id})" style="background:none;border:none;cursor:pointer;color:#475569;font-size:12px;padding:0 4px;" title="Delete">✕</button>
+    </div>
+  `).join('');
+}
+
+var _editingLimitId = null;
+
+function showAddLimit() {
+  _editingLimitId = null;
+  document.getElementById('lf-id').value    = '';
+  document.getElementById('lf-param').value = '00400';
+  document.getElementById('lf-type').value  = 'max';
+  document.getElementById('lf-value').value = '';
+  document.getElementById('lf-label').value = '';
+  document.getElementById('lf-color').value = '#ef4444';
+  document.getElementById('limit-form').style.display = 'block';
+}
+
+function editLimit(id) {
+  fetchLimits().then(limits => {
+    var l = limits.find(x => x.id === id);
+    if (!l) return;
+    _editingLimitId = id;
+    document.getElementById('lf-id').value    = id;
+    document.getElementById('lf-param').value = l.parameter_code;
+    document.getElementById('lf-type').value  = l.limit_type;
+    document.getElementById('lf-value').value = l.value;
+    document.getElementById('lf-label').value = l.label || '';
+    document.getElementById('lf-color').value = l.color || '#ef4444';
+    document.getElementById('limit-form').style.display = 'block';
+  });
+}
+
+async function saveLimit() {
+  var id    = document.getElementById('lf-id').value;
+  var body  = {
+    site_id:        _wqSiteId,
+    parameter_code: document.getElementById('lf-param').value,
+    limit_type:     document.getElementById('lf-type').value,
+    value:          parseFloat(document.getElementById('lf-value').value),
+    label:          document.getElementById('lf-label').value,
+    color:          document.getElementById('lf-color').value,
+  };
+  if (isNaN(body.value)) return alert('Enter a numeric value.');
+  var url    = id ? '/api/wq/limits/' + id : '/api/wq/limits';
+  var method = id ? 'PUT' : 'POST';
+  await fetch(url, { method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  document.getElementById('limit-form').style.display = 'none';
+  loadAll();
+}
+
+async function deleteLimit(id) {
+  if (!confirm('Delete this limit?')) return;
+  await fetch('/api/wq/limits/' + id, { method: 'DELETE' });
+  loadAll();
+}
+
+function cancelLimit() {
+  document.getElementById('limit-form').style.display = 'none';
+}
+
+// ── Cross-site compare ────────────────────────────────────────────────────────
+function toggleCmpSite(btn) {
+  var color = btn.getAttribute('data-color');
+  btn.classList.toggle('selected');
+  if (btn.classList.contains('selected')) {
+    btn.querySelector('.cdot').style.background = color;
+    btn.style.borderColor = color + '80';
+    btn.style.color = color;
+    btn.querySelector('.cchk').style.opacity = '1';
+  } else {
+    btn.querySelector('.cdot').style.background = '#334155';
+    btn.style.borderColor = '';
+    btn.style.color = '';
+    btn.querySelector('.cchk').style.opacity = '0';
+  }
+  _cmpSites = Array.from(document.querySelectorAll('.compare-chip.selected')).map(b => b.getAttribute('data-id'));
+  document.getElementById('cmpBtn').disabled = _cmpSites.length < 2;
+}
+
+async function loadWQCompare() {
+  if (_cmpSites.length < 2) return;
+  var param = document.getElementById('cmpParam').value;
+  var hours = document.getElementById('cmpHours').value;
+  var label = PARAM_LABELS[param] || param;
+  document.getElementById('cmpTitle').textContent = label + ' — ' + (hours/24) + '-Day Comparison';
+
+  var resp = await fetch('/api/data/compare?sites=' + _cmpSites.join(',') + '&param=' + param + '&hours=' + hours);
+  var json = await resp.json();
+  var rows  = json.data || [];
+
+  var bySite = {};
+  _cmpSites.forEach(id => { bySite[id] = { name: id, points: [] }; });
+  rows.forEach(r => {
+    if (bySite[r.site_id]) {
+      bySite[r.site_id].name = r.site_name;
+      bySite[r.site_id].points.push({ x: new Date(r.recorded_at + 'Z'), y: r.value, unit: r.unit });
+    }
+  });
+
+  var isLight = document.body.classList.contains('light');
+  var gridColor = isLight ? 'rgba(0,0,0,0.06)' : '#1e293b';
+  var tickColor = isLight ? '#64748b' : '#475569';
+
+  var datasets = _cmpSites.map(function(siteId, i) {
+    var chipBtn = document.querySelector('.compare-chip[data-id="' + siteId + '"]');
+    var color   = chipBtn ? chipBtn.getAttribute('data-color') : CMP_COLORS[i % CMP_COLORS.length];
+    var data    = bySite[siteId];
+    return {
+      label: data.name, data: data.points,
+      borderColor: color, backgroundColor: color + '15',
+      fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2,
+      parsing: { xAxisKey: 'x', yAxisKey: 'y' }
+    };
+  });
+
+  if (_cmpChart) _cmpChart.destroy();
+  _cmpChart = new Chart(document.getElementById('cmpChart'), {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: { labels: { color: '#94a3b8', boxWidth: 10, font: { size: 12 } } },
+        tooltip: { backgroundColor: '#1e293b', titleColor: '#94a3b8', bodyColor: '#f1f5f9' }
+      },
+      scales: {
+        x: { type: 'time', ticks: { color: tickColor }, grid: { color: gridColor } },
+        y: { ticks: { color: tickColor }, grid: { color: gridColor } }
+      }
+    }
+  });
+
+  // Stats table
+  var tbody = document.getElementById('cmpTable');
+  tbody.innerHTML = '';
+  _cmpSites.forEach(function(siteId, i) {
+    var site = bySite[siteId];
+    var vals = site.points.map(p => p.y);
+    if (!vals.length) return;
+    var latest = vals[vals.length-1], min = Math.min(...vals), max = Math.max(...vals);
+    var avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+    var unit = site.points[0].unit || '';
+    var chipBtn = document.querySelector('.compare-chip[data-id="' + siteId + '"]');
+    var color = chipBtn ? chipBtn.getAttribute('data-color') : CMP_COLORS[i % CMP_COLORS.length];
+    tbody.innerHTML += '<tr>' +
+      '<td class="py-2"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+color+';margin-right:6px;"></span><span class="font-medium text-slate-200">'+site.name+'</span></td>' +
+      '<td class="py-2 text-right font-mono" style="color:'+color+';">'+latest.toFixed(2)+' '+unit+'</td>' +
+      '<td class="py-2 text-right font-mono text-blue-400">'+min.toFixed(2)+'</td>' +
+      '<td class="py-2 text-right font-mono text-amber-400">'+max.toFixed(2)+'</td>' +
+      '<td class="py-2 text-right font-mono text-slate-300">'+avg.toFixed(2)+'</td></tr>';
+  });
+  document.getElementById('cmpStatsSection').style.display = 'block';
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', loadAll);
+</script>
+
+<%- include('partials/foot') %>

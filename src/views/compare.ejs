@@ -1,73 +1,159 @@
 <%- include('partials/head', { title: 'Compare' }) %>
 <%- include('partials/nav') %>
 
+<%
+// Assign a consistent color per site index for JS to reference
+const SITE_COLORS = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15'];
+%>
+
+<style>
+.site-chip {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-radius: 8px; border: 1px solid #334155;
+  background: #1e293b; cursor: pointer; transition: all 0.15s;
+  font-size: 13px; color: #94a3b8; user-select: none;
+}
+.site-chip:hover { border-color: #475569; color: #f1f5f9; }
+.site-chip.selected { color: #fff; background: rgba(255,255,255,0.04); }
+.site-chip .chip-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  background: #334155; transition: background 0.15s;
+}
+.site-chip.selected .chip-dot { box-shadow: 0 0 6px currentColor; }
+.site-chip .chip-check { font-size: 11px; opacity: 0; transition: opacity 0.1s; }
+.site-chip.selected .chip-check { opacity: 1; }
+body.light .site-chip { background: #f8fafc; border-color: #cbd5e1; color: #475569; }
+body.light .site-chip:hover { background: #f1f5f9; border-color: #94a3b8; color: #0f172a; }
+body.light .site-chip.selected { background: #fff; }
+</style>
+
 <main class="flex-1 flex flex-col overflow-hidden">
-  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
     <div>
       <h1 class="text-lg font-semibold text-white">Compare</h1>
-      <p class="text-xs text-slate-400 mt-0.5">Side-by-side multi-site parameter comparison</p>
+      <p class="text-xs text-slate-400 mt-0.5">Multi-site comparison with AI synthesis</p>
     </div>
   </header>
 
   <div class="flex-1 overflow-y-auto p-6">
 
-    <!-- Controls -->
-    <div class="card mb-6">
-      <div class="flex flex-wrap gap-4 items-end">
-        <div class="flex-1 min-w-56">
-          <label class="label">Sites to Compare (hold Ctrl/Cmd for multi-select)</label>
-          <select id="compareSites" class="input" multiple size="4">
-            <% for (const s of sites) { %>
-              <option value="<%= s.site_id %>"><%= s.name %></option>
-            <% } %>
-          </select>
+    <!-- Controls card -->
+    <div class="card mb-5">
+      <div class="flex flex-col gap-5">
+
+        <!-- Site picker grid -->
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <label class="label mb-0">Select Sites to Compare</label>
+            <span id="selected-count" class="text-xs text-slate-500">0 selected</span>
+          </div>
+          <div id="site-picker" class="flex flex-wrap gap-2">
+            <% sites.forEach(function(s, i) { %>
+            <button
+              class="site-chip"
+              data-id="<%= s.site_id %>"
+              data-color="<%= SITE_COLORS[i % SITE_COLORS.length] %>"
+              onclick="toggleSite(this)"
+              title="USGS <%= s.site_id %>"
+            >
+              <span class="chip-dot" style="background:#334155;"></span>
+              <span><%= s.name %></span>
+              <span class="chip-check">✓</span>
+            </button>
+            <% }) %>
+          </div>
+          <p class="text-xs text-slate-600 mt-2">Select 2 or more sites · each gets a unique color in the chart</p>
         </div>
-        <div class="flex-1 min-w-40">
-          <label class="label">Parameter</label>
-          <select id="compareParam" class="input">
-            <option value="00060">Discharge (ft³/s)</option>
-            <option value="00065">Gage Height (ft)</option>
-            <option value="00010">Water Temperature (°C)</option>
-            <option value="00300">Dissolved Oxygen (mg/L)</option>
-            <option value="00400">pH</option>
-          </select>
+
+        <!-- Parameter + window row -->
+        <div class="flex flex-wrap gap-4 items-end">
+          <div style="flex:1;min-width:180px;">
+            <label class="label">Parameter</label>
+            <select id="compareParam" class="input">
+              <optgroup label="Flow &amp; Level">
+                <option value="00060">Discharge (ft³/s)</option>
+                <option value="00065">Gage Height (ft)</option>
+              </optgroup>
+              <optgroup label="Water Quality">
+                <option value="00010">Water Temperature (°C)</option>
+                <option value="00300">Dissolved Oxygen (mg/L)</option>
+                <option value="00400">pH</option>
+              </optgroup>
+            </select>
+          </div>
+          <div style="flex:1;min-width:140px;">
+            <label class="label">Time Window</label>
+            <select id="compareHours" class="input">
+              <option value="72">3 Days</option>
+              <option value="168" selected>7 Days</option>
+              <option value="336">14 Days</option>
+            </select>
+          </div>
+          <button onclick="loadCompare()" class="btn-primary" id="compareBtn" disabled>Compare</button>
         </div>
-        <div class="flex-1 min-w-36">
-          <label class="label">Time Window</label>
-          <select id="compareHours" class="input">
-            <option value="72">3 Days</option>
-            <option value="168" selected>7 Days</option>
-            <option value="336">14 Days</option>
-          </select>
-        </div>
-        <button onclick="loadCompare()" class="btn-primary">Compare</button>
+
       </div>
     </div>
 
     <!-- Chart -->
-    <div class="card mb-6">
-      <div class="flex items-center justify-between mb-4">
-        <h2 id="compareTitle" class="text-sm font-semibold text-slate-200">Select sites above</h2>
-      </div>
-      <div style="height:380px;"><canvas id="compareChart"></canvas></div>
+    <div class="card mb-5">
+      <h2 id="compareTitle" class="text-sm font-semibold text-slate-200 mb-4">Select sites above to compare</h2>
+      <div style="height:340px;"><canvas id="compareChart"></canvas></div>
     </div>
 
-    <!-- Delta table -->
-    <div id="deltaSection" class="card hidden">
-      <h2 class="text-sm font-semibold text-slate-300 mb-3">Latest Values Comparison</h2>
+    <!-- Stats table -->
+    <div id="deltaSection" class="card mb-5" style="display:none;">
+      <h2 class="text-sm font-semibold text-slate-300 mb-3">Latest Values</h2>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
-          <thead>
-            <tr class="text-left text-xs text-slate-500 border-b border-slate-700">
-              <th class="pb-2 font-medium">Site</th>
-              <th class="pb-2 font-medium text-right">Latest Value</th>
-              <th class="pb-2 font-medium text-right">Min</th>
-              <th class="pb-2 font-medium text-right">Max</th>
-              <th class="pb-2 font-medium text-right">Avg</th>
-            </tr>
-          </thead>
+          <thead><tr class="text-left text-xs text-slate-500 border-b border-slate-700">
+            <th class="pb-2 font-medium">Site</th>
+            <th class="pb-2 font-medium text-right">Latest</th>
+            <th class="pb-2 font-medium text-right">Min</th>
+            <th class="pb-2 font-medium text-right">Max</th>
+            <th class="pb-2 font-medium text-right">Avg</th>
+          </tr></thead>
           <tbody id="deltaTable" class="text-slate-300 divide-y divide-slate-800"></tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- AI Synthesis -->
+    <div id="ai-synthesis-card" class="card" style="display:none;">
+      <div class="flex items-center gap-2 mb-4">
+        <span class="ai-badge">AI</span>
+        <span class="text-xs font-semibold text-slate-300 uppercase tracking-wider">Synthesis</span>
+        <span id="ai-synthesis-cached" class="ml-2 text-xs text-slate-600 hidden">cached</span>
+        <button onclick="reloadSynthesis()" class="ml-auto text-xs text-slate-500 hover:text-hydro-400" style="background:none;border:none;cursor:pointer;">↻</button>
+      </div>
+      <div id="ai-synthesis-loading" class="flex items-center gap-2 text-xs text-slate-500">
+        <svg class="animate-spin" style="width:12px;height:12px;color:#0ea5e9;" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+        Synthesizing...
+      </div>
+      <div id="ai-synthesis-body" style="display:none;">
+        <div class="grid md:grid-cols-2 gap-4">
+          <div id="as-summary-wrap" class="hidden">
+            <div class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Summary</div>
+            <div id="as-summary" class="text-sm text-slate-200 leading-relaxed"></div>
+          </div>
+          <div id="as-key-wrap" class="hidden">
+            <div class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Key Finding</div>
+            <div id="as-key" class="text-sm text-slate-200 leading-relaxed"></div>
+          </div>
+          <div id="as-outlier-wrap" class="hidden rounded-lg px-3 py-2" style="background:rgba(251,146,60,0.07);border:1px solid rgba(251,146,60,0.15);">
+            <div class="text-xs font-medium text-amber-500 uppercase tracking-wider mb-1">Outlier</div>
+            <div id="as-outlier" class="text-sm leading-relaxed" style="color:#fb923c;"></div>
+          </div>
+          <div id="as-profile-wrap" class="hidden rounded-lg px-3 py-2" style="background:rgba(14,165,233,0.07);border:1px solid rgba(14,165,233,0.15);">
+            <div class="text-xs font-medium mb-1" style="color:#38bdf8;">For Your Role</div>
+            <div id="as-profile" class="text-sm leading-relaxed" style="color:#94a3b8;"></div>
+          </div>
+        </div>
+        <div id="as-rec-wrap" class="mt-4 hidden">
+          <div class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Recommendation</div>
+          <div id="as-rec" class="text-sm text-slate-300 leading-relaxed"></div>
+        </div>
+        <div id="as-raw" class="text-sm text-slate-300 leading-relaxed hidden"></div>
       </div>
     </div>
 
@@ -75,80 +161,174 @@
 </main>
 
 <script>
-let compareChart = null;
-const COLORS = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15'];
-const PARAM_LABELS = {
-  '00060': 'Discharge (ft³/s)', '00065': 'Gage Height (ft)',
-  '00010': 'Water Temperature (°C)', '00300': 'Dissolved Oxygen (mg/L)', '00400': 'pH',
+var compareChart = null;
+var _compareSiteIds = [], _compareParam = '', _compareHours = 168;
+var COLORS = <%- JSON.stringify(SITE_COLORS) %>;
+var PARAM_LABELS = {
+  '00060':'Discharge (ft³/s)','00065':'Gage Height (ft)',
+  '00010':'Water Temperature (°C)','00300':'Dissolved Oxygen (mg/L)','00400':'pH'
 };
 
-async function loadCompare() {
-  const siteSelect = document.getElementById('compareSites');
-  const selected = Array.from(siteSelect.selectedOptions).map(o => o.value);
-  if (selected.length < 2) { alert('Select at least 2 sites to compare.'); return; }
-
-  const param = document.getElementById('compareParam').value;
-  const hours = document.getElementById('compareHours').value;
-  const paramLabel = PARAM_LABELS[param] || param;
-
-  const resp = await fetch(`/api/data/compare?sites=${selected.join(',')}&param=${param}&hours=${hours}`);
-  const json = await resp.json();
-  const rows = json.data || [];
-
-  document.getElementById('compareTitle').textContent = `${paramLabel} — ${hours/24}-Day Comparison`;
-
-  // Group by site
-  const bySite = {};
-  for (const row of rows) {
-    if (!bySite[row.site_id]) bySite[row.site_id] = { name: row.site_name, points: [] };
-    bySite[row.site_id].points.push({ x: new Date(row.recorded_at + 'Z'), y: row.value, unit: row.unit });
+// ── Site chip selection ──────────────────────────────────
+function toggleSite(btn) {
+  var color = btn.getAttribute('data-color');
+  btn.classList.toggle('selected');
+  if (btn.classList.contains('selected')) {
+    btn.querySelector('.chip-dot').style.background = color;
+    btn.style.borderColor = color + '80';
+    btn.style.color = color;
+  } else {
+    btn.querySelector('.chip-dot').style.background = '#334155';
+    btn.style.borderColor = '';
+    btn.style.color = '';
   }
+  updateSelectedCount();
+}
 
-  const datasets = Object.entries(bySite).map(([siteId, data], i) => ({
-    label: data.name,
-    data: data.points,
-    borderColor: COLORS[i % COLORS.length],
-    backgroundColor: COLORS[i % COLORS.length] + '15',
-    fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2,
-    parsing: { xAxisKey: 'x', yAxisKey: 'y' }
-  }));
+function updateSelectedCount() {
+  var selected = document.querySelectorAll('.site-chip.selected');
+  var n = selected.length;
+  document.getElementById('selected-count').textContent = n + ' selected';
+  document.getElementById('compareBtn').disabled = n < 2;
+  _compareSiteIds = Array.from(selected).map(function(b) { return b.getAttribute('data-id'); });
+}
+
+// ── Compare ──────────────────────────────────────────────
+async function loadCompare() {
+  if (_compareSiteIds.length < 2) return;
+  _compareParam = document.getElementById('compareParam').value;
+  _compareHours = parseInt(document.getElementById('compareHours').value);
+  var paramLabel = PARAM_LABELS[_compareParam] || _compareParam;
+  document.getElementById('compareTitle').textContent = paramLabel + ' — ' + (_compareHours/24) + '-Day Comparison';
+
+  var resp = await fetch('/api/data/compare?sites=' + _compareSiteIds.join(',') + '&param=' + _compareParam + '&hours=' + _compareHours);
+  var json = await resp.json();
+  var rows = json.data || [];
+
+  // Group by site, preserve order from _compareSiteIds
+  var bySite = {};
+  _compareSiteIds.forEach(function(id) { bySite[id] = { name: id, points: [] }; });
+  rows.forEach(function(r) {
+    if (bySite[r.site_id]) {
+      bySite[r.site_id].name = r.site_name;
+      bySite[r.site_id].points.push({ x: new Date(r.recorded_at + 'Z'), y: r.value, unit: r.unit });
+    }
+  });
+
+  var isLight = document.body.classList.contains('light');
+  var gridColor = isLight ? 'rgba(0,0,0,0.06)' : '#1e293b';
+  var tickColor = isLight ? '#64748b' : '#475569';
+
+  var chipButtons = document.querySelectorAll('.site-chip.selected');
+  var datasets = _compareSiteIds.map(function(siteId, i) {
+    var data  = bySite[siteId];
+    // Match color from the chip button
+    var chipBtn = document.querySelector('.site-chip[data-id="' + siteId + '"]');
+    var color = chipBtn ? chipBtn.getAttribute('data-color') : COLORS[i % COLORS.length];
+    return {
+      label: data.name,
+      data: data.points,
+      borderColor: color,
+      backgroundColor: color + '15',
+      fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2,
+      parsing: { xAxisKey: 'x', yAxisKey: 'y' }
+    };
+  });
 
   if (compareChart) compareChart.destroy();
   compareChart = new Chart(document.getElementById('compareChart'), {
     type: 'line',
-    data: { datasets },
+    data: { datasets: datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { intersect: false, mode: 'index' },
       plugins: {
-        legend: { labels: { color: '#94a3b8', boxWidth: 12 } },
+        legend: { labels: { color: '#94a3b8', boxWidth: 10, font: { size: 12 } } },
         tooltip: { backgroundColor: '#1e293b', titleColor: '#94a3b8', bodyColor: '#f1f5f9' }
       },
       scales: {
-        x: { type: 'time', time: { tooltipFormat: 'MMM d, HH:mm' }, ticks: { color: '#64748b' }, grid: { color: '#1e293b' } },
-        y: { ticks: { color: '#64748b' }, grid: { color: '#1e293b' } }
+        x: { type: 'time', ticks: { color: tickColor }, grid: { color: gridColor } },
+        y: { ticks: { color: tickColor }, grid: { color: gridColor } }
       }
     }
   });
 
-  // Delta table
-  const tbody = document.getElementById('deltaTable');
+  // Stats table
+  var tbody = document.getElementById('deltaTable');
   tbody.innerHTML = '';
-  for (const [siteId, data] of Object.entries(bySite)) {
-    const vals = data.points.map(p => p.y);
-    const latest = vals[vals.length-1], min = Math.min(...vals), max = Math.max(...vals);
-    const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
-    const unit = data.points[0]?.unit || '';
-    tbody.innerHTML += `<tr>
-      <td class="py-2 font-medium text-slate-200">${data.name}</td>
-      <td class="py-2 text-right font-mono text-hydro-400">${latest?.toFixed(2)} ${unit}</td>
-      <td class="py-2 text-right font-mono text-blue-400">${min.toFixed(2)}</td>
-      <td class="py-2 text-right font-mono text-amber-400">${max.toFixed(2)}</td>
-      <td class="py-2 text-right font-mono text-slate-300">${avg.toFixed(2)}</td>
-    </tr>`;
-  }
-  document.getElementById('deltaSection').classList.remove('hidden');
+  _compareSiteIds.forEach(function(siteId, i) {
+    var site = bySite[siteId];
+    var vals = site.points.map(function(p) { return p.y; });
+    if (!vals.length) return;
+    var latest = vals[vals.length-1], min = Math.min.apply(null,vals), max = Math.max.apply(null,vals);
+    var avg = vals.reduce(function(a,b){return a+b;},0)/vals.length;
+    var unit = site.points[0].unit || '';
+    var chipBtn = document.querySelector('.site-chip[data-id="' + siteId + '"]');
+    var color = chipBtn ? chipBtn.getAttribute('data-color') : COLORS[i % COLORS.length];
+    tbody.innerHTML += '<tr>' +
+      '<td class="py-2"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';margin-right:6px;"></span><span class="font-medium text-slate-200">' + site.name + '</span></td>' +
+      '<td class="py-2 text-right font-mono" style="color:' + color + ';">' + latest.toFixed(2) + ' ' + unit + '</td>' +
+      '<td class="py-2 text-right font-mono text-blue-400">' + min.toFixed(2) + '</td>' +
+      '<td class="py-2 text-right font-mono text-amber-400">' + max.toFixed(2) + '</td>' +
+      '<td class="py-2 text-right font-mono text-slate-300">' + avg.toFixed(2) + '</td></tr>';
+  });
+  document.getElementById('deltaSection').style.display = 'block';
+
+  loadSynthesis();
 }
+
+async function loadSynthesis() {
+  var synthCard = document.getElementById('ai-synthesis-card');
+  var loading   = document.getElementById('ai-synthesis-loading');
+  var body      = document.getElementById('ai-synthesis-body');
+  synthCard.style.display = 'block';
+  loading.style.display = 'flex';
+  body.style.display = 'none';
+
+  try {
+    var resp = await fetch('/api/insights/enrich', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page: 'compare', context: { site_ids: _compareSiteIds, param_code: _compareParam, hours: _compareHours } })
+    });
+    var json = await resp.json();
+    var d = json.data || {};
+    loading.style.display = 'none';
+    body.style.display = 'block';
+    if (json.cached) document.getElementById('ai-synthesis-cached').classList.remove('hidden');
+    function show(wrapId, valId, text) {
+      if (!text) return;
+      document.getElementById(valId).textContent = text;
+      document.getElementById(wrapId).classList.remove('hidden');
+    }
+    if (d._raw) { document.getElementById('as-raw').textContent = d._raw; document.getElementById('as-raw').classList.remove('hidden'); return; }
+    show('as-summary-wrap','as-summary',d.summary);
+    show('as-key-wrap','as-key',d.key_finding);
+    show('as-outlier-wrap','as-outlier',d.outlier);
+    show('as-profile-wrap','as-profile',d.profile_insight);
+    show('as-rec-wrap','as-rec',d.recommendation);
+  } catch(e) {
+    loading.style.display = 'none';
+    body.style.display = 'block';
+    document.getElementById('as-raw').innerHTML =
+      '<span style="color:#f87171;">⚠ Analysis unavailable.</span> ' +
+      '<button onclick="loadSynthesis()" style="background:rgba(14,165,233,0.1);border:1px solid rgba(14,165,233,0.25);border-radius:5px;cursor:pointer;color:#38bdf8;font-size:11px;padding:2px 10px;margin-left:4px;">↻ Retry</button>';
+    document.getElementById('as-raw').classList.remove('hidden');
+  }
+}
+function reloadSynthesis() { loadSynthesis(); }
+
+// Pre-select site from ?site= dashboard card link
+window.addEventListener('DOMContentLoaded', function() {
+  var urlSite = new URLSearchParams(location.search).get('site');
+  if (!urlSite) return;
+  var chip = document.querySelector('.site-chip[data-id="' + urlSite + '"]');
+  if (chip) toggleSite(chip);
+});
+
+window.addEventListener('hydroProfileUpdated', function() {
+  if (_compareSiteIds.length >= 2) loadSynthesis();
+});
 </script>
 
 <%- include('partials/foot') %>

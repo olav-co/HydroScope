@@ -54,10 +54,46 @@ router.get('/insights', (req, res) => {
   res.render('insights', { ...locals, sites, recentInsights, activePage: 'insights' });
 });
 
+router.get('/weather', (req, res) => {
+  const { ...locals } = baseLocals(req);
+  res.render('weather', { ...locals, activePage: 'weather' });
+});
+
+router.get('/data-explorer', (req, res) => {
+  const measurementSeries = db.getMeasurementSeries();
+  const weatherSeries     = db.getWeatherSeries();
+  const { ...locals } = baseLocals(req);
+  res.render('data-explorer', { ...locals, measurementSeries, weatherSeries, activePage: 'data-explorer' });
+});
+
+router.get('/flow-network', (req, res) => {
+  const sites = db.getAllSites();
+  const connections = db.getSiteConnections(null);
+  const { ...locals } = baseLocals(req);
+  res.render('flow-network', { ...locals, sites, connections, activePage: 'flow-network' });
+});
+
+router.get('/water-quality', (req, res) => {
+  const sites = db.getAllSites();
+  const { ...locals } = baseLocals(req);
+  res.render('water-quality', { ...locals, sites, activePage: 'water-quality' });
+});
+
+router.get('/annotations', (req, res) => {
+  const sites = db.getAllSites();
+  const { ...locals } = baseLocals(req);
+  res.render('annotations', { ...locals, sites, activePage: 'annotations' });
+});
+
 router.get('/profile', (req, res) => {
   const sites = db.getAllSites();
   const { ...locals } = baseLocals(req);
   res.render('profile', { ...locals, sites, activePage: 'profile' });
+});
+
+router.get('/settings', (req, res) => {
+  const { ...locals } = baseLocals(req);
+  res.render('settings', { ...locals, activePage: 'settings' });
 });
 
 module.exports = router;

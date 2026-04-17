@@ -1,0 +1,377 @@
+<%# ── Profile Slideover — included in nav.ejs, available on every page ──────── %>
+<%# The trigger button lives in the nav footer — see nav.ejs %>
+
+<!-- Backdrop -->
+<div id="profile-so-backdrop" onclick="profileSO.close()"
+  style="display:none;position:fixed;inset:0;z-index:1200;background:rgba(0,0,0,0.4);backdrop-filter:blur(1px);"></div>
+
+<!-- Slideover panel -->
+<div id="profile-so-panel"
+  style="position:fixed;top:0;right:0;height:100vh;width:440px;z-index:1201;
+         background:#0a1628;border-left:2px solid #1e293b;
+         transform:translateX(100%);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1);
+         display:flex;flex-direction:column;overflow:hidden;">
+
+  <!-- Header -->
+  <div style="display:flex;align-items:center;justify-content:space-between;
+              padding:16px 20px 14px;border-bottom:1px solid #1e293b;flex-shrink:0;">
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div id="pso-hdr-avatar"
+        style="width:34px;height:34px;border-radius:8px;background:#0369a1;
+               display:flex;align-items:center;justify-content:center;
+               font-size:13px;font-weight:700;color:#fff;">?</div>
+      <div>
+        <div style="font-size:13px;font-weight:700;color:#e2e8f0;" id="pso-hdr-name">User Profile</div>
+        <div style="font-size:10px;color:#475569;" id="pso-hdr-role"></div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="pso-save-status" style="font-size:10px;color:#475569;transition:opacity 0.3s;"></span>
+      <button onclick="profileSO.close()"
+        style="background:none;border:none;cursor:pointer;color:#475569;padding:4px;border-radius:4px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Tab bar -->
+  <div style="display:flex;border-bottom:1px solid #1e293b;flex-shrink:0;padding:0 20px;gap:0;">
+    <% [['role','Role'],['interests','Interests'],['context','AI Context'],['alerts','Alerts']].forEach(function(t){ %>
+    <button class="pso-tab" data-tab="<%= t[0] %>" onclick="profileSO.switchTab('<%= t[0] %>')"
+      style="font-size:11px;font-weight:600;padding:10px 14px;border:none;background:none;cursor:pointer;
+             color:#475569;border-bottom:2px solid transparent;margin-bottom:-1px;
+             letter-spacing:.04em;transition:color 0.15s,border-color 0.15s;white-space:nowrap;">
+      <%= t[1] %>
+    </button>
+    <% }); %>
+  </div>
+
+  <!-- Tab content -->
+  <div id="pso-body" style="flex:1;overflow-y:auto;padding:20px;">
+    <div style="display:flex;align-items:center;gap:8px;color:#475569;font-size:12px;padding:40px 0 0;justify-content:center;">
+      <svg style="width:14px;height:14px;animation:spin 1s linear infinite;" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity=".2"/>
+        <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+      </svg>
+      Loading profile…
+    </div>
+  </div>
+</div>
+
+<style>
+.pso-tab.pso-tab-active { color:#38bdf8 !important; border-bottom-color:#38bdf8 !important; }
+.pso-tab:hover:not(.pso-tab-active) { color:#94a3b8 !important; }
+.pso-field-label {
+  display:block;font-size:10px;font-weight:600;color:#475569;
+  text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px;
+}
+.pso-input {
+  width:100%;background:#0d1f35;border:1px solid #1e293b;border-radius:6px;
+  color:#e2e8f0;font-size:12px;padding:8px 10px;outline:none;
+  font-family:Inter,sans-serif;transition:border-color 0.15s;box-sizing:border-box;
+}
+.pso-input:focus { border-color:#0ea5e9; }
+.pso-input::placeholder { color:#334155; }
+.pso-textarea { resize:vertical;min-height:90px;line-height:1.6; }
+.pso-field { margin-bottom:18px; }
+.pso-role-card {
+  display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;
+  border:1.5px solid #1e293b;cursor:pointer;transition:border-color 0.15s,background 0.15s;
+  margin-bottom:8px;background:#0d1f35;
+}
+.pso-role-card:hover { border-color:#334155; }
+.pso-role-card.pso-role-active { border-color:#0ea5e9;background:rgba(14,165,233,0.07); }
+.pso-role-dot { width:10px;height:10px;border-radius:50%;border:2px solid #334155;flex-shrink:0; }
+.pso-role-active .pso-role-dot { border-color:#0ea5e9;background:#0ea5e9; }
+.pso-chip {
+  display:inline-flex;align-items:center;gap:5px;padding:4px 10px;
+  border-radius:16px;border:1px solid #1e293b;font-size:11px;color:#64748b;
+  cursor:pointer;transition:all 0.12s;background:transparent;user-select:none;
+}
+.pso-chip:hover { border-color:#334155;color:#94a3b8; }
+.pso-chip.pso-chip-active { border-color:#0ea5e9;color:#38bdf8;background:rgba(14,165,233,0.1); }
+.pso-section-title {
+  font-size:9px;font-weight:700;color:#334155;text-transform:uppercase;
+  letter-spacing:.1em;margin-bottom:12px;
+}
+@media(max-width:480px){ #profile-so-panel{ width:100vw; } }
+</style>
+
+<script>
+var profileSO = (function() {
+  var _data       = null;
+  var _meta       = null;  // { roles, interests }
+  var _saveTimer  = null;
+  var _activeTab  = 'role';
+  var SAVE_DELAY  = 900;   // ms — same debounce pattern as flow-network analysis
+
+  // ── open / close ─────────────────────────────────────────────────────────────
+  function open() {
+    document.getElementById('profile-so-backdrop').style.display = 'block';
+    requestAnimationFrame(function() {
+      document.getElementById('profile-so-panel').style.transform = 'translateX(0)';
+    });
+    if (!_data) _load();
+    else _render();
+  }
+
+  function close() {
+    document.getElementById('profile-so-panel').style.transform = 'translateX(100%)';
+    document.getElementById('profile-so-backdrop').style.display = 'none';
+  }
+
+  // ── load from API ─────────────────────────────────────────────────────────────
+  async function _load() {
+    try {
+      var r = await fetch('/api/profile');
+      var j = await r.json();
+      _data = j.profile;
+      _meta = { roles: j.roles, interests: j.interests };
+      _updateButtonPreview();
+      _render();
+    } catch(e) {
+      document.getElementById('pso-body').innerHTML =
+        '<div style="color:#f87171;font-size:12px;padding:20px 0;">Failed to load profile.</div>';
+    }
+  }
+
+  // ── update nav button ─────────────────────────────────────────────────────────
+  function _updateButtonPreview() {
+    if (!_data) return;
+    var initials = (_data.name || '').split(' ').map(function(w){ return w[0]; }).join('').slice(0,2).toUpperCase() || '?';
+    var avatarEls = [document.getElementById('profile-so-avatar'), document.getElementById('pso-hdr-avatar'), document.getElementById('profile-topbtn-initials')];
+    avatarEls.forEach(function(el){ if(el) el.textContent = initials || '?'; });
+    var nameEl = document.getElementById('profile-so-name');
+    var hdrNameEl = document.getElementById('pso-hdr-name');
+    if (nameEl) nameEl.textContent = _data.name || 'Profile';
+    if (hdrNameEl) hdrNameEl.textContent = _data.name || 'User Profile';
+    var roleLbl = (_data.role || '').replace(/_/g,' ');
+    var subLbl  = (_data.sub_role || '').replace(/_/g,' ');
+    var fullLbl = subLbl ? roleLbl + ' · ' + subLbl : roleLbl;
+    var roleEls = [document.getElementById('profile-so-role'), document.getElementById('pso-hdr-role')];
+    roleEls.forEach(function(el){ if(el) el.textContent = fullLbl; });
+  }
+
+  // ── tab switch ────────────────────────────────────────────────────────────────
+  function switchTab(tab) {
+    _activeTab = tab;
+    document.querySelectorAll('.pso-tab').forEach(function(b) {
+      b.classList.toggle('pso-tab-active', b.dataset.tab === tab);
+    });
+    _render();
+  }
+
+  // ── render active tab ─────────────────────────────────────────────────────────
+  function _render() {
+    if (!_data || !_meta) return;
+    var body = document.getElementById('pso-body');
+    // activate correct tab button
+    document.querySelectorAll('.pso-tab').forEach(function(b) {
+      b.classList.toggle('pso-tab-active', b.dataset.tab === _activeTab);
+    });
+    switch(_activeTab) {
+      case 'role':       body.innerHTML = _tabRole();       break;
+      case 'interests':  body.innerHTML = _tabInterests();  break;
+      case 'context':    body.innerHTML = _tabContext();    break;
+      case 'alerts':     body.innerHTML = _tabAlerts();     break;
+    }
+    _bindInputs();
+  }
+
+  // ── tabs ──────────────────────────────────────────────────────────────────────
+
+function _tabRole() {
+    var html = '<div class="pso-section-title">Primary Role</div>';
+    Object.keys(_meta.roles).forEach(function(key) {
+      var r      = _meta.roles[key];
+      var active = (_data.role === key);
+      html += '<div class="pso-role-card'+(active?' pso-role-active':'')+'" onclick="profileSO._selectRole(\''+key+'\')" style="flex-direction:column;align-items:stretch;gap:0;padding:0;">';
+      // Role header row
+      html += '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;">'
+        + '<div class="pso-role-dot"></div>'
+        + '<div style="font-size:12px;font-weight:600;color:#e2e8f0;">'+r.label+'</div>'
+        + '</div>';
+      // Sub-specializations expand inline when this role is active
+      if (active && r.sub_roles && r.sub_roles.length) {
+        html += '<div style="border-top:1px solid rgba(14,165,233,0.15);padding:10px 12px 12px;display:flex;flex-direction:column;gap:6px;" onclick="event.stopPropagation();">';
+        r.sub_roles.forEach(function(sr) {
+          var srActive = (_data.sub_role === sr.id);
+          html += '<div onclick="profileSO._selectSubRole(\''+sr.id+'\')" '
+            + 'style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;cursor:pointer;'
+            + 'background:'+(srActive?'rgba(14,165,233,0.12)':'rgba(255,255,255,0.02)')+';'
+            + 'border:1px solid '+(srActive?'rgba(14,165,233,0.35)':'rgba(255,255,255,0.04)')+';'
+            + 'transition:background 0.12s;">'
+            + '<div style="width:8px;height:8px;border-radius:50%;flex-shrink:0;'
+            + 'background:'+(srActive?'#0ea5e9':'transparent')+';'
+            + 'border:1.5px solid '+(srActive?'#0ea5e9':'#334155')+';">'
+            + '</div>'
+            + '<span style="font-size:11px;color:'+(srActive?'#e2e8f0':'#94a3b8')+';">'+_esc(sr.label)+'</span>'
+            + '</div>';
+        });
+        html += '</div>';
+      }
+      html += '</div>';
+    });
+    return html;
+  }
+
+  function _tabInterests() {
+    var active = Array.isArray(_data.interests) ? _data.interests : [];
+    var html = '<div class="pso-section-title">Select all that apply</div>'
+      + '<div style="display:flex;flex-wrap:wrap;gap:8px;">';
+    _meta.interests.forEach(function(it) {
+      var on = active.includes(it.id);
+      html += '<span class="pso-chip'+(on?' pso-chip-active':'')+'" onclick="profileSO._toggleInterest(\''+it.id+'\')">'
+        + (on ? '✓ ' : '') + _esc(it.label) + '</span>';
+    });
+    html += '</div>';
+    html += '<div style="font-size:11px;color:#334155;margin-top:16px;line-height:1.6;">'
+      + 'Selected interests focus AI analysis on what matters to your work.</div>';
+    return html;
+  }
+
+  function _tabContext() {
+    return '<div class="pso-field"><label class="pso-field-label">Background Context</label>'
+      + '<textarea class="pso-input pso-textarea" id="pso-bio" data-field="bio" placeholder="Describe your work, current projects, or what you\'re monitoring and why. This is sent to the AI to improve analysis quality…">'+_esc(_data.bio||'')+'</textarea></div>'
+      + '<div class="pso-field"><label class="pso-field-label">Preferred Sites</label>'
+      + '<input class="pso-input" id="pso-sites" data-field="preferred_sites_str" value="'
+      + _esc((Array.isArray(_data.preferred_sites)?_data.preferred_sites:[]).join(', '))+'" '
+      + 'placeholder="Site IDs separated by commas, e.g. 14211720, 14142500…"></div>'
+      + '<div style="font-size:11px;color:#334155;margin-top:4px;line-height:1.6;">'
+      + 'The AI uses this context when generating summaries, trend reports, and situation reports.</div>';
+  }
+
+  function _tabAlerts() {
+    var nt = {};
+    try { nt = JSON.parse(_data.notify_thresholds||'{}'); } catch(_) {}
+    return '<div class="pso-section-title">Alert Thresholds</div>'
+      + '<div class="pso-field"><label class="pso-field-label">Discharge alert above (ft³/s)</label>'
+      + '<input class="pso-input" id="pso-alert-q" data-field="alert_discharge" type="number" min="0" value="'+(nt.discharge||'')+'" placeholder="e.g. 50000"></div>'
+      + '<div class="pso-field"><label class="pso-field-label">Gage height alert above (ft)</label>'
+      + '<input class="pso-input" id="pso-alert-h" data-field="alert_stage" type="number" min="0" step="0.1" value="'+(nt.stage||'')+'" placeholder="e.g. 12.5"></div>'
+      + '<div class="pso-field"><label class="pso-field-label">Water temp alert above (°C)</label>'
+      + '<input class="pso-input" id="pso-alert-t" data-field="alert_temp" type="number" min="0" step="0.5" value="'+(nt.temp||'')+'" placeholder="e.g. 20"></div>'
+      + '<div style="font-size:11px;color:#334155;margin-top:4px;line-height:1.6;">'
+      + 'Thresholds inform AI analysis — values exceeding these are flagged as concerns.</div>';
+  }
+
+  // ── interactive helpers ───────────────────────────────────────────────────────
+
+  function _selectRole(key) {
+    if (_data.role !== key) {
+      _data.role     = key;
+      _data.sub_role = '';
+      _scheduleSave();
+    }
+    _render();
+  }
+
+  function _selectSubRole(id) {
+    _data.sub_role = (_data.sub_role === id) ? '' : id; // toggle off if clicked again
+    _scheduleSave();
+    _render();
+  }
+
+  function _toggleInterest(id) {
+    var arr = Array.isArray(_data.interests) ? _data.interests.slice() : [];
+    var idx = arr.indexOf(id);
+    if (idx === -1) arr.push(id); else arr.splice(idx, 1);
+    _data.interests = arr;
+    _scheduleSave();
+    _render();
+  }
+
+  // ── bind inputs ───────────────────────────────────────────────────────────────
+  function _bindInputs() {
+    document.querySelectorAll('#pso-body [data-field]').forEach(function(el) {
+      el.addEventListener('input', function() { _onFieldChange(el); });
+      el.addEventListener('change', function() { _onFieldChange(el); });
+    });
+  }
+
+  function _onFieldChange(el) {
+    var field = el.dataset.field;
+    var val   = el.value;
+    if (field === 'preferred_sites_str') {
+      _data.preferred_sites = val.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+    } else if (field === 'alert_discharge' || field === 'alert_stage' || field === 'alert_temp') {
+      var nt = {};
+      try { nt = JSON.parse(_data.notify_thresholds||'{}'); } catch(_) {}
+      var key = field === 'alert_discharge' ? 'discharge' : field === 'alert_stage' ? 'stage' : 'temp';
+      nt[key] = parseFloat(val) || null;
+      _data.notify_thresholds = JSON.stringify(nt);
+    } else {
+      _data[field] = val;
+    }
+    _updateButtonPreview();
+    _scheduleSave();
+  }
+
+  // ── auto-save with debounce ───────────────────────────────────────────────────
+  function _scheduleSave() {
+    clearTimeout(_saveTimer);
+    _setStatus('saving…');
+    _saveTimer = setTimeout(_save, SAVE_DELAY);
+  }
+
+  async function _save() {
+    try {
+      var payload = {
+        name:              _data.name         || '',
+        organization:      _data.organization || '',
+        role:              _data.role         || 'general',
+        sub_role:          _data.sub_role     || '',
+        interests:         Array.isArray(_data.interests) ? _data.interests : [],
+        preferred_sites:   Array.isArray(_data.preferred_sites) ? _data.preferred_sites : [],
+        bio:               _data.bio          || '',
+        notify_thresholds: _data.notify_thresholds || '{}',
+      };
+      var r = await fetch('/api/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (r.ok) {
+        _setStatus('saved ✓');
+        setTimeout(function(){ _setStatus(''); }, 2000);
+        // Notify any active page analysis to re-run
+        window.dispatchEvent(new CustomEvent('hydroProfileUpdated', { detail: { profile: _data } }));
+      } else {
+        _setStatus('error saving');
+      }
+    } catch(e) {
+      _setStatus('error saving');
+    }
+  }
+
+  function _setStatus(msg) {
+    var el = document.getElementById('pso-save-status');
+    if (el) el.textContent = msg;
+  }
+
+  function _esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── expose ────────────────────────────────────────────────────────────────────
+  return { open: open, close: close, switchTab: switchTab, _selectRole: _selectRole, _selectSubRole: _selectSubRole, _toggleInterest: _toggleInterest };
+})();
+
+// Initialize button preview on page load
+(function() {
+  fetch('/api/profile')
+    .then(function(r){ return r.json(); })
+    .then(function(j) {
+      var p = j.profile || {};
+      var initials = ((p.name||'').split(' ').map(function(w){return w[0];}).join('').slice(0,2)||'?').toUpperCase();
+      ['profile-so-avatar','pso-hdr-avatar','profile-topbtn-initials'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = initials;
+      });
+      var nameEl = document.getElementById('profile-so-name');
+      if (nameEl) nameEl.textContent = p.name || 'Profile';
+      var roleEl = document.getElementById('profile-so-role');
+      if (roleEl) roleEl.textContent = (p.role||'').replace(/_/g,' ');
+    }).catch(function(){});
+})();
+</script>

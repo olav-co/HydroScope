@@ -2,27 +2,25 @@
 <%- include('partials/nav') %>
 
 <main class="flex-1 flex flex-col overflow-hidden">
-  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
     <div>
       <h1 class="text-lg font-semibold text-white">Forecast</h1>
-      <p class="text-xs text-slate-400 mt-0.5">AI-generated near-term outlook based on current trends</p>
+      <p class="text-xs text-slate-400 mt-0.5">AI-generated near-term outlook from current trend data</p>
     </div>
   </header>
 
   <div class="flex-1 overflow-y-auto p-6">
 
     <!-- Controls -->
-    <div class="card mb-6">
+    <div class="card mb-5">
       <div class="flex flex-wrap gap-4 items-end">
-        <div class="flex-1 min-w-48">
-          <label class="label">Select Site</label>
-          <select id="forecastSite" class="input">
-            <% for (const s of sites) { %>
-              <option value="<%= s.site_id %>"><%= s.name %></option>
-            <% } %>
+        <div style="flex:1;min-width:200px;">
+          <label class="label">Site</label>
+          <select id="forecastSite" class="input" onchange="onSiteChange()">
+            <% for (const s of sites) { %><option value="<%= s.site_id %>"><%= s.name %></option><% } %>
           </select>
         </div>
-        <div class="flex-1 min-w-36">
+        <div style="flex:1;min-width:130px;">
           <label class="label">Outlook Window</label>
           <select id="daysAhead" class="input">
             <option value="1">24-Hour</option>
@@ -30,111 +28,317 @@
             <option value="7">7-Day</option>
           </select>
         </div>
-        <button onclick="generateForecast()" class="btn-primary">Generate Forecast</button>
       </div>
     </div>
 
-    <!-- Recent trend chart -->
-    <div class="card mb-6">
-      <h2 class="text-sm font-semibold text-slate-300 mb-4">Recent Discharge Trend (7 days)</h2>
-      <div style="height:220px;"><canvas id="trendChart"></canvas></div>
-    </div>
+    <div class="flex flex-col xl:flex-row gap-5">
 
-    <!-- AI Forecast output -->
-    <div id="forecastCard" class="card hidden">
-      <div class="flex items-center gap-2 mb-4">
-        <div class="w-2 h-2 rounded-full bg-hydro-500 animate-pulse"></div>
-        <h2 id="forecastHeader" class="text-sm font-semibold text-slate-200">Forecast</h2>
-        <span id="forecastCached" class="text-xs text-slate-500 hidden">(cached)</span>
+      <!-- Left column: trend + precip -->
+      <div class="flex flex-col gap-5 flex-1">
+
+      <!-- Trend chart -->
+      <div class="card">
+        <h2 class="text-sm font-semibold text-slate-300 mb-3">7-Day Discharge Trend</h2>
+        <div id="trendEmpty" class="text-xs text-slate-600 py-8 text-center">Select a site to load trend.</div>
+        <div style="height:240px;"><canvas id="trendChart"></canvas></div>
       </div>
-      <div id="forecastBody" class="prose-hydro text-sm text-slate-300 leading-relaxed whitespace-pre-wrap"></div>
-    </div>
 
-    <div id="forecastLoading" class="hidden card text-center py-10">
-      <div class="inline-flex items-center gap-3 text-slate-400">
-        <svg class="animate-spin w-5 h-5 text-hydro-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
-        Generating AI forecast...
+      <!-- Upstream precipitation -->
+      <div class="card">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold text-slate-300">Upstream Precipitation Forecast</h2>
+          <span class="text-xs text-slate-500">Open-Meteo · inches/day</span>
+        </div>
+        <div id="fc-wx-conditions" class="flex flex-wrap gap-3 mb-4">
+          <div class="text-xs text-slate-600 italic">Loading...</div>
+        </div>
+        <div style="height:150px;"><canvas id="fcPrecipChart"></canvas></div>
+        <div class="flex items-center gap-4 mt-2 text-xs text-slate-500">
+          <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#0ea5e9;display:inline-block;"></span>Portland</span>
+          <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#a78bfa;display:inline-block;"></span>Bull Run</span>
+          <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#34d399;display:inline-block;"></span>Mt. Hood</span>
+          <span class="ml-auto text-slate-600">shaded = forecast</span>
+        </div>
       </div>
-    </div>
 
+      </div><!-- end left column -->
+
+      <!-- AI Forecast card -->
+      <div class="card xl:w-80 flex-shrink-0">
+        <div class="flex items-center gap-2 mb-4">
+          <span class="ai-badge">AI</span>
+          <span class="text-xs font-semibold text-slate-300 uppercase tracking-wider">Forecast</span>
+          <span id="forecast-cached" class="ml-1 text-xs text-slate-600 hidden">cached</span>
+          <button onclick="loadForecast()" class="ml-auto text-xs text-slate-500 hover:text-hydro-400" style="background:none;border:none;cursor:pointer;">↻</button>
+        </div>
+
+        <div id="forecast-loading" class="flex items-center gap-2 text-xs text-slate-500 py-6 justify-center hidden">
+          <svg class="animate-spin" style="width:14px;height:14px;color:#0ea5e9;" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+          Generating outlook...
+        </div>
+
+        <div id="forecast-empty" class="text-xs text-slate-600 text-center py-6">
+          Select a site — forecast loads automatically.
+        </div>
+
+        <div id="forecast-body" style="display:none;">
+
+          <!-- Outlook header -->
+          <div id="fc-outlook-row" class="flex items-center gap-3 mb-5 p-3 rounded-lg" style="background:rgba(14,165,233,0.08);border:1px solid rgba(14,165,233,0.15);">
+            <span id="fc-outlook-icon" style="font-size:28px;"></span>
+            <div>
+              <div id="fc-outlook-label" class="text-base font-semibold text-white"></div>
+              <div id="fc-confidence-row" class="flex items-center gap-1.5 mt-1">
+                <span class="text-xs text-slate-400">Confidence:</span>
+                <span id="fc-confidence" class="text-xs font-medium"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Timeline -->
+          <div class="space-y-3 mb-4">
+            <div id="fc-near-wrap" class="hidden">
+              <div class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Next 24–48 Hours</div>
+              <div id="fc-near" class="text-sm text-slate-200 leading-relaxed"></div>
+            </div>
+            <div id="fc-ext-wrap" class="hidden">
+              <div class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Extended Outlook</div>
+              <div id="fc-ext" class="text-sm text-slate-300 leading-relaxed"></div>
+            </div>
+          </div>
+
+          <!-- Watch for -->
+          <div id="fc-watch-wrap" class="hidden mb-4 rounded-lg px-3 py-2" style="background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);">
+            <div class="text-xs font-medium text-amber-400 uppercase tracking-wider mb-1">⚠ Watch For</div>
+            <div id="fc-watch" class="text-sm leading-relaxed" style="color:#fbbf24;"></div>
+          </div>
+
+          <!-- Profile note -->
+          <div id="fc-profile-wrap" class="hidden rounded-lg px-3 py-2" style="background:rgba(14,165,233,0.07);border:1px solid rgba(14,165,233,0.15);">
+            <div class="text-xs font-medium mb-1" style="color:#38bdf8;">For Your Role</div>
+            <div id="fc-profile" class="text-xs leading-relaxed" style="color:#94a3b8;"></div>
+          </div>
+
+          <!-- Confidence reason -->
+          <div id="fc-conf-reason-wrap" class="mt-3 hidden">
+            <div class="text-xs text-slate-500 leading-relaxed" id="fc-conf-reason"></div>
+          </div>
+
+          <div id="fc-raw" class="text-sm text-slate-300 leading-relaxed hidden"></div>
+        </div>
+      </div>
+
+    </div>
   </div>
 </main>
 
 <script>
-let trendChart = null;
-const sites = <%- JSON.stringify(sites) %>;
+var trendChart = null;
+var fcPrecipChart = null;
+var _forecastSiteId = null;
+var _forecastSiteName = '';
 
-async function loadTrend(siteId) {
-  const resp = await fetch(`/api/data/timeseries?site=${siteId}&param=00060&hours=168`);
-  const json = await resp.json();
-  const rows = json.data || [];
+var OUTLOOK_ICONS   = { rising: '↑', falling: '↓', stable: '→', variable: '⇅' };
+var OUTLOOK_COLORS  = { rising: '#fb923c', falling: '#38bdf8', stable: '#34d399', variable: '#a78bfa' };
+var CONFIDENCE_STYLES = {
+  high:     { color: '#34d399', label: 'High' },
+  moderate: { color: '#fbbf24', label: 'Moderate' },
+  low:      { color: '#f87171', label: 'Low' }
+};
+
+function onSiteChange() {
+  var sel = document.getElementById('forecastSite');
+  _forecastSiteId   = sel.value;
+  _forecastSiteName = sel.selectedOptions[0].textContent;
+  loadTrend();
+  loadForecast();
+}
+
+async function loadTrend() {
+  if (!_forecastSiteId) return;
+  var resp = await fetch('/api/data/timeseries?site=' + _forecastSiteId + '&param=00060&hours=168');
+  var json = await resp.json();
+  var rows = json.data || [];
+  document.getElementById('trendEmpty').style.display = rows.length ? 'none' : 'block';
   if (!rows.length) return;
 
-  const labels = rows.map(r => new Date(r.recorded_at + 'Z').toLocaleDateString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }));
-  const values = rows.map(r => r.value);
+  var labels = rows.map(function(r) { return new Date(r.recorded_at + 'Z').toLocaleDateString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }); });
+  var values = rows.map(function(r) { return r.value; });
 
   if (trendChart) trendChart.destroy();
   trendChart = new Chart(document.getElementById('trendChart'), {
     type: 'line',
     data: {
-      labels,
-      datasets: [{
-        label: 'Discharge (ft³/s)',
-        data: values,
-        borderColor: '#0ea5e9',
-        backgroundColor: 'rgba(14,165,233,0.06)',
-        fill: true, tension: 0.3,
-        pointRadius: 0, borderWidth: 2,
-      }]
+      labels: labels,
+      datasets: [{ label: 'Discharge (ft³/s)', data: values, borderColor: '#0ea5e9', backgroundColor: 'rgba(14,165,233,0.06)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { color: '#64748b', maxTicksLimit: 8 }, grid: { color: '#1e293b' } },
+        x: { ticks: { color: '#64748b', maxTicksLimit: 7 }, grid: { color: '#1e293b' } },
         y: { ticks: { color: '#64748b' }, grid: { color: '#1e293b' } }
       }
     }
   });
 }
 
-async function generateForecast() {
-  const siteId    = document.getElementById('forecastSite').value;
-  const daysAhead = document.getElementById('daysAhead').value;
-  const siteName  = document.getElementById('forecastSite').selectedOptions[0].text;
+async function loadForecast() {
+  if (!_forecastSiteId) return;
+  var daysAhead = parseInt(document.getElementById('daysAhead').value);
 
-  document.getElementById('forecastCard').classList.add('hidden');
-  document.getElementById('forecastLoading').classList.remove('hidden');
-
-  await loadTrend(siteId);
+  document.getElementById('forecast-empty').style.display = 'none';
+  document.getElementById('forecast-body').style.display = 'none';
+  document.getElementById('forecast-loading').classList.remove('hidden');
+  document.getElementById('forecast-cached').classList.add('hidden');
 
   try {
-    const resp = await fetch('/api/insights/forecast', {
+    var resp = await fetch('/api/insights/enrich', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ site_id: siteId, days_ahead: parseInt(daysAhead) })
+      body: JSON.stringify({
+        page: 'forecast',
+        context: { site_id: _forecastSiteId, site_name: _forecastSiteName, days_ahead: daysAhead }
+      })
     });
-    const json = await resp.json();
+    var json = await resp.json();
+    var d = json.data || {};
 
-    document.getElementById('forecastLoading').classList.add('hidden');
-    document.getElementById('forecastCard').classList.remove('hidden');
-    document.getElementById('forecastHeader').textContent = `${siteName} — ${daysAhead}-Day Forecast`;
-    document.getElementById('forecastBody').textContent = json.response || json.error || 'No response.';
-    if (json.cached) document.getElementById('forecastCached').classList.remove('hidden');
-    else document.getElementById('forecastCached').classList.add('hidden');
-  } catch (err) {
-    document.getElementById('forecastLoading').classList.add('hidden');
-    document.getElementById('forecastCard').classList.remove('hidden');
-    document.getElementById('forecastBody').textContent = 'Error: ' + err.message;
+    document.getElementById('forecast-loading').classList.add('hidden');
+    document.getElementById('forecast-body').style.display = 'block';
+    if (json.cached) document.getElementById('forecast-cached').classList.remove('hidden');
+
+    if (d._raw) {
+      document.getElementById('fc-raw').textContent = d._raw;
+      document.getElementById('fc-raw').classList.remove('hidden');
+      return;
+    }
+
+    // Outlook header
+    if (d.outlook) {
+      var icon = OUTLOOK_ICONS[d.outlook] || '→';
+      var color = OUTLOOK_COLORS[d.outlook] || '#94a3b8';
+      document.getElementById('fc-outlook-icon').textContent = icon;
+      document.getElementById('fc-outlook-icon').style.color = color;
+      document.getElementById('fc-outlook-label').textContent = d.outlook_label || d.outlook;
+      document.getElementById('fc-outlook-label').style.color = color;
+      document.getElementById('fc-outlook-row').style.borderColor = color + '30';
+    }
+
+    // Confidence
+    if (d.confidence) {
+      var cs = CONFIDENCE_STYLES[d.confidence] || { color: '#94a3b8', label: d.confidence };
+      document.getElementById('fc-confidence').textContent = cs.label;
+      document.getElementById('fc-confidence').style.color = cs.color;
+    }
+
+    function show(wrapId, valId, text) {
+      if (!text) return;
+      document.getElementById(valId).textContent = text;
+      document.getElementById(wrapId).classList.remove('hidden');
+    }
+
+    show('fc-near-wrap', 'fc-near', d.near_term);
+    show('fc-ext-wrap', 'fc-ext', d.extended);
+    show('fc-watch-wrap', 'fc-watch', d.watch_for);
+    show('fc-profile-wrap', 'fc-profile', d.profile_note);
+    show('fc-conf-reason-wrap', 'fc-conf-reason', d.confidence_reason);
+
+  } catch(e) {
+    document.getElementById('forecast-loading').classList.add('hidden');
+    document.getElementById('forecast-body').style.display = 'block';
+    document.getElementById('fc-raw').innerHTML =
+      '<span style="color:#f87171;">⚠ Forecast unavailable.</span> ' +
+      '<button onclick="loadForecast()" style="background:rgba(14,165,233,0.1);border:1px solid rgba(14,165,233,0.25);border-radius:5px;cursor:pointer;color:#38bdf8;font-size:11px;padding:2px 10px;margin-left:4px;">↻ Retry</button>';
+    document.getElementById('fc-raw').classList.remove('hidden');
   }
 }
 
-// Load trend for default site on page load
-window.addEventListener('DOMContentLoaded', () => {
-  const defaultSite = document.getElementById('forecastSite').value;
-  if (defaultSite) loadTrend(defaultSite);
-  document.getElementById('forecastSite').addEventListener('change', e => loadTrend(e.target.value));
+async function loadPrecip() {
+  try {
+    var resp = await fetch('/api/data/weather');
+    var json = await resp.json();
+    var rows = json.data || [];
+    if (!rows.length) {
+      document.getElementById('fc-wx-conditions').innerHTML = '<div class="text-xs text-slate-600">No weather data yet.</div>';
+      return;
+    }
+
+    // Past 24h totals strip
+    var locs = ['portland','bull_run','mt_hood'];
+    var locNames = { portland:'Portland', bull_run:'Bull Run', mt_hood:'Mt. Hood' };
+    var cutoff24 = new Date(Date.now() - 24*3600*1000).toISOString().replace('T',' ').slice(0,19);
+    var recentRows = rows.filter(function(r) { return !r.is_forecast && r.parameter === 'precipitation' && r.interval === 'hourly'; });
+    var conditions = '';
+    locs.forEach(function(locId) {
+      var locPrecip = recentRows.filter(function(r) { return r.location_id === locId && r.recorded_at >= cutoff24; });
+      var total = locPrecip.reduce(function(s,r){ return s + r.value; }, 0);
+      var color = total > 0.5 ? '#38bdf8' : total > 0 ? '#94a3b8' : '#475569';
+      conditions += '<div class="flex flex-col gap-0.5 px-3 py-2 rounded-lg" style="background:rgba(30,41,59,0.5);">' +
+        '<span class="text-xs text-slate-400">' + locNames[locId] + ' (24h)</span>' +
+        '<span class="text-sm font-semibold" style="color:' + color + ';">' + total.toFixed(2) + '"</span>' +
+      '</div>';
+    });
+    document.getElementById('fc-wx-conditions').innerHTML = conditions;
+
+    // 7-day daily forecast chart
+    var dailyForecast = rows.filter(function(r) { return r.parameter === 'precip_daily' && r.interval === 'daily'; });
+    var today = new Date().toISOString().slice(0,10);
+    var forecastDays = [];
+    for (var i = 0; i < 7; i++) {
+      forecastDays.push(new Date(Date.now() + i * 86400000).toISOString().slice(0,10));
+    }
+    var locColors = { portland:'#0ea5e9', bull_run:'#a78bfa', mt_hood:'#34d399' };
+    var datasets = locs.map(function(locId) {
+      return {
+        label: locNames[locId],
+        data: forecastDays.map(function(day) {
+          var match = dailyForecast.find(function(r) { return r.location_id === locId && r.recorded_at.slice(0,10) === day; });
+          return match ? match.value : 0;
+        }),
+        backgroundColor: forecastDays.map(function(day) {
+          return (day >= today) ? locColors[locId] + 'aa' : locColors[locId] + '44';
+        }),
+        borderColor: locColors[locId],
+        borderWidth: 1,
+        borderRadius: 3,
+      };
+    });
+    var labels = forecastDays.map(function(d) {
+      return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month:'short', day:'numeric' });
+    });
+
+    if (fcPrecipChart) fcPrecipChart.destroy();
+    fcPrecipChart = new Chart(document.getElementById('fcPrecipChart'), {
+      type: 'bar',
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#475569', font: { size: 11 } }, grid: { display: false } },
+          y: { ticks: { color: '#475569', font: { size: 11 } }, grid: { color: '#1e293b' } }
+        }
+      }
+    });
+  } catch(e) {
+    console.warn('Forecast precip load error:', e.message);
+  }
+}
+
+// Auto-load on page open — honour ?site= from dashboard card
+window.addEventListener('DOMContentLoaded', function() {
+  var sel = document.getElementById('forecastSite');
+  var urlSite = new URLSearchParams(location.search).get('site');
+  if (urlSite) sel.value = urlSite;
+  _forecastSiteId   = sel.value;
+  _forecastSiteName = sel.selectedOptions[0].textContent;
+  loadTrend();
+  loadForecast();
+  loadPrecip();
 });
+
+window.addEventListener('hydroProfileUpdated', function() { loadForecast(); });
 </script>
 
 <%- include('partials/foot') %>

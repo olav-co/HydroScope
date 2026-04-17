@@ -1,143 +1,313 @@
-<%- include('partials/head', { title: 'AI Insights' }) %>
+<%- include('partials/head', { title: 'AI Chat' }) %>
 <%- include('partials/nav') %>
 
+<style>
+.msg-user {
+  align-self: flex-end;
+  max-width: 72%;
+  background: rgba(3,105,161,0.25);
+  border: 1px solid rgba(14,165,233,0.2);
+  border-radius: 14px 14px 3px 14px;
+  padding: 10px 14px;
+  color: #e2e8f0;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg-ai {
+  align-self: flex-start;
+  max-width: 80%;
+  background: rgba(30,41,59,0.7);
+  border: 1px solid #1e293b;
+  border-radius: 14px 14px 14px 3px;
+  padding: 10px 14px;
+  color: #cbd5e1;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg-ai .data-tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(14,165,233,0.1);
+  color: #38bdf8;
+  border: 1px solid rgba(14,165,233,0.2);
+  margin-bottom: 6px;
+}
+.msg-blocked {
+  align-self: flex-start;
+  max-width: 80%;
+  background: rgba(248,113,113,0.06);
+  border: 1px solid rgba(248,113,113,0.2);
+  border-radius: 14px 14px 14px 3px;
+  padding: 8px 14px;
+  color: #f87171;
+  font-size: 12px;
+}
+.msg-blocked .blocked-tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(248,113,113,0.12);
+  color: #f87171;
+  border: 1px solid rgba(248,113,113,0.25);
+  margin-right: 6px;
+  font-weight: 600;
+  letter-spacing: .03em;
+}
+body.light .msg-blocked { background: rgba(248,113,113,0.04); color: #dc2626; }
+.msg-time {
+  font-size: 10px;
+  color: #475569;
+  margin-top: 3px;
+  padding: 0 4px;
+}
+.msg-user + .msg-time { text-align: right; }
+.typing-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #38bdf8; display: inline-block;
+  animation: blink 1.2s infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: .2s; }
+.typing-dot:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%,80%,100%{opacity:.2} 40%{opacity:1} }
+body.light .msg-user { background: rgba(14,165,233,0.12); border-color: rgba(14,165,233,0.3); color: #0f172a; }
+body.light .msg-ai   { background: #f8fafc; border-color: #e2e8f0; color: #334155; }
+</style>
+
 <main class="flex-1 flex flex-col overflow-hidden">
-  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
     <div>
-      <h1 class="text-lg font-semibold text-white">AI Insights</h1>
+      <h1 class="text-lg font-semibold text-white">AI Chat</h1>
       <p class="text-xs text-slate-400 mt-0.5">
-        Ask questions — responses are tailored to your
-        <a href="/profile" class="text-hydro-400 hover:underline"><%= profile?.role?.replace('_',' ') || 'general' %> profile</a>
+        <a href="/profile" class="text-hydro-400 hover:underline capitalize"><%= profile?.role?.replace('_',' ') || 'general' %> profile</a>
+        · asks about current data are detected automatically
       </p>
     </div>
+    <button onclick="clearThread()" class="btn-secondary text-xs py-1 px-3">Clear thread</button>
   </header>
 
-  <div class="flex-1 overflow-hidden flex gap-6 p-6">
+  <div class="flex-1 flex gap-0 overflow-hidden">
 
-    <!-- Ask panel -->
-    <div class="flex-1 flex flex-col gap-4 min-w-0">
+    <!-- Chat column -->
+    <div class="flex-1 flex flex-col overflow-hidden">
 
-      <!-- Query form -->
-      <div class="card">
-        <label class="label mb-2">Your Question or Analysis Request</label>
-        <textarea id="queryInput" rows="3" class="input resize-none mb-3"
-          placeholder="e.g. 'Is it safe to kayak the Willamette this weekend?' or 'Summarize any flow anomalies across all sites.'"></textarea>
-        <div class="flex flex-wrap items-center gap-3">
-          <div class="flex-1 min-w-48">
-            <label class="label text-xs">Scope to specific sites (optional)</label>
-            <select id="insightSites" class="input text-xs" multiple size="3">
-              <option value="" selected>(All sites)</option>
-              <% for (const s of sites) { %>
-                <option value="<%= s.site_id %>"><%= s.name %></option>
-              <% } %>
-            </select>
-          </div>
-          <div class="flex flex-col gap-2">
-            <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
-              <input type="checkbox" id="bypassCache" class="accent-hydro-500"> Skip cache (fresh response)
-            </label>
-            <button onclick="askInsight()" class="btn-primary">Ask Gemini</button>
-          </div>
+      <!-- Message thread -->
+      <div id="thread" class="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-2">
+        <!-- Welcome -->
+        <div class="msg-ai" id="welcomeMsg">
+          Hey — ask me anything about the Portland watershed monitoring data, or just chat. I'll pull in live readings when you mention flows, sites, or conditions.
         </div>
       </div>
 
-      <!-- Response -->
-      <div id="responseCard" class="card hidden flex-1">
-        <div class="flex items-center gap-2 mb-3">
-          <div class="w-6 h-6 rounded bg-hydro-700 flex items-center justify-center text-xs font-bold text-white">AI</div>
-          <span class="text-xs text-slate-400" id="responseMetaLine"></span>
+      <!-- Typing indicator (hidden) -->
+      <div id="typingRow" class="px-6 pb-2" style="display:none;">
+        <div class="msg-ai" style="padding:10px 14px;display:inline-flex;align-items:center;gap:4px;">
+          <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
         </div>
-        <div id="responseBody" class="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap max-h-96 overflow-y-auto pr-1"></div>
       </div>
 
-      <div id="responseLoading" class="hidden card flex items-center gap-3 text-slate-400 py-8 justify-center">
-        <svg class="animate-spin w-5 h-5 text-hydro-500" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-        </svg>
-        Generating insight with Gemini...
-      </div>
+      <!-- Input bar -->
+      <div class="px-6 pb-5 pt-2">
+        <!-- Quick prompts -->
+        <div class="flex flex-wrap gap-1.5 mb-3" id="quickPrompts">
+          <button class="text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-400 hover:border-hydro-600 hover:text-hydro-300 transition-colors" onclick="send('What are current flow conditions across all sites?')">Current flows</button>
+          <button class="text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-400 hover:border-hydro-600 hover:text-hydro-300 transition-colors" onclick="send('Any anomalies or unusual readings right now?')">Anomalies</button>
+          <button class="text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-400 hover:border-hydro-600 hover:text-hydro-300 transition-colors" onclick="send('Is it safe to kayak the Willamette this weekend?')">Kayak safety</button>
+          <button class="text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-400 hover:border-hydro-600 hover:text-hydro-300 transition-colors" onclick="send('What\\'s the upstream precipitation looking like?')">Upstream precip</button>
+          <button class="text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-400 hover:border-hydro-600 hover:text-hydro-300 transition-colors" onclick="send('Any compliance or threshold concerns?')">Compliance</button>
+        </div>
 
-      <!-- Quick prompts -->
-      <div class="card">
-        <div class="text-xs text-slate-400 mb-3 font-medium">Quick Prompts</div>
-        <div class="flex flex-wrap gap-2">
-          <button class="quick-prompt" onclick="setPrompt('Give me a summary of current conditions across all monitored sites.')">Current conditions summary</button>
-          <button class="quick-prompt" onclick="setPrompt('Are there any unusual readings or anomalies in the recent data?')">Anomaly check</button>
-          <button class="quick-prompt" onclick="setPrompt('What are the water quality indicators telling us right now?')">Water quality</button>
-          <button class="quick-prompt" onclick="setPrompt('Compare the current flows to what is typical for this time of year.')">Seasonal context</button>
-          <button class="quick-prompt" onclick="setPrompt('What should I know before visiting the Willamette River this week?')">Visitor advisory</button>
-          <button class="quick-prompt" onclick="setPrompt('Identify any compliance or threshold concerns in the current data.')">Compliance check</button>
+        <div class="flex gap-2 items-end">
+          <textarea id="chatInput" rows="2"
+            class="input flex-1 resize-none"
+            style="border-radius:12px;padding:10px 14px;font-size:13px;"
+            placeholder="Ask anything... (Enter to send, Shift+Enter for new line)"></textarea>
+          <button onclick="sendFromInput()" id="sendBtn"
+            class="btn-primary flex-shrink-0 h-10 px-4 rounded-xl">Send</button>
         </div>
       </div>
     </div>
 
-    <!-- Recent insights sidebar -->
-    <div class="w-72 flex-shrink-0 flex flex-col gap-3">
-      <div class="text-xs font-medium text-slate-400 uppercase tracking-widest px-1">Recent Insights</div>
-      <% if (recentInsights.length === 0) { %>
-        <div class="card text-xs text-slate-600 text-center py-6">No insights yet. Ask your first question.</div>
-      <% } %>
-      <% for (const ins of recentInsights) { %>
-      <div class="card cursor-pointer hover:border-hydro-700 transition-colors" onclick="showSavedInsight(<%- JSON.stringify(ins.prompt.replace(/'/g,'\\\'')) %>, <%- JSON.stringify(ins.response.replace(/'/g,'\\\'')) %>, '<%- ins.profile_role %>')">
-        <div class="text-xs text-hydro-400 mb-1 capitalize"><%= ins.profile_role?.replace('_',' ') || 'general' %></div>
-        <div class="text-xs text-slate-300 line-clamp-2"><%= ins.prompt %></div>
-        <div class="text-xs text-slate-600 mt-1"><%= new Date(ins.created_at).toLocaleDateString() %></div>
+    <!-- Recent sidebar -->
+    <div class="w-64 flex-shrink-0 border-l border-slate-800 flex flex-col overflow-hidden" style="background:rgba(15,23,42,0.4);">
+      <div class="px-4 py-3 border-b border-slate-800">
+        <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Recent</div>
       </div>
-      <% } %>
+      <div class="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2">
+        <% if (!recentInsights.length) { %>
+          <div class="text-xs text-slate-600 text-center py-6">No history yet.</div>
+        <% } %>
+        <% for (const ins of recentInsights) { %>
+        <div class="rounded-lg p-2.5 cursor-pointer border border-transparent hover:border-slate-700 transition-colors"
+          style="background:rgba(30,41,59,0.5);"
+          onclick="replaySaved(<%- JSON.stringify(ins.prompt) %>, <%- JSON.stringify(ins.response) %>)">
+          <div class="text-xs text-slate-300 line-clamp-2 mb-1"><%= ins.prompt %></div>
+          <div class="text-xs text-slate-600"><%= new Date(ins.created_at).toLocaleDateString() %> · <%= ins.profile_role || 'general' %></div>
+        </div>
+        <% } %>
+      </div>
     </div>
 
   </div>
 </main>
 
 <script>
-async function askInsight() {
-  const query = document.getElementById('queryInput').value.trim();
-  if (!query) return;
+var history = []; // [{role:'user'|'model', text:'...'}]
 
-  const siteSelect = document.getElementById('insightSites');
-  const selectedSites = Array.from(siteSelect.selectedOptions)
-    .map(o => o.value).filter(v => v !== '');
-  const bypassCache = document.getElementById('bypassCache').checked;
+function now() {
+  return new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+}
 
-  document.getElementById('responseCard').classList.add('hidden');
-  document.getElementById('responseLoading').classList.remove('hidden');
+function appendMsg(role, text, dataIncluded) {
+  var thread = document.getElementById('thread');
+
+  var div = document.createElement('div');
+  div.className = role === 'user' ? 'msg-user' : 'msg-ai';
+
+  if (role === 'model' && dataIncluded) {
+    div.innerHTML = '<span class="data-tag">live data</span>\n' + escHtml(text);
+  } else {
+    div.textContent = text;
+  }
+  thread.appendChild(div);
+
+  var time = document.createElement('div');
+  time.className = 'msg-time';
+  time.textContent = now();
+  if (role === 'user') time.style.textAlign = 'right';
+  thread.appendChild(time);
+
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function appendBlocked() {
+  var thread = document.getElementById('thread');
+  var div = document.createElement('div');
+  div.className = 'msg-blocked';
+  div.innerHTML = '<span class="blocked-tag">BLOCKED</span>That\'s outside what I can help with here. I\'m scoped to hydrology, water monitoring, and the Portland watershed.';
+  thread.appendChild(div);
+
+  var time = document.createElement('div');
+  time.className = 'msg-time';
+  time.textContent = now();
+  thread.appendChild(time);
+
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function appendError() {
+  var thread = document.getElementById('thread');
+  var div = document.createElement('div');
+  div.className = 'msg-ai';
+  div.style.color = '#94a3b8';
+  div.textContent = 'Something went wrong. Please try again.';
+  thread.appendChild(div);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function setTyping(on) {
+  document.getElementById('typingRow').style.display = on ? 'block' : 'none';
+  document.getElementById('thread').scrollTop = document.getElementById('thread').scrollHeight;
+}
+
+async function send(text) {
+  text = text.trim();
+  if (!text) return;
+
+  // Hide welcome message after first send
+  var welcome = document.getElementById('welcomeMsg');
+  if (welcome) { welcome.remove(); }
+
+  appendMsg('user', text);
+  history.push({ role: 'user', text: text });
+
+  document.getElementById('chatInput').value = '';
+  document.getElementById('sendBtn').disabled = true;
+  setTyping(true);
 
   try {
-    const resp = await fetch('/api/insights/ask', {
+    var resp = await fetch('/api/insights/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, site_ids: selectedSites, bypass_cache: bypassCache })
+      body: JSON.stringify({ history: history.slice(0, -1), query: text })
     });
-    const json = await resp.json();
+    var json = await resp.json();
+    setTyping(false);
 
-    document.getElementById('responseLoading').classList.add('hidden');
-    document.getElementById('responseCard').classList.remove('hidden');
-    document.getElementById('responseBody').textContent = json.response || json.error || 'No response.';
-    document.getElementById('responseMetaLine').textContent =
-      (json.cached ? 'Cached response' : 'Fresh response') +
-      (selectedSites.length ? ` · ${selectedSites.length} site(s) scoped` : ' · All sites');
-  } catch (err) {
-    document.getElementById('responseLoading').classList.add('hidden');
-    document.getElementById('responseCard').classList.remove('hidden');
-    document.getElementById('responseBody').textContent = 'Error: ' + err.message;
+    if (json.blocked) {
+      // Remove the user message from history — blocked turns don't count
+      history.pop();
+      appendBlocked();
+    } else if (!json.ok || json.error) {
+      history.pop();
+      appendError();
+    } else {
+      appendMsg('model', json.response, json.dataIncluded);
+      history.push({ role: 'model', text: json.response });
+    }
+  } catch (e) {
+    setTyping(false);
+    history.pop();
+    appendError();
   }
+
+  document.getElementById('sendBtn').disabled = false;
+  document.getElementById('chatInput').focus();
 }
 
-function setPrompt(text) {
-  document.getElementById('queryInput').value = text;
-  document.getElementById('queryInput').focus();
+function sendFromInput() {
+  send(document.getElementById('chatInput').value);
 }
 
-function showSavedInsight(prompt, response, role) {
-  document.getElementById('queryInput').value = prompt;
-  document.getElementById('responseBody').textContent = response;
-  document.getElementById('responseMetaLine').textContent = `Saved · ${role || 'general'} profile`;
-  document.getElementById('responseCard').classList.remove('hidden');
+function clearThread() {
+  history = [];
+  var thread = document.getElementById('thread');
+  thread.innerHTML = '';
+  var welcome = document.createElement('div');
+  welcome.id = 'welcomeMsg';
+  welcome.className = 'msg-ai';
+  welcome.textContent = 'Thread cleared. Ask me anything.';
+  thread.appendChild(welcome);
 }
 
-document.getElementById('queryInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) askInsight();
+function replaySaved(prompt, response) {
+  var thread = document.getElementById('thread');
+  var welcome = document.getElementById('welcomeMsg');
+  if (welcome) welcome.remove();
+
+  history = [
+    { role: 'user',  text: prompt },
+    { role: 'model', text: response },
+  ];
+  thread.innerHTML = '';
+  appendMsg('user',  prompt,   false);
+  appendMsg('model', response, false);
+}
+
+document.getElementById('chatInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendFromInput();
+  }
+});
+
+window.addEventListener('hydroProfileUpdated', function() {
+  var thread = document.getElementById('thread');
+  var notice = document.createElement('div');
+  notice.style.cssText = 'text-align:center;font-size:11px;color:#475569;padding:6px 0;font-style:italic;';
+  notice.textContent = 'Profile updated — AI context refreshed for next message';
+  thread.appendChild(notice);
+  thread.scrollTop = thread.scrollHeight;
 });
 </script>
 

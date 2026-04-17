@@ -1,70 +1,192 @@
 <%- include('partials/head', { title: 'Data Visualization' }) %>
 <%- include('partials/nav') %>
 
+<%
+// Profile-aware recommended parameters — shown first in selector
+var ROLE_RECOMMENDED = {
+  general:        ['00060', '00065'],
+  data_scientist: ['00060', '00065', '00010', '00300', '00400'],
+  vacationer:     ['00060', '00010', '00300'],
+  eco_historian:  ['00010', '00300', '00400'],
+  analyst:        ['00060', '00065'],
+  operator:       ['00060', '00065'],
+  regulator:      ['00300', '00400', '00010'],
+};
+var recommended = ROLE_RECOMMENDED[profile && profile.role] || ROLE_RECOMMENDED.general;
+
+var ALL_PARAMS = [
+  { code: '00060', label: 'Discharge',           unit: 'ft³/s', group: 'flow' },
+  { code: '00065', label: 'Gage Height',         unit: 'ft',    group: 'flow' },
+  { code: '00010', label: 'Water Temperature',   unit: '°C',    group: 'quality' },
+  { code: '00300', label: 'Dissolved Oxygen',    unit: 'mg/L',  group: 'quality' },
+  { code: '00400', label: 'pH',                  unit: '',      group: 'quality' },
+];
+var recParams    = ALL_PARAMS.filter(function(p) { return recommended.indexOf(p.code) >= 0; });
+var otherFlow    = ALL_PARAMS.filter(function(p) { return p.group === 'flow'    && recommended.indexOf(p.code) < 0; });
+var otherQuality = ALL_PARAMS.filter(function(p) { return p.group === 'quality' && recommended.indexOf(p.code) < 0; });
+%>
+
+<style>
+/* Threshold panel */
+.threshold-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; border-bottom: 1px solid #1e293b; font-size: 12px;
+}
+.threshold-row:last-child { border-bottom: none; }
+.t-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.t-label { flex: 1; color: #cbd5e1; }
+.t-value { font-family: 'JetBrains Mono', monospace; color: #94a3b8; font-size: 11px; flex-shrink: 0; }
+.t-info {
+  width: 16px; height: 16px; border-radius: 50%; border: 1px solid #334155;
+  font-size: 10px; color: #64748b; display: flex; align-items: center; justify-content: center;
+  cursor: help; flex-shrink: 0; position: relative;
+}
+.t-info:hover .t-tooltip {
+  display: block;
+}
+.t-tooltip {
+  display: none;
+  position: absolute; right: 0; bottom: 20px; width: 220px; z-index: 50;
+  background: #1e293b; border: 1px solid #334155; border-radius: 8px;
+  padding: 8px 10px; font-size: 11px; color: #94a3b8; line-height: 1.5;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  pointer-events: none;
+}
+.t-type-badge {
+  font-size: 10px; padding: 1px 5px; border-radius: 4px; flex-shrink: 0;
+}
+body.light .threshold-row { border-color: #e2e8f0; }
+body.light .t-label { color: #334155; }
+body.light .t-value { color: #64748b; }
+body.light .t-info { border-color: #cbd5e1; color: #94a3b8; }
+body.light .t-tooltip { background: #fff; border-color: #e2e8f0; color: #475569; }
+</style>
+
 <main class="flex-1 flex flex-col overflow-hidden">
-  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
     <div>
       <h1 class="text-lg font-semibold text-white">Data Visualization</h1>
-      <p class="text-xs text-slate-400 mt-0.5">Time-series charts for individual monitoring sites</p>
+      <p class="text-xs text-slate-400 mt-0.5">Time-series with AI interpretation and dynamic thresholds</p>
     </div>
   </header>
 
   <div class="flex-1 overflow-y-auto p-6">
 
     <!-- Controls -->
-    <div class="card mb-6">
+    <div class="card mb-5">
       <div class="flex flex-wrap gap-4 items-end">
-        <div class="flex-1 min-w-48">
-          <label class="label">Monitoring Site</label>
+        <div style="flex:1;min-width:180px;">
+          <label class="label">Site</label>
           <select id="siteSelect" class="input">
-            <% for (const s of sites) { %>
-              <option value="<%= s.site_id %>"><%= s.name %></option>
+            <% for (var i = 0; i < sites.length; i++) { var s = sites[i]; %>
+              <option value="<%= s.site_id %>" data-name="<%= s.name %>"><%= s.name %></option>
             <% } %>
           </select>
         </div>
-        <div class="flex-1 min-w-40">
-          <label class="label">Parameter</label>
+
+        <div style="flex:1;min-width:180px;">
+          <label class="label">
+            Parameter
+            <% if (recParams.length) { %>
+              <span style="font-size:10px;margin-left:4px;color:#0ea5e9;">★ = recommended for your role</span>
+            <% } %>
+          </label>
           <select id="paramSelect" class="input">
-            <option value="00060">Discharge (ft³/s)</option>
-            <option value="00065">Gage Height (ft)</option>
-            <option value="00010">Water Temperature (°C)</option>
-            <option value="00300">Dissolved Oxygen (mg/L)</option>
-            <option value="00400">pH</option>
+            <% if (recParams.length) { %>
+            <optgroup label="★ Recommended for <%= (profile && profile.role || 'general').replace('_',' ') %>">
+              <% recParams.forEach(function(p) { %>
+                <option value="<%= p.code %>" data-name="<%= p.label %> (<%= p.unit %>)">★ <%= p.label %><% if(p.unit) { %> (<%= p.unit %>)<% } %></option>
+              <% }); %>
+            </optgroup>
+            <% } %>
+            <% if (otherFlow.length) { %>
+            <optgroup label="Flow &amp; Level">
+              <% otherFlow.forEach(function(p) { %>
+                <option value="<%= p.code %>" data-name="<%= p.label %> (<%= p.unit %>)"><%= p.label %><% if(p.unit) { %> (<%= p.unit %>)<% } %></option>
+              <% }); %>
+            </optgroup>
+            <% } %>
+            <% if (otherQuality.length) { %>
+            <optgroup label="Water Quality">
+              <% otherQuality.forEach(function(p) { %>
+                <option value="<%= p.code %>" data-name="<%= p.label %> (<%= p.unit %>)"><%= p.label %><% if(p.unit) { %> (<%= p.unit %>)<% } %></option>
+              <% }); %>
+            </optgroup>
+            <% } %>
+            <% // If all params are recommended, nothing fell into others — make sure all are rendered %>
+            <% if (!otherFlow.length && !otherQuality.length && !recParams.length) { %>
+              <option value="00060">Discharge (ft³/s)</option>
+              <option value="00065">Gage Height (ft)</option>
+              <option value="00010">Water Temperature (°C)</option>
+              <option value="00300">Dissolved Oxygen (mg/L)</option>
+              <option value="00400">pH</option>
+            <% } %>
           </select>
         </div>
-        <div class="flex-1 min-w-36">
+
+        <div style="flex:1;min-width:140px;">
           <label class="label">Time Range</label>
           <select id="hoursSelect" class="input">
-            <option value="24">Last 24 Hours</option>
-            <option value="72">Last 3 Days</option>
-            <option value="168" selected>Last 7 Days</option>
-            <option value="336">Last 14 Days</option>
-            <option value="720">Last 30 Days</option>
+            <option value="24">24 Hours</option>
+            <option value="72">3 Days</option>
+            <option value="168" selected>7 Days</option>
+            <option value="336">14 Days</option>
+            <option value="720">30 Days</option>
           </select>
         </div>
         <button onclick="loadChart()" class="btn-primary">Load</button>
-      </div>
-    </div>
-
-    <!-- Chart -->
-    <div class="card mb-6">
-      <div class="flex items-center justify-between mb-4">
-        <h2 id="chartTitle" class="text-sm font-semibold text-slate-200">Select a site and parameter above</h2>
-        <span id="chartBadge" class="text-xs text-slate-500"></span>
-      </div>
-      <div class="relative" style="height:360px;">
-        <canvas id="mainChart"></canvas>
-        <div id="chartEmpty" class="absolute inset-0 flex items-center justify-center text-slate-600 text-sm">
-          No data loaded yet.
+        <div class="flex gap-2">
+          <button id="exportCsvBtn" onclick="exportData('csv')" class="btn-secondary" style="display:none;" title="Export CSV">↓ CSV</button>
+          <button id="exportXlsxBtn" onclick="exportData('xlsx')" class="btn-secondary" style="display:none;" title="Export Excel">↓ Excel</button>
         </div>
       </div>
     </div>
 
-    <!-- Stats -->
-    <div id="statsRow" class="grid grid-cols-2 md:grid-cols-4 gap-4 hidden">
+    <!-- Chart + AI analysis -->
+    <div class="flex flex-col xl:flex-row gap-5 mb-5">
+
+      <div class="card flex-1">
+        <div class="flex items-center justify-between mb-4">
+          <h2 id="chartTitle" class="text-sm font-semibold text-slate-200">Select a site and parameter</h2>
+          <span id="chartBadge" class="text-xs text-slate-500"></span>
+        </div>
+        <div class="relative" style="height:320px;">
+          <canvas id="mainChart"></canvas>
+          <div id="chartEmpty" class="absolute inset-0 flex items-center justify-center text-slate-600 text-sm">No data loaded.</div>
+        </div>
+      </div>
+
+      <!-- AI Chat panel (context-aware) -->
+      <div id="ai-analysis-card" class="card xl:w-72 flex-shrink-0 flex flex-col" style="display:none;min-height:340px;">
+        <div class="flex items-center gap-2 mb-3 flex-shrink-0">
+          <span class="ai-badge">AI</span>
+          <span id="ai-ctx-label" class="text-xs text-slate-500 truncate flex-1">Select a site to chat</span>
+          <button onclick="clearVizChat()" class="text-xs text-slate-600 hover:text-slate-400" style="background:none;border:none;cursor:pointer;" title="Clear">↺</button>
+        </div>
+
+        <!-- Message thread -->
+        <div id="viz-thread" class="flex-1 overflow-y-auto flex flex-col gap-2 mb-3" style="min-height:0;"></div>
+
+        <!-- Typing indicator -->
+        <div id="viz-typing" class="mb-2 flex-shrink-0" style="display:none;">
+          <div style="display:inline-flex;align-items:center;gap:3px;padding:6px 10px;border-radius:10px;background:rgba(30,41,59,0.7);border:1px solid #1e293b;">
+            <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
+          </div>
+        </div>
+
+        <!-- Input -->
+        <div class="flex gap-2 flex-shrink-0">
+          <input id="viz-input" type="text" class="input flex-1" style="font-size:12px;padding:6px 10px;border-radius:8px;" placeholder="Ask about this data...">
+          <button onclick="sendVizChat()" class="btn-primary flex-shrink-0 px-3 rounded-lg" style="font-size:12px;">→</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats row -->
+    <div id="statsRow" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5" style="display:none;">
       <div class="card text-center">
         <div class="text-xs text-slate-400 mb-1">Latest</div>
-        <div id="statLatest" class="text-2xl font-mono font-semibold text-hydro-400">—</div>
+        <div id="statLatest" class="text-2xl font-mono font-semibold" style="color:#38bdf8;">—</div>
       </div>
       <div class="card text-center">
         <div class="text-xs text-slate-400 mb-1">Min</div>
@@ -80,91 +202,435 @@
       </div>
     </div>
 
+    <!-- Threshold panel -->
+    <div id="threshold-panel" class="card" style="display:none;">
+      <div class="flex items-center gap-3 mb-3">
+        <h2 class="text-sm font-semibold text-slate-300">Thresholds &amp; Reference Lines</h2>
+        <span id="threshold-loading" class="hidden flex items-center gap-1.5 text-xs text-slate-500">
+          <svg class="animate-spin" style="width:11px;height:11px;color:#0ea5e9;" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+          Loading AI thresholds...
+        </span>
+        <button onclick="toggleAddForm()" class="ml-auto btn-secondary text-xs py-1 px-2">+ Add Custom</button>
+      </div>
+
+      <!-- AI threshold note -->
+      <div id="threshold-note" class="hidden mb-3 text-xs text-slate-500 italic"></div>
+
+      <!-- Threshold rows -->
+      <div id="threshold-rows"></div>
+
+      <!-- Contextual insights (different unit/domain — not charted) -->
+      <div id="insights-section" style="display:none;" class="mt-4 pt-3 border-t border-slate-800">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Contextual Intel</div>
+        <div id="insights-list" class="flex flex-col gap-2"></div>
+      </div>
+
+      <!-- Add custom form -->
+      <div id="add-threshold-form" style="display:none;" class="mt-3 pt-3 border-t border-slate-800 flex flex-wrap gap-2 items-end">
+        <div style="flex:1;min-width:100px;">
+          <label class="label">Value</label>
+          <input type="number" id="t-value" class="input" placeholder="e.g. 5000">
+        </div>
+        <div style="flex:2;min-width:120px;">
+          <label class="label">Label</label>
+          <input type="text" id="t-label" class="input" placeholder="e.g. My threshold">
+        </div>
+        <div>
+          <label class="label">Color</label>
+          <input type="color" id="t-color" value="#94a3b8" style="width:38px;height:36px;border-radius:6px;border:1px solid #334155;background:#1e293b;cursor:pointer;padding:2px;">
+        </div>
+        <button onclick="addCustomThreshold()" class="btn-primary py-2">Add</button>
+        <button onclick="toggleAddForm()" class="btn-secondary py-2">Cancel</button>
+      </div>
+    </div>
+
   </div>
 </main>
 
 <script>
-let chart = null;
-const PARAM_LABELS = {
-  '00060': 'Discharge (ft³/s)',
-  '00065': 'Gage Height (ft)',
-  '00010': 'Water Temperature (°C)',
-  '00300': 'Dissolved Oxygen (mg/L)',
-  '00400': 'pH',
+var chart = null;
+var _currentSiteId = null, _currentSiteName = '', _currentParamCode = null, _currentParamName = null, _currentHours = 168, _currentUnit = '';
+
+var TREND_ICONS   = { rising:'↑', falling:'↓', stable:'→', variable:'⇅' };
+var TREND_COLORS  = { rising:'#fb923c', falling:'#38bdf8', stable:'#34d399', variable:'#a78bfa' };
+var TYPE_STYLES   = {
+  min_advisory: { bg: 'rgba(251,191,36,0.12)',  color: '#fbbf24', label: 'min advisory' },
+  max_advisory: { bg: 'rgba(248,113,113,0.12)', color: '#f87171', label: 'max advisory' },
+  caution:      { bg: 'rgba(251,146,60,0.12)',  color: '#fb923c', label: 'caution'      },
+  target:       { bg: 'rgba(52,211,153,0.10)',  color: '#34d399', label: 'target'       },
+  regulatory:   { bg: 'rgba(167,139,250,0.10)', color: '#a78bfa', label: 'regulatory'   },
 };
 
-// Pre-select from URL params
-const urlParams = new URLSearchParams(location.search);
-if (urlParams.get('site')) document.getElementById('siteSelect').value = urlParams.get('site');
+// Threshold state
+var thresholdState = {
+  ai:     [],     // from AI
+  custom: [],     // user-added
+  active: {}      // id -> bool
+};
+
+// Pre-select from URL
+var urlParams = new URLSearchParams(location.search);
+if (urlParams.get('site'))  document.getElementById('siteSelect').value  = urlParams.get('site');
 if (urlParams.get('param')) document.getElementById('paramSelect').value = urlParams.get('param');
+if (urlParams.get('site'))  loadChart();
 
+function getIsLight() { return document.body.classList.contains('light'); }
+
+// ── Chart ────────────────────────────────────────────────
 async function loadChart() {
-  const site  = document.getElementById('siteSelect').value;
-  const param = document.getElementById('paramSelect').value;
-  const hours = document.getElementById('hoursSelect').value;
+  var siteEl  = document.getElementById('siteSelect');
+  var paramEl = document.getElementById('paramSelect');
+  var hoursEl = document.getElementById('hoursSelect');
 
-  const siteLabel = document.getElementById('siteSelect').selectedOptions[0].text;
-  const paramLabel = PARAM_LABELS[param] || param;
+  _currentSiteId    = siteEl.value;
+  _currentSiteName  = siteEl.selectedOptions[0].getAttribute('data-name') || siteEl.value;
+  _currentParamCode = paramEl.value;
+  _currentParamName = (paramEl.selectedOptions[0].getAttribute('data-name') || paramEl.selectedOptions[0].textContent).replace(/★\s*/,'');
+  _currentHours     = parseInt(hoursEl.value);
 
-  document.getElementById('chartTitle').textContent = `${siteLabel} — ${paramLabel}`;
+  document.getElementById('chartTitle').textContent = _currentSiteName + ' — ' + _currentParamName;
   document.getElementById('chartBadge').textContent = 'Loading...';
   document.getElementById('chartEmpty').classList.add('hidden');
 
-  const resp = await fetch(`/api/data/timeseries?site=${site}&param=${param}&hours=${hours}`);
-  const json = await resp.json();
-  const rows = json.data || [];
+  var resp = await fetch('/api/data/timeseries?site=' + _currentSiteId + '&param=' + _currentParamCode + '&hours=' + _currentHours);
+  var json = await resp.json();
+  var rows = json.data || [];
 
   if (!rows.length) {
     document.getElementById('chartEmpty').classList.remove('hidden');
-    document.getElementById('chartBadge').textContent = 'No data for this range';
+    document.getElementById('chartBadge').textContent = 'No data';
     return;
   }
 
-  const labels = rows.map(r => new Date(r.recorded_at + 'Z').toLocaleString());
-  const values = rows.map(r => r.value);
-  const unit = rows[0]?.unit || '';
+  _currentUnit = rows[0].unit || '';
+  var labels = rows.map(function(r) { return new Date(r.recorded_at + 'Z').toLocaleString(); });
+  var values = rows.map(function(r) { return r.value; });
+  var light  = getIsLight();
 
-  document.getElementById('chartBadge').textContent = `${rows.length} readings · ${unit}`;
+  document.getElementById('chartBadge').textContent = rows.length + ' readings · ' + _currentUnit;
 
   if (chart) chart.destroy();
   chart = new Chart(document.getElementById('mainChart'), {
     type: 'line',
     data: {
-      labels,
-      datasets: [{
-        label: paramLabel,
-        data: values,
-        borderColor: '#0ea5e9',
-        backgroundColor: 'rgba(14,165,233,0.08)',
-        fill: true,
-        tension: 0.3,
-        pointRadius: rows.length > 200 ? 0 : 2,
-        borderWidth: 2,
-      }]
+      labels: labels,
+      datasets: [{ label: _currentParamName, data: values, borderColor: '#0ea5e9', backgroundColor: 'rgba(14,165,233,0.07)', fill: true, tension: 0.3, pointRadius: rows.length > 200 ? 0 : 2, borderWidth: 2 }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { intersect: false, mode: 'index' },
-      plugins: { legend: { display: false }, tooltip: { backgroundColor: '#1e293b', titleColor: '#94a3b8', bodyColor: '#f1f5f9' } },
+      plugins: {
+        legend: { display: false },
+        tooltip: { backgroundColor: light ? '#fff' : '#1e293b', titleColor: '#64748b', bodyColor: light ? '#0f172a' : '#f1f5f9' },
+        annotation: { annotations: {} }
+      },
       scales: {
-        x: { ticks: { color: '#64748b', maxTicksLimit: 10, maxRotation: 0 }, grid: { color: '#1e293b' } },
-        y: { ticks: { color: '#64748b' }, grid: { color: '#1e293b' } }
+        x: { ticks: { color: light ? '#64748b' : '#475569', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: light ? 'rgba(0,0,0,0.06)' : '#1e293b' } },
+        y: { ticks: { color: light ? '#64748b' : '#475569' }, grid: { color: light ? 'rgba(0,0,0,0.06)' : '#1e293b' } }
       }
     }
   });
 
   // Stats
-  const min = Math.min(...values), max = Math.max(...values);
-  const avg = values.reduce((a, b) => a + b, 0) / values.length;
-  document.getElementById('statLatest').textContent = values[values.length-1]?.toFixed(2) + ' ' + unit;
-  document.getElementById('statMin').textContent    = min.toFixed(2) + ' ' + unit;
-  document.getElementById('statMax').textContent    = max.toFixed(2) + ' ' + unit;
-  document.getElementById('statAvg').textContent    = avg.toFixed(2) + ' ' + unit;
-  document.getElementById('statsRow').classList.remove('hidden');
+  var min = Math.min.apply(null, values), max = Math.max.apply(null, values);
+  var avg = values.reduce(function(a,b){return a+b;},0)/values.length;
+  document.getElementById('statLatest').textContent = values[values.length-1].toFixed(2) + ' ' + _currentUnit;
+  document.getElementById('statMin').textContent    = min.toFixed(2) + ' ' + _currentUnit;
+  document.getElementById('statMax').textContent    = max.toFixed(2) + ' ' + _currentUnit;
+  document.getElementById('statAvg').textContent    = avg.toFixed(2) + ' ' + _currentUnit;
+  document.getElementById('statsRow').style.display = 'grid';
+
+  // Reset threshold state for new chart load
+  thresholdState.ai = [];
+  thresholdState.active = {};
+  thresholdState.custom.forEach(function(t) { thresholdState.active[t.id] = true; });
+  renderInsights([]);
+
+  // Show export buttons now that data is loaded
+  document.getElementById('exportCsvBtn').style.display  = '';
+  document.getElementById('exportXlsxBtn').style.display = '';
+
+  // Kick off AI enrichments + annotations in parallel
+  loadAnalysis();
+  loadThresholds();
+  loadChartAnnotations();
 }
 
-// Auto-load if URL has site param
-if (urlParams.get('site')) loadChart();
+function exportData(fmt) {
+  if (!_currentSiteId || !_currentParamCode) return;
+  window.location.href = '/api/export/measurements?site_id=' + _currentSiteId
+    + '&param_code=' + _currentParamCode + '&hours=' + _currentHours + '&fmt=' + fmt;
+}
+
+// ── Annotations overlay on chart ─────────────────────────────────────────────
+async function loadChartAnnotations() {
+  if (!chart || !_currentSiteId) return;
+  try {
+    var now   = new Date();
+    var start = new Date(now.getTime() - _currentHours * 3600000);
+    var resp = await fetch('/api/annotations?site_id=' + _currentSiteId
+      + '&param_code=' + _currentParamCode
+      + '&start_at=' + start.toISOString().replace('T',' ').substring(0,19)
+      + '&end_at='   + now.toISOString().replace('T',' ').substring(0,19));
+    var json = await resp.json();
+    var anns = json.data || [];
+    if (!anns.length) return;
+
+    // Build label strings for x-axis (same format used in labels array above)
+    var annObj = {};
+    anns.forEach(function(a) {
+      var dt = new Date(a.annotated_at + (a.annotated_at.includes('Z') ? '' : 'Z'));
+      var lbl = dt.toLocaleString();
+      var catColors = { event:'#38bdf8', alert:'#f87171', maintenance:'#fde047', observation:'#6ee7b7' };
+      var col = catColors[a.category] || '#94a3b8';
+      annObj['ann_' + a.id] = {
+        type: 'line', xMin: lbl, xMax: lbl,
+        borderColor: col, borderWidth: 1.5, borderDash: [4,3],
+        label: { display: true, content: a.label, position: 'start',
+                 color: col, font: { size: 10 }, backgroundColor: 'rgba(0,0,0,0.5)' }
+      };
+    });
+
+    // Merge with existing threshold annotations
+    var existing = chart.options.plugins.annotation.annotations;
+    chart.options.plugins.annotation.annotations = Object.assign({}, existing, annObj);
+    chart.update('none');
+  } catch(e) { /* silent — annotations are optional overlay */ }
+}
+
+// ── AI Chat (page-context-aware) ─────────────────────────────────────────────
+var _vizChatHistory = [];
+
+function _vizPageContext() {
+  return _currentSiteId ? {
+    site_id:    _currentSiteId,
+    site_name:  _currentSiteName,
+    param_code: _currentParamCode,
+    param_name: _currentParamName,
+    hours:      _currentHours,
+  } : null;
+}
+
+function _appendVizMsg(role, text) {
+  var thread = document.getElementById('viz-thread');
+  var div = document.createElement('div');
+  div.style.cssText = role === 'user'
+    ? 'align-self:flex-end;max-width:90%;background:rgba(3,105,161,0.2);border:1px solid rgba(14,165,233,0.2);border-radius:10px 10px 2px 10px;padding:7px 10px;color:#e2e8f0;font-size:11px;line-height:1.5;word-break:break-word;white-space:pre-wrap;'
+    : 'align-self:flex-start;max-width:95%;background:rgba(30,41,59,0.6);border:1px solid #1e293b;border-radius:10px 10px 10px 2px;padding:7px 10px;color:#cbd5e1;font-size:11px;line-height:1.55;word-break:break-word;white-space:pre-wrap;';
+  div.textContent = text;
+  thread.appendChild(div);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+async function sendVizChat() {
+  var input = document.getElementById('viz-input');
+  var text  = input.value.trim();
+  if (!text || !_currentSiteId) return;
+
+  _appendVizMsg('user', text);
+  _vizChatHistory.push({ role: 'user', text: text });
+  input.value = '';
+
+  document.getElementById('viz-typing').style.display = 'block';
+  document.getElementById('viz-thread').scrollTop = 9999;
+
+  try {
+    var resp = await fetch('/api/insights/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        history:      _vizChatHistory.slice(0, -1),
+        query:        text,
+        page_context: _vizPageContext(),
+      })
+    });
+    var json = await resp.json();
+    document.getElementById('viz-typing').style.display = 'none';
+
+    if (json.blocked) {
+      _vizChatHistory.pop();
+      _appendVizMsg('model', 'That\'s outside my scope here.');
+    } else if (!json.ok || json.error) {
+      _vizChatHistory.pop();
+      _appendVizMsg('model', 'Something went wrong. Please try again.');
+    } else {
+      _appendVizMsg('model', json.response);
+      _vizChatHistory.push({ role: 'model', text: json.response });
+    }
+  } catch(e) {
+    document.getElementById('viz-typing').style.display = 'none';
+    _vizChatHistory.pop();
+    _appendVizMsg('model', 'Something went wrong. Please try again.');
+  }
+}
+
+function clearVizChat() {
+  _vizChatHistory = [];
+  document.getElementById('viz-thread').innerHTML = '';
+}
+
+// Called when chart loads — shows the panel and updates the context label
+function loadAnalysis() {
+  if (!_currentSiteId) return;
+  var card = document.getElementById('ai-analysis-card');
+  card.style.display = 'flex';
+  document.getElementById('ai-ctx-label').textContent = _currentSiteName + ' · ' + (_currentParamName || '').replace(/\s*\(.*\)/, '');
+  document.getElementById('viz-input').placeholder = 'Ask about ' + _currentSiteName + '...';
+}
+
+// ── Thresholds ────────────────────────────────────────────
+async function loadThresholds() {
+  if (!_currentSiteId || !_currentParamCode) return;
+
+  var panel   = document.getElementById('threshold-panel');
+  var spinner = document.getElementById('threshold-loading');
+  panel.style.display = 'block';
+  spinner.classList.remove('hidden');
+
+  try {
+    var resp = await fetch('/api/insights/enrich', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page: 'thresholds', context: { site_id: _currentSiteId, site_name: _currentSiteName, param_code: _currentParamCode, param_name: _currentParamName } })
+    });
+    var json = await resp.json();
+    var d = json.data || {};
+    spinner.classList.add('hidden');
+
+    if (d.note) {
+      document.getElementById('threshold-note').textContent = d.note;
+      document.getElementById('threshold-note').classList.remove('hidden');
+    }
+
+    // Only chart thresholds whose values are in the same unit as the current parameter
+    var newThresholds = (d.thresholds || []).filter(function(t) { return t.id && typeof t.value === 'number'; });
+    thresholdState.ai = newThresholds;
+    newThresholds.forEach(function(t) {
+      if (thresholdState.active[t.id] === undefined) thresholdState.active[t.id] = true;
+    });
+
+    // Render contextual insights (different unit/domain) as text notes, not chart lines
+    var insights = d.insights || [];
+    renderInsights(insights);
+
+    renderThresholdRows();
+    updateAnnotations();
+  } catch(e) {
+    spinner.classList.add('hidden');
+    console.warn('Threshold load error:', e.message);
+    document.getElementById('threshold-rows').innerHTML =
+      '<div class="text-xs py-1" style="color:#f87171;">⚠ AI thresholds unavailable. ' +
+      '<button onclick="loadThresholds()" style="background:rgba(14,165,233,0.1);border:1px solid rgba(14,165,233,0.25);border-radius:5px;cursor:pointer;color:#38bdf8;font-size:11px;padding:2px 10px;margin-left:4px;">↻ Retry</button>' +
+      '</div>';
+  }
+}
+
+function renderInsights(insights) {
+  var section = document.getElementById('insights-section');
+  var list    = document.getElementById('insights-list');
+  if (!insights || !insights.length) { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+  list.innerHTML = insights.map(function(ins) {
+    return '<div class="rounded-lg px-3 py-2" style="background:rgba(14,165,233,0.05);border:1px solid rgba(14,165,233,0.12);">' +
+      '<div class="text-xs font-medium mb-0.5" style="color:#38bdf8;">' + ins.label + '</div>' +
+      '<div class="text-xs leading-relaxed" style="color:#94a3b8;">' + ins.note + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function renderThresholdRows() {
+  var container = document.getElementById('threshold-rows');
+  var all = thresholdState.ai.concat(thresholdState.custom);
+  if (!all.length) { container.innerHTML = '<div class="text-xs text-slate-600 py-2">No thresholds loaded yet.</div>'; return; }
+
+  container.innerHTML = all.map(function(t) {
+    var active  = thresholdState.active[t.id] !== false;
+    var ts = TYPE_STYLES[t.type] || TYPE_STYLES.caution;
+    return '<div class="threshold-row">' +
+      '<input type="checkbox" ' + (active ? 'checked' : '') + ' onchange="toggleThreshold(\'' + t.id + '\',this.checked)" style="accent-color:' + t.color + ';cursor:pointer;">' +
+      '<span class="t-dot" style="background:' + t.color + ';box-shadow:' + (active ? '0 0 5px ' + t.color + '80' : 'none') + ';"></span>' +
+      '<span class="t-label">' + t.label + '</span>' +
+      '<span class="t-value">' + (typeof t.value === 'number' ? t.value.toLocaleString() : t.value) + ' ' + _currentUnit + '</span>' +
+      '<span class="t-type-badge" style="background:' + ts.bg + ';color:' + ts.color + ';">' + ts.label + '</span>' +
+      (t.description ? '<span class="t-info">?<span class="t-tooltip">' + t.description.replace(/</g,'&lt;') + '</span></span>' : '') +
+      (t.custom ? '<button onclick="removeCustomThreshold(\'' + t.id + '\')" style="background:none;border:none;color:#475569;cursor:pointer;font-size:14px;line-height:1;padding:0 2px;" title="Remove">×</button>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function toggleThreshold(id, enabled) {
+  thresholdState.active[id] = enabled;
+  updateAnnotations();
+  renderThresholdRows();
+}
+
+function updateAnnotations() {
+  if (!chart) return;
+  var annotations = {};
+  var all = thresholdState.ai.concat(thresholdState.custom);
+  all.forEach(function(t) {
+    if (!thresholdState.active[t.id]) return;
+    annotations[t.id] = {
+      type: 'line',
+      yMin: t.value, yMax: t.value,
+      borderColor: t.color,
+      borderWidth: 1.5,
+      borderDash: [6, 3],
+      label: {
+        content: t.label,
+        display: true,
+        position: 'start',
+        backgroundColor: t.color + '22',
+        color: t.color,
+        font: { size: 10, weight: '500', family: 'Inter' },
+        padding: { x: 6, y: 3 },
+        borderRadius: 4
+      }
+    };
+  });
+  chart.options.plugins.annotation.annotations = annotations;
+  chart.update('none');
+}
+
+// ── Custom threshold add/remove ──────────────────────────
+var _customIdCounter = 0;
+function toggleAddForm() {
+  var f = document.getElementById('add-threshold-form');
+  f.style.display = f.style.display === 'none' ? 'flex' : 'none';
+}
+function addCustomThreshold() {
+  var val   = parseFloat(document.getElementById('t-value').value);
+  var label = document.getElementById('t-label').value.trim() || 'Custom';
+  var color = document.getElementById('t-color').value;
+  if (isNaN(val)) { document.getElementById('t-value').focus(); return; }
+
+  var id = 'custom_' + (++_customIdCounter);
+  var t = { id: id, label: label, value: val, color: color, description: 'Custom threshold added manually.', type: 'caution', custom: true };
+  thresholdState.custom.push(t);
+  thresholdState.active[id] = true;
+
+  document.getElementById('t-value').value = '';
+  document.getElementById('t-label').value = '';
+  document.getElementById('add-threshold-form').style.display = 'none';
+
+  renderThresholdRows();
+  updateAnnotations();
+}
+function removeCustomThreshold(id) {
+  thresholdState.custom = thresholdState.custom.filter(function(t) { return t.id !== id; });
+  delete thresholdState.active[id];
+  renderThresholdRows();
+  updateAnnotations();
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  var inp = document.getElementById('viz-input');
+  if (inp) inp.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); sendVizChat(); }
+  });
+});
+
+window.addEventListener('hydroProfileUpdated', function() { loadThresholds(); });
 </script>
 
 <%- include('partials/foot') %>

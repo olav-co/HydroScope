@@ -1,0 +1,575 @@
+<%- include('partials/head', { title: 'Settings' }) %>
+<%- include('partials/nav') %>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Settings</h1>
+      <p class="text-xs text-slate-400 mt-0.5">AI provider, model selection, and data fetch schedule</p>
+    </div>
+  </header>
+
+  <div class="flex-1 overflow-y-auto p-6 pb-24">
+    <div class="max-w-3xl mx-auto space-y-6" id="settingsRoot">
+
+      <!-- Loading state -->
+      <div id="loadingState" class="flex items-center gap-3 text-slate-500 py-12 justify-center">
+        <svg class="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+        </svg>
+        <span class="text-sm">Loading settings…</span>
+      </div>
+
+      <!-- ── AI Provider ───────────────────────────────────────────────────────── -->
+      <div class="card hidden" id="aiCard">
+        <h2 class="section-title">AI Provider</h2>
+        <p class="text-xs text-slate-500 mb-5">Select the active provider and model. Providers shown here are those with an API key present in <code style="color:#94a3b8;font-size:11px;">config.json</code>.</p>
+
+        <!-- Active provider selector -->
+        <div class="mb-6">
+          <label class="label mb-2">Active Provider</label>
+          <div id="providerSelector" class="grid grid-cols-2 gap-3"></div>
+        </div>
+
+        <!-- Model selector -->
+        <div class="mb-5" id="modelSection">
+          <label class="label mb-2">Model</label>
+          <select id="modelSelect" class="input max-w-xs"></select>
+        </div>
+
+      </div>
+
+      <!-- ── Data Services ──────────────────────────────────────────────────────── -->
+      <div class="card hidden" id="servicesCard">
+        <div class="flex items-center justify-between mb-1">
+          <h2 class="section-title" style="margin-bottom:0;">Data Services</h2>
+          <div class="flex items-center gap-3">
+            <button onclick="refreshAll()" id="refreshBtn" class="ctrl-btn">↺ Refresh</button>
+            <!-- Master enable toggle -->
+            <div class="flex items-center gap-2">
+              <span style="font-size:11px;color:#475569;">All schedules</span>
+              <button id="masterToggle" type="button" onclick="toggleMaster()"
+                class="toggle-btn" role="switch" aria-checked="true">
+                <span id="masterKnob" class="toggle-knob"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <p class="text-xs text-slate-600 mb-5">Configure intervals, enable/disable each service independently, and run on demand.</p>
+        <div id="servicesGrid" class="space-y-3"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Floating save bar -->
+  <div id="saveRow" class="hidden" style="
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
+    padding: 12px 24px;
+    background: rgba(2,6,23,0.85);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid #1e293b;
+    display: none; align-items: center; justify-content: flex-end; gap: 16px;">
+    <span id="saveStatus" class="text-xs text-slate-500"></span>
+    <button onclick="saveSettings()" class="btn-primary px-8">Save Settings</button>
+  </div>
+
+  <!-- placeholder so the real closing tags still match -->
+  <div class="hidden">
+
+    </div>
+  </div>
+</main>
+
+<style>
+.provider-btn {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #1e293b;
+  background: rgba(30,41,59,0.4);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: left;
+}
+.provider-btn:hover { border-color: #334155; }
+.provider-btn.active { border-color: #0ea5e9; background: rgba(14,165,233,0.08); }
+
+/* Service cards */
+.svc-card {
+  background: rgba(15,23,42,0.7);
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 14px 16px;
+  transition: border-color 0.15s;
+}
+.svc-card.running { border-color: #0369a1; }
+.svc-card.disabled-svc { opacity: 0.5; }
+
+/* Toggle buttons */
+.toggle-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 44px; height: 24px;
+  border-radius: 12px;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s;
+  background: #1e293b;
+  flex-shrink: 0;
+}
+.toggle-btn[aria-checked="true"]  { background: #0284c7; }
+.toggle-btn[aria-checked="false"] { background: #1e293b; }
+.toggle-knob {
+  position: absolute;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: #475569;
+  transition: transform 0.2s, background 0.2s;
+  transform: translateX(4px);
+}
+.toggle-btn[aria-checked="true"]  .toggle-knob { transform: translateX(24px); background: #fff; }
+.toggle-btn[aria-checked="false"] .toggle-knob { transform: translateX(4px);  background: #475569; }
+
+/* Interval pills */
+.iv-btn {
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid #1e293b;
+  background: rgba(30,41,59,0.4);
+  color: #64748b;
+  font-size: 11px; font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.iv-btn:hover  { border-color: #334155; color: #94a3b8; }
+.iv-btn.active { border-color: #0ea5e9; background: rgba(14,165,233,0.1); color: #38bdf8; }
+
+/* Run Now button */
+.run-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid #1e293b;
+  background: none;
+  color: #475569;
+  font-size: 11px; font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+.run-btn:hover:not(:disabled) { border-color: #0ea5e9; color: #38bdf8; }
+.run-btn:disabled { opacity: 0.4; cursor: default; }
+.run-btn.running-state { border-color: #0369a1; color: #38bdf8; }
+
+/* Status bits */
+.ctrl-btn {
+  font-size:11px; color:#475569;
+  background:none; border:1px solid #1e293b; border-radius:6px;
+  padding:4px 10px; cursor:pointer; transition:all 0.12s;
+}
+.ctrl-btn:hover { color:#94a3b8; border-color:#334155; }
+
+.status-dot { display:inline-block; width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+.status-dot.ok    { background:#34d399; }
+.status-dot.warn  { background:#fbbf24; }
+.status-dot.error { background:#f87171; box-shadow:0 0 4px #f87171; }
+.status-dot.idle  { background:#334155; }
+.status-dot.running { background:#38bdf8; animation: pulse-dot 1s infinite; }
+
+@keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+.fetch-pills { display:flex; gap:3px; }
+.fetch-pill  { width:9px; height:9px; border-radius:2px; flex-shrink:0; }
+.fetch-pill.ok    { background:#34d399; }
+.fetch-pill.error { background:#f87171; }
+.fetch-pill.empty { background:#1e293b; }
+
+.progress-bar  { height:3px; border-radius:2px; background:#1e293b; overflow:hidden; margin-top:5px; }
+.progress-fill { height:100%; border-radius:2px; background:#0ea5e9; transition:width 0.4s; }
+
+</style>
+
+<script>
+let _settings      = null;
+let _activeProvider = null;
+let _schedulerEnabled = true;
+let _serviceStates = {};   // { usgs: { enabled, interval }, … }
+let _pollTimer     = null;
+
+const SERVICE_INFO = {
+  usgs:      { label: 'USGS Stream Data',       desc: 'Discharge, gage height, water temp & more',    icon: '〰' },
+  weather:   { label: 'Weather (Open-Meteo)',    desc: 'Atmospheric conditions at monitoring sites',   icon: '☁' },
+  topology:  { label: 'Flow Network Topology',   desc: 'NLDI upstream/downstream site connections',    icon: '⟶' },
+  waterways: { label: 'Waterway Geometry',       desc: 'GeoJSON paths for flow network visualization', icon: '⌇' },
+};
+
+// ── Utilities ──────────────────────────────────────────────────────────────────
+
+function timeAgo(isoStr) {
+  if (!isoStr) return 'never';
+  const diff = Date.now() - new Date(isoStr + (isoStr.endsWith('Z') ? '' : 'Z')).getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 5)  return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
+}
+
+function fmtInterval(value, unit) {
+  if (unit === 'hours') {
+    if (value >= 168)       return '7d';
+    if (value % 24 === 0)   return (value / 24) + 'd';
+    return value + 'h';
+  }
+  if (value >= 1440)        return '1d';
+  if (value % 60 === 0)     return (value / 60) + 'h';
+  return value + 'm';
+}
+
+// ── Load ───────────────────────────────────────────────────────────────────────
+
+async function loadSettings() {
+  const resp = await fetch('/api/settings');
+  _settings = await resp.json();
+
+  _activeProvider   = _settings.ai.activeProvider;
+  _schedulerEnabled = _settings.scheduler.enabled;
+
+  _serviceStates = {};
+  for (const [name, svc] of Object.entries(_settings.scheduler.services)) {
+    _serviceStates[name] = { enabled: svc.enabled, interval: svc.interval };
+  }
+
+  renderProviderSelector();
+  renderModelSelector();
+  renderServiceCards();
+
+  document.getElementById('loadingState').classList.add('hidden');
+  document.getElementById('aiCard').classList.remove('hidden');
+  document.getElementById('servicesCard').classList.remove('hidden');
+  document.getElementById('saveRow').style.display = 'flex';
+
+  setMasterToggle(_schedulerEnabled);
+  checkPolling();
+}
+
+// ── Provider selector ─────────────────────────────────────────────────────────
+
+function renderProviderSelector() {
+  const grid = document.getElementById('providerSelector');
+  grid.innerHTML = '';
+  const ids = _settings.ai.providerIds;
+  if (!ids.length) {
+    grid.innerHTML = '<p class="text-xs text-slate-500 col-span-2">No providers configured. Add an API key to <code style="color:#94a3b8">config.json</code> to get started.</p>';
+    return;
+  }
+  for (const id of ids) {
+    const p = _settings.ai.providers[id];
+    const isActive = id === _activeProvider;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'provider-btn' + (isActive ? ' active' : '');
+    btn.dataset.provider = id;
+    btn.onclick = () => selectProvider(id);
+    btn.innerHTML = `
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-sm font-medium text-white">${p.label}</span>
+        ${isActive ? '<span style="margin-left:auto;font-size:10px;color:#38bdf8;font-weight:600;letter-spacing:.05em;text-transform:uppercase;">Active</span>' : ''}
+      </div>
+      <div style="font-size:11px;color:#64748b;">${p.model}</div>`;
+    grid.appendChild(btn);
+  }
+}
+
+function selectProvider(id) {
+  _activeProvider = id;
+  renderProviderSelector();
+  renderModelSelector();
+}
+
+function renderModelSelector() {
+  const sel = document.getElementById('modelSelect');
+  sel.innerHTML = '';
+  const p = _settings.ai.providers[_activeProvider];
+  if (!p) return;
+  for (const m of p.models) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.label;
+    if (m.id === p.model) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+// ── Service cards ─────────────────────────────────────────────────────────────
+
+function renderServiceCards() {
+  const grid    = document.getElementById('servicesGrid');
+  grid.innerHTML = '';
+  const running = _settings.runningState || {};
+  const st      = _settings.status || {};
+
+  for (const [name, svc] of Object.entries(_settings.scheduler.services)) {
+    const info  = SERVICE_INFO[name] || { label: name, desc: '', icon: '○' };
+    const state = _serviceStates[name] || { enabled: svc.enabled, interval: svc.interval };
+    grid.appendChild(buildServiceCard(name, info, svc, state, !!running[name], st));
+  }
+}
+
+function buildServiceCard(name, info, svc, state, isRunning, st) {
+  const card = document.createElement('div');
+  card.id = `svc-${name}`;
+  card.className = 'svc-card' +
+    (isRunning  ? ' running'      : '') +
+    (!state.enabled ? ' disabled-svc' : '');
+
+  const dotClass = isRunning ? 'running' : (state.enabled ? 'ok' : 'idle');
+
+  const ivHtml = svc.validIntervals.map(v => {
+    const active = v === state.interval ? ' active' : '';
+    return `<button type="button" class="iv-btn${active}" data-svc="${name}" data-val="${v}"
+      onclick="selectInterval('${name}',${v})">${fmtInterval(v, svc.unit)}</button>`;
+  }).join('');
+
+  card.innerHTML = `
+    <div class="flex items-start gap-3">
+      <span class="status-dot ${dotClass}" style="margin-top:5px;" id="dot-${name}"></span>
+      <div style="flex:1;min-width:0;">
+        <div class="flex items-center gap-2 mb-0.5">
+          <span style="font-size:13px;font-weight:600;color:#e2e8f0;">${info.icon} ${info.label}</span>
+          <button type="button" id="toggle-${name}" onclick="toggleService('${name}')"
+            class="toggle-btn" role="switch" aria-checked="${state.enabled}" style="margin-left:auto;">
+            <span class="toggle-knob"></span>
+          </button>
+        </div>
+        <p style="font-size:11px;color:#475569;margin:0 0 8px;">${info.desc}</p>
+        ${buildServiceStatus(name, st, isRunning)}
+        <div class="flex items-center gap-2 mt-3 flex-wrap">
+          <span style="font-size:10px;color:#334155;text-transform:uppercase;letter-spacing:.05em;margin-right:2px;">Interval</span>
+          <div class="flex gap-1 flex-wrap">${ivHtml}</div>
+          <button type="button" id="run-${name}" onclick="runNow('${name}')"
+            class="run-btn${isRunning ? ' running-state' : ''}" style="margin-left:auto;"
+            ${isRunning ? 'disabled' : ''}>
+            ${isRunning ? '⏳ Running…' : '▷ Run Now'}
+          </button>
+        </div>
+      </div>
+    </div>`;
+
+  return card;
+}
+
+function buildServiceStatus(name, st, isRunning) {
+  if (!st) return '';
+
+  if (name === 'usgs') {
+    const fetches = st.usgsFetches || [];
+    const last = fetches[0];
+    if (!last) return '<div style="font-size:11px;color:#334155;">No fetches logged yet</div>';
+    const ok = last.status === 'success';
+    const pills = Array.from({length: 5}, (_, i) => {
+      const f = fetches[i];
+      if (!f) return `<div class="fetch-pill empty"></div>`;
+      return `<div class="fetch-pill ${f.status === 'success' ? 'ok' : 'error'}" title="${f.status} · ${timeAgo(f.executed_at)}"></div>`;
+    }).join('');
+    return `
+      <div style="font-size:11px;color:#475569;">
+        Last: <b style="color:#94a3b8">${timeAgo(last.executed_at)}</b>
+        &nbsp;·&nbsp; <b style="color:${ok ? '#34d399' : '#f87171'}">${last.status}</b>
+        &nbsp;·&nbsp; ${last.records_stored} records
+        ${last.error_message ? `<br><span style="color:#f87171">${last.error_message}</span>` : ''}
+      </div>
+      <div class="fetch-pills" style="margin-top:4px;" title="5 most recent runs">${pills}</div>`;
+  }
+
+  if (name === 'weather') {
+    const wx = st.weatherMeta || {};
+    if (!wx.last_fetch) return '<div style="font-size:11px;color:#334155;">No weather data yet</div>';
+    return `<div style="font-size:11px;color:#475569;">
+      Last: <b style="color:#94a3b8">${timeAgo(wx.last_fetch)}</b>
+      &nbsp;·&nbsp; ${(wx.actual_count || 0).toLocaleString()} actual
+      &nbsp;·&nbsp; ${(wx.forecast_count || 0).toLocaleString()} forecast
+    </div>`;
+  }
+
+  if (name === 'topology') {
+    const topo   = st.topology || {};
+    const manual = (st.manualConns && st.manualConns.count) || 0;
+    if (!topo.last_sync) return '<div style="font-size:11px;color:#334155;">Topology not yet discovered</div>';
+    return `<div style="font-size:11px;color:#475569;">
+      Last sync: <b style="color:#94a3b8">${timeAgo(topo.last_sync)}</b>
+      &nbsp;·&nbsp; ${topo.connection_count || 0} NLDI connections
+      ${manual ? ` &nbsp;·&nbsp; ${manual} manual` : ''}
+    </div>`;
+  }
+
+  if (name === 'waterways') {
+    const ww    = st.waterways || {};
+    const total  = ww.total_pairs || 0;
+    const cached = ww.ok || 0;
+    const pct    = total > 0 ? Math.round((cached / total) * 100) : 0;
+    if (total === 0) return '<div style="font-size:11px;color:#334155;">No waterway pairs yet</div>';
+    return `
+      <div style="font-size:11px;color:#475569;">
+        ${cached}/${total} cached &nbsp;·&nbsp; ${ww.pending || 0} pending
+        ${ww.error  ? ` &nbsp;·&nbsp; <span style="color:#f87171">${ww.error} errors</span>` : ''}
+        ${ww.last_fetch ? ` &nbsp;·&nbsp; last: <b style="color:#94a3b8">${timeAgo(ww.last_fetch)}</b>` : ''}
+      </div>
+      <div class="progress-bar" style="margin-top:5px;max-width:240px;">
+        <div class="progress-fill" style="width:${pct}%;"></div>
+      </div>
+      <div style="font-size:10px;color:#334155;margin-top:2px;">${pct}% geometry cached</div>`;
+  }
+
+  return '';
+}
+
+// ── Per-service interactions ───────────────────────────────────────────────────
+
+function toggleService(name) {
+  _serviceStates[name].enabled = !_serviceStates[name].enabled;
+  const enabled = _serviceStates[name].enabled;
+  document.getElementById(`toggle-${name}`).setAttribute('aria-checked', String(enabled));
+  document.getElementById(`svc-${name}`).classList.toggle('disabled-svc', !enabled);
+  document.getElementById(`dot-${name}`).className = 'status-dot ' + (enabled ? 'ok' : 'idle');
+}
+
+function selectInterval(name, value) {
+  _serviceStates[name].interval = value;
+  document.getElementById(`svc-${name}`)
+    .querySelectorAll(`.iv-btn[data-svc="${name}"]`)
+    .forEach(b => b.classList.toggle('active', parseInt(b.dataset.val) === value));
+}
+
+// ── Master toggle ─────────────────────────────────────────────────────────────
+
+function setMasterToggle(enabled) {
+  document.getElementById('masterToggle').setAttribute('aria-checked', String(enabled));
+}
+
+function toggleMaster() {
+  _schedulerEnabled = !_schedulerEnabled;
+  setMasterToggle(_schedulerEnabled);
+}
+
+// ── Run Now ───────────────────────────────────────────────────────────────────
+
+async function runNow(name) {
+  const btn = document.getElementById(`run-${name}`);
+  const dot = document.getElementById(`dot-${name}`);
+  btn.disabled = true;
+  btn.textContent = '⏳ Running…';
+  btn.classList.add('running-state');
+  dot.className = 'status-dot running';
+  document.getElementById(`svc-${name}`).classList.add('running');
+
+  try {
+    await fetch(`/api/settings/run/${name}`, { method: 'POST' });
+  } catch (_) {}
+
+  schedulePoll();
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+
+function checkPolling() {
+  const anyRunning = Object.values(_settings.runningState || {}).some(Boolean);
+  if (anyRunning) schedulePoll();
+}
+
+function schedulePoll() {
+  if (_pollTimer) return;
+  _pollTimer = setTimeout(doPoll, 2000);
+}
+
+async function doPoll() {
+  _pollTimer = null;
+  try {
+    const resp = await fetch('/api/settings');
+    const data = await resp.json();
+    _settings  = data;
+    _serviceStates = {};
+    for (const [n, svc] of Object.entries(data.scheduler.services)) {
+      _serviceStates[n] = { enabled: svc.enabled, interval: svc.interval };
+    }
+    renderServiceCards();
+    if (Object.values(data.runningState || {}).some(Boolean)) schedulePoll();
+  } catch (_) {}
+}
+
+// ── Refresh all ───────────────────────────────────────────────────────────────
+
+async function refreshAll() {
+  const btn = document.getElementById('refreshBtn');
+  btn.textContent = '↺ …';
+  try {
+    const resp = await fetch('/api/settings');
+    const data = await resp.json();
+    _settings  = data;
+    _serviceStates = {};
+    for (const [n, svc] of Object.entries(data.scheduler.services)) {
+      _serviceStates[n] = { enabled: svc.enabled, interval: svc.interval };
+    }
+    renderServiceCards();
+  } catch (_) {}
+  btn.textContent = '↺ Refresh';
+}
+
+// ── Save ──────────────────────────────────────────────────────────────────────
+
+async function saveSettings() {
+  const statusEl = document.getElementById('saveStatus');
+  statusEl.textContent = 'Saving…';
+  statusEl.className = 'text-xs text-slate-400';
+
+  const modelSel = document.getElementById('modelSelect');
+  const providersPayload = {};
+  if (modelSel && _activeProvider) {
+    providersPayload[_activeProvider] = { model: modelSel.value };
+  }
+
+  // Collect per-service enabled + interval
+  const servicesPayload = {};
+  for (const [name, state] of Object.entries(_serviceStates)) {
+    const svc = _settings.scheduler.services[name];
+    servicesPayload[name] = { enabled: state.enabled, [svc.intervalKey]: state.interval };
+  }
+
+  const payload = {
+    scheduler: { enabled: _schedulerEnabled, services: servicesPayload },
+    ai: { activeProvider: _activeProvider, providers: providersPayload },
+  };
+
+  try {
+    const resp = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const json = await resp.json();
+    if (json.ok) {
+      statusEl.textContent = 'Saved — changes are live.';
+      statusEl.className = 'text-xs text-emerald-400';
+      await loadSettings();
+    } else {
+      statusEl.textContent = 'Error: ' + (json.error || 'unknown');
+      statusEl.className = 'text-xs text-rose-400';
+    }
+  } catch (err) {
+    statusEl.textContent = 'Save failed: ' + err.message;
+    statusEl.className = 'text-xs text-rose-400';
+  }
+
+  setTimeout(() => { statusEl.textContent = ''; statusEl.className = 'text-xs text-slate-500'; }, 5000);
+}
+
+loadSettings();
+</script>
+
+<%- include('partials/foot') %>

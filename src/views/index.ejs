@@ -1,11 +1,10 @@
 <%- include('partials/head', { title: 'Dashboard' }) %>
 <%- include('partials/nav') %>
 
-<!-- Main -->
 <main class="flex-1 flex flex-col overflow-hidden">
 
   <!-- Top bar -->
-  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
     <div>
       <h1 class="text-lg font-semibold text-white">Dashboard</h1>
       <p class="text-xs text-slate-400 mt-0.5">Portland Region — USGS Real-Time Monitoring</p>
@@ -13,68 +12,142 @@
     <div class="flex items-center gap-3">
       <% if (lastFetch) { %>
         <span class="text-xs text-slate-500">
-          Last fetch: <span class="text-slate-300"><%= new Date(lastFetch.executed_at).toLocaleString() %></span>
-          — <span class="<%= lastFetch.status === 'success' ? 'text-emerald-400' : 'text-rose-400' %>"><%= lastFetch.status %></span>
+          Updated <span class="text-slate-300"><%= new Date(lastFetch.executed_at).toLocaleTimeString() %></span>
+          <span class="<%= lastFetch.status === 'success' ? 'text-emerald-400' : 'text-rose-400' %> ml-1"><%= lastFetch.status %></span>
         </span>
       <% } %>
-      <button onclick="triggerRefresh()" class="btn-secondary text-xs">Refresh Now</button>
+      <button onclick="triggerRefresh(this)" class="btn-secondary text-xs">Refresh Data</button>
     </div>
   </header>
 
   <div class="flex-1 overflow-y-auto p-6">
 
-    <!-- Site status cards -->
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-8">
+    <!-- AI Status Bar — populated by enrichment -->
+    <div id="ai-status-bar" style="display:none;background:rgba(3,105,161,0.08);border-color:rgba(14,165,233,0.2);" class="mb-4 rounded-xl border px-4 py-3 flex items-start gap-3">
+      <span class="ai-badge mt-0.5" style="flex-shrink:0;">AI</span>
+      <div class="flex-1 min-w-0">
+        <div id="ai-status-text" class="text-sm text-slate-200 leading-snug"></div>
+        <div id="ai-alerts" class="mt-2 flex flex-wrap gap-2"></div>
+      </div>
+      <div class="flex items-center gap-2 mt-0.5 flex-shrink-0">
+        <div id="ai-status-loading" class="flex items-center gap-1.5 text-xs text-slate-500">
+          <svg class="animate-spin" style="width:12px;height:12px;color:#0ea5e9;" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+          Analyzing...
+        </div>
+        <button id="ai-retry-btn" onclick="loadEnrichment()" title="Refresh AI analysis"
+          style="display:none;background:none;border:none;cursor:pointer;color:#475569;font-size:14px;padding:0;line-height:1;"
+          onmouseover="this.style.color='#38bdf8'" onmouseout="this.style.color='#475569'">↻</button>
+      </div>
+    </div>
+
+    <!-- Filter + sort bar -->
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4">
+
+      <!-- Name search -->
+      <div class="relative flex-shrink-0">
+        <svg class="absolute pointer-events-none" style="width:13px;height:13px;color:#475569;left:9px;top:50%;transform:translateY(-50%);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z"/></svg>
+        <input id="siteSearch" type="text" placeholder="Search sites…" oninput="applyFiltersAndSort()"
+          style="padding:4px 10px 4px 26px;background:#1e293b;border:1px solid #334155;border-radius:20px;
+                 color:#e2e8f0;font-size:12px;outline:none;width:160px;transition:border-color 0.15s;"
+          onfocus="this.style.borderColor='#0ea5e9'" onblur="this.style.borderColor='#334155'">
+      </div>
+
+      <!-- Status chips -->
+      <div class="flex gap-1">
+        <button class="dash-filter active" data-filter="all"     onclick="setFilter('all')">All</button>
+        <button class="dash-filter"        data-filter="live"    onclick="setFilter('live')">Live</button>
+        <button class="dash-filter"        data-filter="offline" onclick="setFilter('offline')">Offline</button>
+        <button class="dash-filter"        data-filter="alerted" onclick="setFilter('alerted')">⚠ Alerted</button>
+      </div>
+
+      <!-- Parameter availability chips -->
+      <div class="flex items-center gap-1">
+        <span class="text-xs" style="color:#475569;">Has</span>
+        <button class="dash-filter" data-param="discharge" onclick="toggleParamFilter('discharge',this)" title="Sites with discharge data">Flow Q</button>
+        <button class="dash-filter" data-param="temp"      onclick="toggleParamFilter('temp',this)"      title="Sites with water temperature">Temp</button>
+        <button class="dash-filter" data-param="ph"        onclick="toggleParamFilter('ph',this)"        title="Sites with pH data">pH</button>
+      </div>
+
+      <!-- Sort -->
+      <div class="flex items-center gap-2 ml-auto">
+        <span class="text-xs text-slate-500">Sort</span>
+        <select id="sortSelect" onchange="applyFiltersAndSort()"
+          style="background:#1e293b;border:1px solid #334155;border-radius:6px;
+                 color:#94a3b8;font-size:11px;padding:3px 8px;outline:none;cursor:pointer;">
+          <option value="default">Default</option>
+          <option value="name">Name A–Z</option>
+          <option value="discharge">Discharge ↓</option>
+          <option value="temp">Temp ↓</option>
+          <option value="alert">Alert level</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Site cards -->
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-6" id="siteCardsGrid">
       <% for (const site of sites) {
            const siteData = bysite[site.site_id];
-           const discharge = siteData?.readings?.['00060'];
-           const temp = siteData?.readings?.['00010'];
-           const gage = siteData?.readings?.['00065'];
-           const ph = siteData?.readings?.['00400'];
-           const hasData = !!siteData;
+           const discharge = siteData && siteData.readings['00060'];
+           const temp     = siteData && siteData.readings['00010'];
+           const gage     = siteData && siteData.readings['00065'];
+           const ph       = siteData && siteData.readings['00400'];
+           const hasData  = !!siteData;
       %>
-      <div class="card group cursor-pointer" onclick="window.location='/visualize?site=<%= site.site_id %>'">
+      <div class="card group cursor-pointer" id="card-<%= site.site_id %>"
+        data-name="<%= site.name %>"
+        data-type="<%= (site.type || '').toLowerCase() %>"
+        data-has-data="<%= hasData %>"
+        data-discharge="<%= (discharge && discharge.value) || -1 %>"
+        data-temp="<%= (temp && temp.value) || -1 %>"
+        data-has-discharge="<%= !!discharge %>"
+        data-has-temp="<%= !!temp %>"
+        data-has-ph="<%= !!ph %>"
+        data-alert-level="idle"
+        onclick="window.location='/visualize?site=<%= site.site_id %>'">
         <div class="flex items-start justify-between mb-3">
-          <div>
-            <div class="text-sm font-medium text-white"><%= site.name %></div>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-semibold text-white flex items-center gap-2">
+              <%= site.name %>
+              <span id="ai-badge-<%= site.site_id %>" class="hidden text-xs font-medium px-1.5 py-0.5 rounded" style="font-size:10px;"></span>
+            </div>
             <div class="text-xs text-slate-500 mt-0.5">USGS <%= site.site_id %> · <%= site.type %></div>
           </div>
-          <span class="text-xs px-2 py-0.5 rounded-full border
-            <%= hasData ? 'border-emerald-700 text-emerald-400 bg-emerald-900/30' : 'border-slate-700 text-slate-500 bg-slate-800' %>">
+          <span class="text-xs px-2 py-0.5 rounded-full border flex-shrink-0
+            <%= hasData ? 'text-emerald-400 border-emerald-800 bg-emerald-900/20' : 'text-slate-500 border-slate-700 bg-slate-800' %>">
             <%= hasData ? 'Live' : 'No data' %>
           </span>
         </div>
 
         <% if (hasData) { %>
-          <div class="grid grid-cols-2 gap-2 mt-3">
+          <div class="grid grid-cols-2 gap-2">
             <% if (discharge) { %>
-            <div class="bg-slate-800/60 rounded-lg p-2.5">
+            <div class="rounded-lg p-2.5" style="background:rgba(30,41,59,0.6);">
               <div class="text-xs text-slate-400 mb-1">Discharge</div>
-              <div class="text-lg font-mono font-semibold text-hydro-400"><%= discharge.value.toLocaleString() %></div>
+              <div class="text-xl font-mono font-semibold" style="color:#38bdf8;"><%= discharge.value.toLocaleString() %></div>
               <div class="text-xs text-slate-500"><%= discharge.unit %></div>
             </div>
             <% } %>
             <% if (gage) { %>
-            <div class="bg-slate-800/60 rounded-lg p-2.5">
+            <div class="rounded-lg p-2.5" style="background:rgba(30,41,59,0.6);">
               <div class="text-xs text-slate-400 mb-1">Gage Height</div>
-              <div class="text-lg font-mono font-semibold text-slate-200"><%= gage.value %></div>
+              <div class="text-xl font-mono font-semibold text-slate-200"><%= gage.value %></div>
               <div class="text-xs text-slate-500"><%= gage.unit %></div>
             </div>
             <% } %>
             <% if (temp) { %>
-            <div class="bg-slate-800/60 rounded-lg p-2.5">
+            <div class="rounded-lg p-2.5" style="background:rgba(30,41,59,0.6);">
               <div class="text-xs text-slate-400 mb-1">Water Temp</div>
-              <div class="text-lg font-mono font-semibold
+              <div class="text-xl font-mono font-semibold
                 <%= temp.value < 10 ? 'text-blue-400' : temp.value < 20 ? 'text-emerald-400' : 'text-amber-400' %>">
                 <%= temp.value %>°C
               </div>
-              <div class="text-xs text-slate-500"><%= temp.value < 10 ? 'Cold' : temp.value < 20 ? 'Moderate' : 'Warm' %></div>
+              <div class="text-xs text-slate-500"><%= temp.value < 10 ? 'Cold' : temp.value < 18 ? 'Moderate' : 'Warm' %></div>
             </div>
             <% } %>
             <% if (ph) { %>
-            <div class="bg-slate-800/60 rounded-lg p-2.5">
+            <div class="rounded-lg p-2.5" style="background:rgba(30,41,59,0.6);">
               <div class="text-xs text-slate-400 mb-1">pH</div>
-              <div class="text-lg font-mono font-semibold
+              <div class="text-xl font-mono font-semibold
                 <%= (ph.value >= 6.5 && ph.value <= 8.5) ? 'text-emerald-400' : 'text-amber-400' %>">
                 <%= ph.value %>
               </div>
@@ -82,61 +155,402 @@
             </div>
             <% } %>
           </div>
+
+          <!-- AI note for this site — injected after enrichment -->
+          <div id="ai-note-<%= site.site_id %>" class="hidden mt-3 text-xs leading-relaxed rounded-lg px-3 py-2" style="color:#94a3b8;background:rgba(14,165,233,0.06);border:1px solid rgba(14,165,233,0.1);"></div>
+
           <% if (discharge) { %>
-          <div class="mt-3 text-xs text-slate-500">
-            Updated <span class="text-slate-400"><%= new Date(discharge.recorded_at).toLocaleString() %></span>
+          <div class="mt-2 text-xs text-slate-600">
+            <% var ageMs = new Date() - new Date(discharge.recorded_at + 'Z');
+               var ageMin = Math.round(ageMs/60000); %>
+            <%= ageMin < 60 ? ageMin + 'm ago' : Math.round(ageMin/60) + 'h ago' %>
           </div>
           <% } %>
         <% } else { %>
-          <div class="text-xs text-slate-600 mt-3">Awaiting first data fetch...</div>
+          <div class="text-xs text-slate-600 mt-3 py-4 text-center">Awaiting first data fetch...</div>
         <% } %>
+
+        <!-- Card nav buttons -->
+        <div class="mt-3 pt-2.5 flex gap-1.5 flex-wrap" style="border-top:1px solid rgba(30,41,59,0.8);" onclick="event.stopPropagation()">
+          <a href="/visualize?site=<%= site.site_id %>"   class="card-nav-btn">Charts</a>
+          <a href="/forecast?site=<%= site.site_id %>"    class="card-nav-btn">Forecast</a>
+          <a href="/flow-network?site=<%= site.site_id %>" class="card-nav-btn">Network</a>
+          <a href="/compare?site=<%= site.site_id %>"     class="card-nav-btn">Compare</a>
+        </div>
       </div>
       <% } %>
+
+      <!-- Empty state when filter matches nothing -->
+      <div id="siteCardsEmpty" style="display:none;" class="col-span-full text-center py-12 text-slate-600 text-sm">
+        No sites match the current filter.
+      </div>
+    </div>
+
+    <!-- Weather & Precipitation -->
+    <div class="card mb-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-sm font-semibold text-slate-300">Upstream Precipitation</h2>
+        <div class="flex items-center gap-3">
+          <span id="wx-updated" class="text-xs text-slate-500"></span>
+          <button onclick="refreshWeather(this)" class="btn-secondary text-xs py-1 px-2">↻ Weather</button>
+        </div>
+      </div>
+
+      <!-- Current conditions strip -->
+      <div id="wx-conditions" class="flex flex-wrap gap-3 mb-4">
+        <div class="text-xs text-slate-600 italic">Loading weather data...</div>
+      </div>
+
+      <!-- 7-day precip forecast chart -->
+      <div style="height:160px;"><canvas id="precipChart"></canvas></div>
+      <div class="flex items-center gap-4 mt-2 text-xs text-slate-500">
+        <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#0ea5e9;display:inline-block;"></span>Portland</span>
+        <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#a78bfa;display:inline-block;"></span>Bull Run</span>
+        <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#34d399;display:inline-block;"></span>Mt. Hood</span>
+        <span class="ml-auto text-slate-600">inches/day · shaded = forecast</span>
+      </div>
     </div>
 
     <!-- Map -->
-    <div class="card mb-8">
-      <h2 class="text-sm font-semibold text-slate-300 mb-3">Monitoring Locations</h2>
-      <div id="map" class="w-full rounded-lg overflow-hidden" style="height:340px;"></div>
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-slate-300">Monitoring Locations</h2>
+        <span class="text-xs text-slate-500"><%= sites.length %> active sites</span>
+      </div>
+      <div id="map" class="w-full rounded-lg" style="height:320px;"></div>
     </div>
 
   </div>
 </main>
 
 <script>
-// Map
-const sites = <%- JSON.stringify(sites) %>;
-const map = L.map('map', { zoomControl: true }).setView([45.52, -122.68], 9);
+var SITES = <%- JSON.stringify(sites) %>;
+
+// ── Map ──────────────────────────────────────────────────────────────────────
+var map = L.map('map').setView([45.52, -122.68], 9);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
   attribution: '© OpenStreetMap © CARTO', maxZoom: 19
 }).addTo(map);
 
-const icon = L.divIcon({
+var markerIcon = L.divIcon({
   className: '',
-  html: '<div style="width:12px;height:12px;border-radius:50%;background:#0ea5e9;border:2px solid #38bdf8;box-shadow:0 0 8px #0ea5e9aa;"></div>',
-  iconSize: [12, 12], iconAnchor: [6, 6]
+  html: '<div style="width:11px;height:11px;border-radius:50%;background:#0ea5e9;border:2px solid #38bdf8;box-shadow:0 0 8px rgba(14,165,233,0.6);"></div>',
+  iconSize: [11,11], iconAnchor: [5,5]
 });
 
-for (const site of sites) {
+SITES.forEach(function(site) {
   if (site.latitude && site.longitude) {
-    L.marker([site.latitude, site.longitude], { icon })
+    L.marker([site.latitude, site.longitude], { icon: markerIcon })
       .addTo(map)
-      .bindPopup(`<b>${site.name}</b><br>USGS ${site.site_id}<br><a href="/visualize?site=${site.site_id}" style="color:#38bdf8">View Data →</a>`);
+      .bindPopup('<b>' + site.name + '</b><br>USGS ' + site.site_id + '<br><a href="/visualize?site=' + site.site_id + '" style="color:#38bdf8;">View Data →</a>');
   }
-}
+});
 
-async function triggerRefresh() {
-  const btn = event.target;
+// ── Refresh ──────────────────────────────────────────────────────────────────
+async function triggerRefresh(btn) {
   btn.textContent = 'Fetching...';
   btn.disabled = true;
   try {
     await fetch('/api/data/refresh', { method: 'POST' });
-    setTimeout(() => location.reload(), 2000);
-  } catch {
+    setTimeout(function() { location.reload(); }, 2500);
+  } catch(e) {
     btn.textContent = 'Error';
-    setTimeout(() => { btn.textContent = 'Refresh Now'; btn.disabled = false; }, 2000);
+    setTimeout(function() { btn.textContent = 'Refresh Data'; btn.disabled = false; }, 2000);
   }
 }
+
+// ── Weather ───────────────────────────────────────────────────────────────────
+var precipChart = null;
+
+(async function loadWeather() {
+  try {
+    var resp = await fetch('/api/data/weather');
+    var json = await resp.json();
+    var rows = json.data || [];
+    if (!rows.length) { document.getElementById('wx-conditions').innerHTML = '<div class="text-xs text-slate-600">No weather data yet — fetching on startup.</div>'; return; }
+
+    // Current conditions: latest hourly temp + precip for Portland
+    var portlandRows = rows.filter(function(r) { return r.location_id === 'portland' && !r.is_forecast; });
+    var tempRows  = portlandRows.filter(function(r) { return r.parameter === 'temperature'; }).sort(function(a,b){ return b.recorded_at.localeCompare(a.recorded_at); });
+    var recentRows = rows.filter(function(r) { return !r.is_forecast && r.parameter === 'precipitation' && r.interval === 'hourly'; });
+    var cutoff24 = new Date(Date.now() - 24*3600*1000).toISOString().replace('T',' ').slice(0,19);
+
+    var locs = ['portland','bull_run','mt_hood'];
+    var locNames = { portland:'Portland', bull_run:'Bull Run', mt_hood:'Mt. Hood' };
+    var conditions = '';
+
+    if (tempRows.length) {
+      conditions += '<div class="flex items-center gap-2 px-3 py-2 rounded-lg" style="background:rgba(30,41,59,0.5);"><span class="text-xs text-slate-400">Portland</span><span class="text-sm font-semibold text-slate-200">' + tempRows[0].value.toFixed(1) + '°F</span></div>';
+    }
+
+    locs.forEach(function(locId) {
+      var locPrecip = recentRows.filter(function(r) { return r.location_id === locId && r.recorded_at >= cutoff24; });
+      var total24 = locPrecip.reduce(function(s,r){ return s + r.value; }, 0);
+      var color = total24 > 0.5 ? '#38bdf8' : total24 > 0 ? '#94a3b8' : '#475569';
+      conditions += '<div class="flex flex-col gap-0.5 px-3 py-2 rounded-lg" style="background:rgba(30,41,59,0.5);">' +
+        '<span class="text-xs text-slate-400">' + locNames[locId] + ' (24h)</span>' +
+        '<span class="text-sm font-semibold" style="color:' + color + ';">' + total24.toFixed(2) + '"</span>' +
+      '</div>';
+    });
+
+    document.getElementById('wx-conditions').innerHTML = conditions;
+
+    // 7-day daily forecast bar chart — group by location
+    var dailyForecast = rows.filter(function(r) { return r.parameter === 'precip_daily' && r.interval === 'daily'; });
+    var today = new Date().toISOString().slice(0,10);
+    var forecastDays = [];
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(Date.now() + i * 86400000);
+      forecastDays.push(d.toISOString().slice(0,10));
+    }
+
+    var locColors = { portland:'#0ea5e9', bull_run:'#a78bfa', mt_hood:'#34d399' };
+    var datasets = locs.map(function(locId) {
+      var vals = forecastDays.map(function(day) {
+        var match = dailyForecast.find(function(r) { return r.location_id === locId && r.recorded_at.slice(0,10) === day; });
+        return match ? match.value : 0;
+      });
+      return {
+        label: locNames[locId],
+        data: vals,
+        backgroundColor: forecastDays.map(function(day, i) {
+          return (day >= today) ? locColors[locId] + 'aa' : locColors[locId] + '44';
+        }),
+        borderColor: locColors[locId],
+        borderWidth: 1,
+        borderRadius: 3,
+      };
+    });
+
+    var labels = forecastDays.map(function(d) {
+      return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month:'short', day:'numeric' });
+    });
+
+    if (precipChart) precipChart.destroy();
+    var isLight = document.body.classList.contains('light');
+    precipChart = new Chart(document.getElementById('precipChart'), {
+      type: 'bar',
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { backgroundColor: isLight ? '#fff' : '#1e293b', titleColor: '#64748b', bodyColor: isLight ? '#0f172a' : '#f1f5f9' }
+        },
+        scales: {
+          x: { ticks: { color: isLight ? '#64748b' : '#475569', font: { size: 11 } }, grid: { display: false } },
+          y: { ticks: { color: isLight ? '#64748b' : '#475569', font: { size: 11 } }, grid: { color: isLight ? 'rgba(0,0,0,0.06)' : '#1e293b' }, title: { display: false } }
+        }
+      }
+    });
+
+    // Timestamp
+    var newestFetch = rows.reduce(function(m, r) { return r.fetched_at > m ? r.fetched_at : m; }, '');
+    if (newestFetch) document.getElementById('wx-updated').textContent = 'Weather: ' + new Date(newestFetch + 'Z').toLocaleTimeString();
+
+  } catch(e) {
+    console.warn('Weather load error:', e.message);
+  }
+})();
+
+async function refreshWeather(btn) {
+  btn.textContent = 'Fetching...';
+  btn.disabled = true;
+  try {
+    await fetch('/api/data/weather/refresh', { method: 'POST' });
+    setTimeout(function() { location.reload(); }, 3000);
+  } catch(e) {
+    btn.textContent = '↻ Weather';
+    btn.disabled = false;
+  }
+}
+
+// ── AI Enrichment ─────────────────────────────────────────────────────────────
+var LEVEL_STYLES = {
+  ok:       { bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.25)', text: '#34d399', badge: '#34d399', badgeBg: 'rgba(16,185,129,0.15)' },
+  watch:    { bg: 'rgba(251,191,36,0.10)', border: 'rgba(251,191,36,0.25)', text: '#fbbf24', badge: '#fbbf24', badgeBg: 'rgba(251,191,36,0.15)' },
+  warning:  { bg: 'rgba(251,146,60,0.10)', border: 'rgba(251,146,60,0.25)', text: '#fb923c', badge: '#fb923c', badgeBg: 'rgba(251,146,60,0.15)' },
+  critical: { bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.3)', text: '#f87171', badge: '#f87171', badgeBg: 'rgba(248,113,113,0.15)' },
+  info:     { bg: 'rgba(14,165,233,0.08)',  border: 'rgba(14,165,233,0.2)', text: '#38bdf8', badge: '#38bdf8', badgeBg: 'rgba(14,165,233,0.15)' }
+};
+
+var ALERT_LEVEL_STYLES = {
+  info:     'rgba(14,165,233,0.12)',
+  watch:    'rgba(251,191,36,0.12)',
+  warning:  'rgba(251,146,60,0.12)',
+  critical: 'rgba(248,113,113,0.15)'
+};
+
+// ── Filter & Sort ─────────────────────────────────────────
+var _currentFilter = 'all';
+var _activeParams  = {};   // param key -> true when toggled on
+
+function setFilter(f) {
+  _currentFilter = f;
+  document.querySelectorAll('.dash-filter[data-filter]').forEach(function(b) {
+    b.classList.toggle('active', b.getAttribute('data-filter') === f);
+  });
+  applyFiltersAndSort();
+}
+
+function toggleParamFilter(param, btn) {
+  _activeParams[param] = !_activeParams[param];
+  btn.classList.toggle('active', !!_activeParams[param]);
+  applyFiltersAndSort();
+}
+
+function applyFiltersAndSort() {
+  var sort       = document.getElementById('sortSelect').value;
+  var searchText = (document.getElementById('siteSearch').value || '').toLowerCase().trim();
+  var grid       = document.getElementById('siteCardsGrid');
+  var empty      = document.getElementById('siteCardsEmpty');
+  var cards      = Array.from(document.querySelectorAll('#siteCardsGrid .card[id^="card-"]'));
+  var visible    = 0;
+
+  cards.forEach(function(card) {
+    var show = true;
+
+    // 1. Name search — matches site name or type
+    if (searchText) {
+      var name = (card.getAttribute('data-name') || '').toLowerCase();
+      var type = (card.getAttribute('data-type') || '').toLowerCase();
+      if (name.indexOf(searchText) === -1 && type.indexOf(searchText) === -1) show = false;
+    }
+
+    // 2. Status chip
+    if (show) {
+      if (_currentFilter === 'live') {
+        show = card.getAttribute('data-has-data') === 'true';
+      } else if (_currentFilter === 'offline') {
+        show = card.getAttribute('data-has-data') !== 'true';
+      } else if (_currentFilter === 'alerted') {
+        var lvl = card.getAttribute('data-alert-level');
+        show = lvl === 'watch' || lvl === 'warning' || lvl === 'critical';
+      }
+    }
+
+    // 3. Parameter chips — AND: card must have all selected params
+    if (show) {
+      Object.keys(_activeParams).forEach(function(param) {
+        if (_activeParams[param] && card.getAttribute('data-has-' + param) !== 'true') show = false;
+      });
+    }
+
+    card.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+
+  // 4. Sort visible cards
+  var ALERT_ORDER = { critical: 0, warning: 1, watch: 2, ok: 3, info: 4, idle: 5 };
+  var visibleCards = cards.filter(function(c) { return c.style.display !== 'none'; });
+  visibleCards.sort(function(a, b) {
+    if (sort === 'name')
+      return (a.getAttribute('data-name') || '').localeCompare(b.getAttribute('data-name') || '');
+    if (sort === 'discharge')
+      return parseFloat(b.getAttribute('data-discharge') || -1) - parseFloat(a.getAttribute('data-discharge') || -1);
+    if (sort === 'temp')
+      return parseFloat(b.getAttribute('data-temp') || -1) - parseFloat(a.getAttribute('data-temp') || -1);
+    if (sort === 'alert') {
+      var ao = ALERT_ORDER[a.getAttribute('data-alert-level')] != null ? ALERT_ORDER[a.getAttribute('data-alert-level')] : 5;
+      var bo = ALERT_ORDER[b.getAttribute('data-alert-level')] != null ? ALERT_ORDER[b.getAttribute('data-alert-level')] : 5;
+      return ao - bo;
+    }
+    return 0;
+  });
+
+  visibleCards.forEach(function(card) { grid.insertBefore(card, empty); });
+  empty.style.display = visible === 0 ? 'block' : 'none';
+}
+
+async function loadEnrichment() {
+  var bar = document.getElementById('ai-status-bar');
+  bar.style.display = 'flex';
+  document.getElementById('ai-status-loading').style.display = 'flex';
+  document.getElementById('ai-retry-btn').style.display = 'none';
+  document.getElementById('ai-status-text').textContent = '';
+  document.getElementById('ai-alerts').innerHTML = '';
+
+  try {
+    var resp = await fetch('/api/insights/enrich', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page: 'dashboard', context: {} })
+    });
+    var json = await resp.json();
+    var d = json.data || {};
+
+    document.getElementById('ai-status-loading').style.display = 'none';
+    document.getElementById('ai-retry-btn').style.display = 'inline';
+
+    // Status line
+    if (d.status_line) {
+      document.getElementById('ai-status-text').textContent = d.status_line;
+    } else if (d._raw) {
+      document.getElementById('ai-status-text').textContent = d._raw.slice(0, 200);
+    }
+
+    // Alert chips
+    var alertsEl = document.getElementById('ai-alerts');
+    if (d.alerts && d.alerts.length) {
+      d.alerts.forEach(function(alert) {
+        var s = LEVEL_STYLES[alert.level] || LEVEL_STYLES.info;
+        var chip = document.createElement('span');
+        chip.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:9999px;background:' + s.badgeBg + ';color:' + s.badge + ';border:1px solid ' + s.border + ';';
+        chip.textContent = alert.message;
+        alertsEl.appendChild(chip);
+      });
+    }
+
+    // Per-site notes
+    if (d.site_notes) {
+      Object.keys(d.site_notes).forEach(function(siteId) {
+        var sn = d.site_notes[siteId];
+        var s = LEVEL_STYLES[sn.level] || LEVEL_STYLES.ok;
+
+        // Update card alert-level for filter
+        var card = document.getElementById('card-' + siteId);
+        if (card && sn.level) card.setAttribute('data-alert-level', sn.level);
+
+        // Badge in card header
+        var badgeEl = document.getElementById('ai-badge-' + siteId);
+        if (badgeEl && sn.badge) {
+          badgeEl.textContent = sn.badge;
+          badgeEl.style.cssText = 'background:' + s.badgeBg + ';color:' + s.badge + ';';
+          badgeEl.classList.remove('hidden');
+        }
+
+        // Note below metrics
+        var noteEl = document.getElementById('ai-note-' + siteId);
+        if (noteEl && sn.note) {
+          var noteText = sn.note;
+          if (sn.metric_context) noteText += ' (' + sn.metric_context + ')';
+          noteEl.textContent = noteText;
+          noteEl.style.color = s.text;
+          noteEl.style.background = s.bg;
+          noteEl.style.borderColor = s.border;
+          noteEl.classList.remove('hidden');
+        }
+
+        // Color the card border if watch/warning/critical
+        if (sn.level && sn.level !== 'ok') {
+          if (card) card.style.borderColor = s.border;
+        }
+      });
+    }
+
+    // Re-apply active filter now that alert levels are set
+    applyFiltersAndSort();
+
+  } catch(e) {
+    document.getElementById('ai-status-loading').style.display = 'none';
+    document.getElementById('ai-status-text').textContent = 'AI analysis unavailable.';
+    document.getElementById('ai-retry-btn').style.display = 'inline';
+    console.warn('Enrichment error:', e.message);
+  }
+}
+
+loadEnrichment();
+window.addEventListener('hydroProfileUpdated', function() { loadEnrichment(); });
 </script>
 
 <%- include('partials/foot') %>

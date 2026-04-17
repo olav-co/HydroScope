@@ -1,0 +1,2123 @@
+<%- include('partials/head', { title: 'Flow Network' }) %>
+<%- include('partials/nav') %>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+/* ── chips ───────────────────────────────────────────────────────────────────*/
+.fn-chip {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:5px 11px; border-radius:20px; border:1px solid #334155;
+  background:transparent; color:#64748b; font-size:12px; cursor:pointer;
+  user-select:none; transition:all 0.15s;
+}
+.fn-chip:hover { border-color:#475569; color:#94a3b8; }
+.fn-chip.active { background:#0ea5e9; border-color:#0ea5e9; color:#fff; }
+.fn-chip .cdot { width:7px; height:7px; border-radius:50%; background:#334155; transition:background 0.15s; }
+.fn-chip.active .cdot { background:rgba(255,255,255,0.5); }
+.param-chip {
+  padding:4px 11px; border-radius:20px; border:1px solid #334155;
+  background:transparent; color:#64748b; font-size:11px; cursor:pointer;
+  transition:all 0.15s; user-select:none;
+}
+.param-chip:hover { border-color:#475569; color:#94a3b8; }
+.param-chip.active { background:#334155; border-color:#475569; color:#e2e8f0; }
+
+/* ── canvas card ─────────────────────────────────────────────────────────────*/
+#canvas-card {
+  position: relative;
+  transition: border-radius 0.15s, box-shadow 0.15s;
+}
+#canvas-card.fn-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  border-radius: 0 !important;
+  background: #0a1628;
+  display: flex;
+  flex-direction: column;
+}
+#canvas-card.fn-fullscreen {
+  height: 100vh !important;
+}
+
+/* ── svg canvas ──────────────────────────────────────────────────────────────*/
+#network-svg { width:100%; display:block; background:#0a1628; }
+.node-name  { font-family:'Inter',sans-serif; font-weight:600; font-size:11.5px; }
+.node-param { font-family:'JetBrains Mono','Courier New',monospace; font-size:10px; }
+.link-path  { fill:none; }
+.link-halo  { fill:none; pointer-events:none; }
+.link-label {
+  font-family:'Inter',sans-serif; pointer-events:none; user-select:none;
+  paint-order: stroke fill;
+  stroke: rgba(10,22,40,0.88);
+  stroke-width: 5px;
+  stroke-linejoin: round;
+}
+
+/* ── countdown bar ───────────────────────────────────────────────────────────*/
+.analysis-bar-track {
+  position:absolute; bottom:0; left:0; right:0; height:2px;
+  overflow:hidden; border-radius:0 0 8px 8px; pointer-events:none;
+}
+#analysis-progress-bar {
+  height:100%; width:0%; background:linear-gradient(90deg,#0ea5e9,#38bdf8);
+  transition:none;
+}
+
+/* ── node (StreamSets-style compact) ────────────────────────────────────────*/
+.node-group { cursor:pointer; }
+.node-group:active { cursor:grabbing; }
+.node-group rect.node-body { transition:filter 0.15s; }
+.node-group:hover rect.node-body { filter:brightness(1.18); }
+
+/* ── slideover ───────────────────────────────────────────────────────────────*/
+#fn-slideover {
+  position:fixed; top:0; right:0; height:100vh; width:520px;
+  background:#0a1628; border-left:2px solid #1e293b;
+  z-index:1001; transform:translateX(100%);
+  transition:transform 0.25s cubic-bezier(0.4,0,0.2,1);
+  display:flex; flex-direction:column; overflow:hidden;
+}
+@media(max-width:560px){ #fn-slideover{ width:100vw; } }
+#fn-slideover-backdrop {
+  position:fixed; inset:0; z-index:1000;
+  background:rgba(0,0,0,0.35); display:none;
+  backdrop-filter:blur(1px);
+}
+/* collapsible sections */
+.so-sect { border-bottom:1px solid #0f1f35; }
+.so-sect:last-child { border-bottom:none; }
+.so-sect-hdr {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 18px 9px; cursor:pointer; user-select:none;
+  transition:background 0.12s;
+}
+.so-sect-hdr:hover { background:rgba(255,255,255,0.025); }
+.so-sect-body { padding:0 18px 14px; }
+.so-section-label {
+  font-size:9px; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
+  color:#475569;
+}
+.so-async-ph {
+  font-size:11px; color:#334155; display:flex; align-items:center; gap:6px;
+  padding:6px 0;
+}
+.so-reading-row {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:8px 12px; border-radius:7px; margin-bottom:5px;
+  border:1px solid rgba(255,255,255,0.04);
+}
+.so-conn-row {
+  display:flex; align-items:center; gap:9px; padding:8px 11px;
+  border-radius:7px; margin-bottom:5px; border:1px solid transparent;
+}
+.so-sparkline-row {
+  display:flex; align-items:center; gap:10px;
+  padding:6px 0; border-bottom:1px solid #0f1f35;
+}
+.so-sparkline-row:last-child { border-bottom:none; }
+.so-flood-bar {
+  position:relative; height:10px; border-radius:5px;
+  background:#0f1f35; overflow:visible; margin:8px 0 4px;
+}
+.so-flood-marker {
+  position:absolute; top:-3px; width:3px; height:16px;
+  border-radius:2px; transform:translateX(-50%);
+}
+.so-stage-pip {
+  position:absolute; top:0; left:0; height:100%;
+  border-radius:5px; transition:width 0.4s;
+}
+.so-badge {
+  display:inline-flex; align-items:center; gap:4px;
+  font-size:9px; font-weight:700; padding:2px 7px;
+  border-radius:4px; letter-spacing:.06em; text-transform:uppercase;
+}
+.so-sitrep-btn {
+  width:100%; padding:8px 0; border-radius:7px; border:1px solid #334155;
+  background:transparent; color:#94a3b8; font-size:11px; font-weight:600;
+  cursor:pointer; transition:all 0.15s; letter-spacing:.04em;
+}
+.so-sitrep-btn:hover { border-color:#0ea5e9; color:#e2e8f0; background:rgba(14,165,233,0.06); }
+.so-sitrep-btn:disabled { opacity:0.5; cursor:default; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── map view ────────────────────────────────────────────────────────────────*/
+#map-view { display:none; width:100%; min-height:458px; }
+#canvas-card.fn-fullscreen #map-view { flex:1; min-height:unset !important; height:0 !important; }
+
+/* Animated flow lines — dashes march downstream */
+@keyframes flow-march { to { stroke-dashoffset: -40; } }
+.flow-line-anim { animation: flow-march 1.4s linear infinite; }
+.flow-line-anim-fast { animation: flow-march 0.7s linear infinite; }
+.flow-line-anim-slow { animation: flow-march 2.4s linear infinite; }
+.fn-map-label.leaflet-tooltip {
+  background:rgba(8,18,32,0.92); border:1px solid rgba(255,255,255,0.18); border-radius:4px;
+  color:#f1f5f9; font-size:10px; font-weight:600; padding:2px 7px;
+  white-space:nowrap; box-shadow:0 1px 4px rgba(0,0,0,0.4); pointer-events:none;
+}
+.fn-map-label.leaflet-tooltip::before { display:none; }
+.leaflet-popup-content-wrapper {
+  background:#0f172a; border:1px solid #334155; border-radius:8px;
+  box-shadow:0 4px 20px rgba(0,0,0,0.5); color:#e2e8f0;
+}
+.leaflet-popup-tip { background:#0f172a; }
+.leaflet-popup-close-button { color:#64748b !important; }
+.leaflet-control-zoom a { background:#0f172a !important; border-color:#334155 !important; color:#94a3b8 !important; }
+.leaflet-control-zoom a:hover { background:#1e293b !important; color:#e2e8f0 !important; }
+.leaflet-control-attribution { background:rgba(15,23,42,0.8) !important; color:#475569 !important; font-size:9px; }
+.leaflet-control-attribution a { color:#64748b !important; }
+
+/* ── nldi badge ──────────────────────────────────────────────────────────────*/
+.nldi-badge {
+  font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px;
+  background:rgba(99,102,241,0.2); color:#a5b4fc; letter-spacing:.05em; text-transform:uppercase;
+}
+
+/* ── AI panel ────────────────────────────────────────────────────────────────*/
+.impl-card { border-radius:8px; padding:10px 14px; margin-bottom:8px; background:rgba(30,41,59,0.7); border:1px solid #1e293b; }
+.impl-card.warning  { border-color:rgba(251,146,60,0.3); background:rgba(251,146,60,0.06); }
+.impl-card.critical { border-color:rgba(239,68,68,0.4);  background:rgba(239,68,68,0.07); }
+.impl-card.watch    { border-color:rgba(250,204,21,0.3);  background:rgba(250,204,21,0.05); }
+.sev-badge { font-size:9px; font-weight:700; padding:1px 6px; border-radius:3px; text-transform:uppercase; letter-spacing:.07em; }
+.sev-info     { background:rgba(14,165,233,0.2);  color:#38bdf8; }
+.sev-watch    { background:rgba(250,204,21,0.2);  color:#fde047; }
+.sev-warning  { background:rgba(251,146,60,0.2);  color:#fdba74; }
+.sev-critical { background:rgba(239,68,68,0.25);  color:#fca5a5; }
+
+/* ── connection sidebar ──────────────────────────────────────────────────────*/
+.conn-row { display:flex; align-items:center; gap:6px; padding:5px 8px; background:#0f172a; border:1px solid #1e293b; border-radius:6px; font-size:11px; }
+.conn-from { color:#38bdf8; font-weight:500; max-width:70px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.conn-arrow { color:#475569; font-size:11px; flex-shrink:0; }
+.conn-to   { color:#34d399; font-weight:500; flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+</style>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Flow Network</h1>
+      <p class="text-xs text-slate-400 mt-0.5">Sites positioned by geographic coordinates · topology from USGS NLDI · AI analysis auto-updates on selection change</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="sync-status" class="text-xs text-slate-600"></span>
+      <button id="syncBtn" onclick="syncTopology()" class="fn-chip" style="border-radius:6px;font-size:11px;">
+        <svg style="width:11px;height:11px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+        Discover Topology
+      </button>
+      <select id="fnHours" class="input" style="font-size:12px;padding:5px 10px;">
+        <option value="24">24 Hours</option>
+        <option value="72" selected>3 Days</option>
+        <option value="168">7 Days</option>
+      </select>
+    </div>
+  </header>
+
+  <div class="flex-1 overflow-y-auto p-5 flex flex-col gap-5">
+
+    <!-- Controls -->
+    <div class="card">
+      <div class="flex flex-col gap-4">
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <label class="label mb-0">Sites <span class="text-slate-600 font-normal">(select any)</span></label>
+            <span id="site-count" class="text-xs text-slate-600">0 selected</span>
+          </div>
+          <div id="site-chips" class="flex flex-wrap gap-2">
+            <% sites.forEach(function(s, i) {
+               var colors = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15','#e879f9','#22d3ee','#4ade80','#f97316','#818cf8','#fbbf24'];
+               var c = colors[i % colors.length]; %>
+            <button class="fn-chip" data-id="<%= s.site_id %>" data-name="<%= s.name %>" data-color="<%= c %>" onclick="toggleSite(this)">
+              <span class="cdot"></span>
+              <%= s.name %>
+            </button>
+            <% }) %>
+          </div>
+        </div>
+        <div>
+          <label class="label mb-2">Parameters <span class="text-slate-600 font-normal">(select any)</span></label>
+          <div class="flex flex-wrap gap-2" id="param-chips">
+            <button class="param-chip active" data-code="00060" data-name="Discharge"    data-unit="ft³/s" onclick="toggleParam(this)">Discharge (ft³/s)</button>
+            <button class="param-chip active" data-code="00065" data-name="Gage Height"  data-unit="ft"    onclick="toggleParam(this)">Gage Height (ft)</button>
+            <button class="param-chip"        data-code="00010" data-name="Water Temp"   data-unit="°C"    onclick="toggleParam(this)">Temperature (°C)</button>
+            <button class="param-chip"        data-code="00300" data-name="DO"           data-unit="mg/L"  onclick="toggleParam(this)">Dissolved O₂ (mg/L)</button>
+            <button class="param-chip"        data-code="00400" data-name="pH"           data-unit=""      onclick="toggleParam(this)">pH</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Network + right panel -->
+    <div class="flex gap-4" style="align-items:stretch;">
+
+      <div id="canvas-card" class="card flex-1" style="padding:0;overflow:hidden;min-height:500px;height:calc(100vh - 290px);display:flex;flex-direction:column;">
+        <!-- toolbar -->
+        <div class="flex items-center gap-2 px-4 py-2" style="border-bottom:1px solid #1e293b;flex-shrink:0;">
+          <span class="nldi-badge">USGS NLDI</span>
+          <span id="view-hint" class="text-xs text-slate-600">Geographic lat/lon layout · drag nodes to adjust · topology from NLDI</span>
+          <button onclick="resetLayout()" id="resetBtn" class="text-xs text-slate-600 hover:text-slate-300 ml-auto" style="background:none;border:none;cursor:pointer;" title="Reset positions">↺ Reset</button>
+          <button onclick="toggleMapMode()" id="mapToggleBtn" class="text-xs text-slate-500 hover:text-slate-300" style="background:none;border:none;cursor:pointer;padding:2px 8px;border:1px solid #334155;border-radius:4px;" title="Switch to real map view">
+            ⊕ Map
+          </button>
+          <button onclick="toggleFullscreen()" id="expandBtn" class="text-xs text-slate-500 hover:text-slate-300" style="background:none;border:none;cursor:pointer;padding:2px 6px;border:1px solid #334155;border-radius:4px;" title="Expand / collapse">
+            <span id="expand-label">⛶</span>
+          </button>
+        </div>
+
+        <div id="canvas-empty" class="absolute inset-0 flex items-center justify-center pointer-events-none" style="top:42px;">
+          <p class="text-sm text-slate-600">Select 2 or more sites above to draw the network</p>
+        </div>
+
+        <svg id="network-svg" style="flex:1;min-height:0;width:100%;display:block;"></svg>
+        <div id="map-view" style="flex:1;min-height:0;position:relative;">
+          <div id="flowline-status" style="display:none;position:absolute;bottom:10px;left:50%;transform:translateX(-50%);z-index:1000;align-items:center;gap:6px;background:rgba(10,22,40,0.88);border:1px solid #1e293b;border-radius:20px;padding:5px 14px;font-size:11px;font-weight:600;color:#94a3b8;pointer-events:none;white-space:nowrap;">
+            <svg class="animate-spin" width="12" height="12" viewBox="0 0 24 24" style="flex-shrink:0;color:#38bdf8;" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+            <span id="flowline-status-text"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right column: AI analysis -->
+      <div style="width:300px;flex-shrink:0;display:flex;flex-direction:column;height:calc(100vh - 290px);min-height:500px;">
+
+        <!-- AI Analysis (auto, no button) -->
+        <div id="ai-panel" class="card" style="display:none;position:relative;overflow:hidden;flex:1;overflow-y:auto;">
+          <!-- countdown progress bar -->
+          <div class="analysis-bar-track"><div id="analysis-progress-bar"></div></div>
+
+          <div class="flex items-center gap-2 mb-4">
+            <span class="ai-badge">AI</span>
+            <span class="text-xs font-semibold text-slate-300 uppercase tracking-wider">Network Analysis</span>
+            <span id="analysis-pending" class="hidden text-xs text-slate-500" style="font-style:italic;">updating…</span>
+            <span id="ai-cached" class="hidden ml-2 text-xs text-slate-600">cached</span>
+            <button onclick="analyzeNetwork()" class="ml-auto text-xs text-slate-500 hover:text-hydro-400" style="background:none;border:none;cursor:pointer;" title="Re-analyze now">↻ refresh</button>
+          </div>
+
+          <div id="ai-loading" class="hidden flex items-center gap-2 text-xs text-slate-500">
+            <svg class="animate-spin" style="width:12px;height:12px;color:#0ea5e9;" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+            Analyzing cascade effects…
+          </div>
+
+          <div id="ai-body" style="display:none;">
+            <div id="ai-summary-wrap" class="hidden mb-4 p-3 rounded-lg" style="background:rgba(14,165,233,0.06);border:1px solid rgba(14,165,233,0.15);">
+              <div class="text-xs text-slate-500 mb-1">Network Summary</div>
+              <div id="ai-summary" class="text-sm text-slate-200 leading-relaxed"></div>
+              <div id="ai-status" class="mt-1 text-xs"></div>
+            </div>
+            <div id="ai-implications-wrap" class="hidden mb-4">
+              <div class="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Connection Implications</div>
+              <div id="ai-implications"></div>
+            </div>
+            <div id="ai-sitenotes-wrap" class="hidden mb-4">
+              <div class="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Site Observations</div>
+              <div id="ai-sitenotes" class="grid gap-2"></div>
+            </div>
+            <div id="ai-rec-wrap" class="hidden p-3 rounded-lg" style="background:rgba(52,211,153,0.06);border:1px solid rgba(52,211,153,0.15);">
+              <div class="text-xs font-medium text-emerald-400 uppercase tracking-wider mb-1">Recommendation</div>
+              <div id="ai-rec" class="text-sm text-slate-200 leading-relaxed"></div>
+            </div>
+            <div id="ai-raw" class="hidden text-sm text-slate-400"></div>
+          </div>
+        </div>
+
+      </div><!-- /right column -->
+
+    </div>
+
+    <!-- Flow Connections (bottom) -->
+    <div id="conn-panel" class="card" style="padding:14px 18px;">
+      <div class="flex items-center gap-2 mb-3">
+        <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Flow Connections</div>
+        <span class="nldi-badge">NLDI</span>
+      </div>
+      <div id="conn-list" class="flex flex-wrap gap-2 text-xs text-slate-600">Discovering…</div>
+    </div>
+
+  </div>
+</main>
+
+<!-- ── Slideover ───────────────────────────────────────────────────────────── -->
+<div id="fn-slideover-backdrop" onclick="closeSlideover()"></div>
+<div id="fn-slideover">
+  <div id="so-header" style="padding:16px 18px;border-bottom:1px solid #1e293b;flex-shrink:0;display:flex;align-items:center;gap:10px;">
+    <div id="so-icon" style="width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+      <svg width="18" height="18" viewBox="0 0 18 18" id="so-icon-svg" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></svg>
+    </div>
+    <div style="flex:1;min-width:0;">
+      <div id="so-site-name" style="font-weight:700;font-size:14px;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+      <div id="so-site-meta" style="font-size:10px;color:#475569;margin-top:1px;"></div>
+    </div>
+    <button onclick="closeSlideover()" style="background:none;border:none;cursor:pointer;color:#475569;font-size:20px;line-height:1;padding:4px;flex-shrink:0;" title="Close">&times;</button>
+  </div>
+  <div id="so-body" style="flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:20px;"></div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+var SITES       = <%- JSON.stringify(sites) %>;
+var INIT_CONNS  = <%- JSON.stringify(connections) %>;
+var SITE_COLORS = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15','#e879f9','#22d3ee','#4ade80','#f97316','#818cf8','#fbbf24'];
+
+var _selectedSites  = [];
+var _selectedParams = [];
+var _connections    = INIT_CONNS.slice();
+var _readings       = {};
+var _d3Nodes        = [];   // persisted between renders; each node keeps x,y,targetX,targetY
+var _d3Links        = [];
+var _simulation     = null;
+
+var ANALYZE_DELAY   = 2500;
+var _analyzeTimer   = null;
+
+// Re-run analysis when user updates their profile (role/interests/context change AI framing)
+window.addEventListener('hydroProfileUpdated', function() {
+  scheduleAnalysis();
+});
+var _fullscreen     = false;
+var _mapMode        = false;
+var _leafletMap     = null;
+var _leafletLayers  = [];
+var _flowlineCache  = {};   // key: "fromId->toId" → [[lat,lon],...] or null  (cleared on reload)
+var _mapRenderToken = 0;    // incremented per render; stale async renders self-abort
+var STALE_HOURS     = 6;
+
+// ── Chip toggles ──────────────────────────────────────────────────────────────
+function toggleSite(btn) {
+  btn.classList.toggle('active');
+  btn.querySelector('.cdot').style.background = btn.classList.contains('active')
+    ? btn.dataset.color : '#334155';
+  _selectedSites = Array.from(document.querySelectorAll('#site-chips .fn-chip.active')).map(function(b) {
+    return { site_id: b.dataset.id, name: b.dataset.name, color: b.dataset.color };
+  });
+  document.getElementById('site-count').textContent = _selectedSites.length + ' selected';
+  refreshData();
+}
+
+function toggleParam(btn) {
+  btn.classList.toggle('active');
+  _selectedParams = Array.from(document.querySelectorAll('#param-chips .param-chip.active')).map(function(b) {
+    return { code: b.dataset.code, name: b.dataset.name, unit: b.dataset.unit };
+  });
+  refreshData();
+}
+
+// ── Data fetch ────────────────────────────────────────────────────────────────
+async function refreshData() {
+  var empty = document.getElementById('canvas-empty');
+  if (!_selectedSites.length) {
+    empty.style.opacity = '1'; empty.style.pointerEvents = 'none';
+    redrawNetwork(); renderConnections(); cancelAnalysis();
+    return;
+  }
+  empty.style.opacity = '0';
+
+  var hours = parseInt(document.getElementById('fnHours').value);
+  await Promise.all(_selectedSites.map(async function(s) {
+    var paramReadings = [];
+    for (var p of _selectedParams) {
+      try {
+        var r = await fetch('/api/data/timeseries?site=' + s.site_id + '&param=' + p.code + '&hours=' + hours);
+        var j = await r.json();
+        var rows = j.data || [];
+        if (!rows.length) continue;
+        var first = rows[0].value, last = rows[rows.length-1].value;
+        var diff = last - first, pct = Math.abs(diff) / (Math.abs(first) || 1);
+        paramReadings.push({
+          param_code: p.code, param_name: p.name, unit: p.unit, value: last,
+          trend: pct < 0.02 ? 'stable' : diff > 0 ? 'rising' : 'falling',
+        });
+      } catch(_) {}
+    }
+    _readings[s.site_id] = paramReadings;
+  }));
+  if (_mapMode) renderLeafletMap(); else redrawNetwork();
+  renderConnections();
+  scheduleAnalysis();
+}
+
+// ── Node dimensions (fixed compact size) ─────────────────────────────────────
+var NODE_W   = 168;
+var NODE_H   = 54;
+var ICON_W   = 44;
+var _dragMoved = false;
+var _dragStartClient = null;
+function nodeHeight() { return NODE_H; }
+// Collision radius: half-diagonal of the node rectangle + padding
+function collisionR() {
+  return Math.sqrt((NODE_W/2) * (NODE_W/2) + (NODE_H/2) * (NODE_H/2)) + 10;
+}
+
+// ── Geographic targets ────────────────────────────────────────────────────────
+// Returns { site_id → {tx, ty} } mapped to canvas (W×H).
+// All selected sites are included. Uses ALL selected sites (not just those
+// with existing nodes) to build a stable shared coordinate system.
+function computeGeoTargets(W, H) {
+  var PAD_X = NODE_W / 2 + 28, PAD_Y = 70;
+
+  var withCoords = _selectedSites.map(function(s) {
+    var full = SITES.find(function(f){ return f.site_id === s.site_id; }) || {};
+    return { id: s.site_id, lat: full.latitude, lon: full.longitude };
+  });
+
+  var lats = withCoords.filter(function(w){ return Number.isFinite(w.lat); }).map(function(w){ return w.lat; });
+  var lons = withCoords.filter(function(w){ return Number.isFinite(w.lon); }).map(function(w){ return w.lon; });
+
+  // If not enough coordinates, return grid fallback
+  if (lats.length < 2 || lons.length < 2) {
+    var cols = Math.ceil(Math.sqrt(_selectedSites.length));
+    var out = {};
+    _selectedSites.forEach(function(s, i) {
+      out[s.site_id] = {
+        tx: PAD_X + (i % cols) * ((W - 2*PAD_X) / Math.max(cols-1, 1)),
+        ty: PAD_Y + Math.floor(i / cols) * 150,
+      };
+    });
+    return out;
+  }
+
+  var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+  var minLon = Math.min.apply(null, lons), maxLon = Math.max.apply(null, lons);
+  var lr = maxLat - minLat || 0.3, lonr = maxLon - minLon || 0.3;
+  // Expand bounds 15% so edge nodes have breathing room
+  minLat -= lr * 0.15;   maxLat += lr * 0.15;
+  minLon -= lonr * 0.15; maxLon += lonr * 0.15;
+
+  var out = {};
+  withCoords.forEach(function(w) {
+    out[w.id] = {
+      tx: Number.isFinite(w.lon)
+          ? PAD_X + (w.lon - minLon) / (maxLon - minLon) * (W - 2*PAD_X)
+          : W / 2,
+      // Flip: higher lat (north) → smaller y (top of screen)
+      ty: Number.isFinite(w.lat)
+          ? (H - PAD_Y) - (w.lat - minLat) / (maxLat - minLat) * (H - 2*PAD_Y)
+          : H / 2,
+    };
+  });
+  return out;
+}
+
+// ── Sync node list in-place ───────────────────────────────────────────────────
+// Preserves x/y for nodes that are already on screen.
+// New nodes start at their geographic target. Removed nodes are dropped.
+// Always recomputes targets for all nodes (canvas resize + selection change).
+function syncNodes(W, H) {
+  var targets = computeGeoTargets(W, H);
+  var selectedIds = _selectedSites.map(function(s){ return s.site_id; });
+
+  // Drop deselected nodes
+  _d3Nodes = _d3Nodes.filter(function(n){ return selectedIds.includes(n.id); });
+
+  selectedIds.forEach(function(sid) {
+    var t = targets[sid];
+    var sel = _selectedSites.find(function(s){ return s.site_id === sid; });
+    var full = SITES.find(function(f){ return f.site_id === sid; }) || {};
+    var existing = _d3Nodes.find(function(n){ return n.id === sid; });
+
+    if (existing) {
+      // Update target and readings; keep current x/y
+      existing.targetX  = t.tx;
+      existing.targetY  = t.ty;
+      existing.readings = _readings[sid] || [];
+      existing.color    = sel.color;
+    } else {
+      // Brand-new node: start at geographic target
+      _d3Nodes.push({
+        id:       sid,
+        name:     sel.name,
+        color:    sel.color,
+        siteType: (full.type || 'river').toLowerCase(),
+        readings: _readings[sid] || [],
+        targetX:  t.tx,
+        targetY:  t.ty,
+        x:        t.tx,
+        y:        t.ty,
+        vx: 0, vy: 0,
+      });
+    }
+  });
+}
+
+// ── Build link data ───────────────────────────────────────────────────────────
+function buildLinks() {
+  var selectedIds = _selectedSites.map(function(s){ return s.site_id; });
+  _d3Links = _connections
+    .filter(function(c){ return selectedIds.includes(c.from_site_id) && selectedIds.includes(c.to_site_id); })
+    .map(function(c) {
+      var src = _d3Nodes.find(function(n){ return n.id === c.from_site_id; });
+      var tgt = _d3Nodes.find(function(n){ return n.id === c.to_site_id; });
+      if (!src || !tgt) return null;
+
+      var upReadings = _readings[c.from_site_id] || [];
+      var dnReadings = _readings[c.to_site_id]   || [];
+      var fs = SITES.find(function(s){ return s.site_id === c.from_site_id; }) || {};
+      var ts = SITES.find(function(s){ return s.site_id === c.to_site_id;   }) || {};
+      var distKm = haversineKm(fs.latitude, fs.longitude, ts.latitude, ts.longitude);
+
+      // ── Line thickness: discharge if available, else 2.5 ──────────────────
+      var qUp  = upReadings.find(function(r){ return r.param_code === '00060'; }) || {};
+      var qDn  = dnReadings.find(function(r){ return r.param_code === '00060'; }) || {};
+      var thick = qUp.value ? Math.max(2, Math.min(10, 1.5 + Math.log10(qUp.value+1)*2.2)) : 2.5;
+
+      // ── Color: always matches the from-node accent ─────────────────────────
+      var color = _nodeColor(c.from_site_id);
+
+      // ── Link label: show best available active parameter ───────────────────
+      // Priority: discharge → gage height → temperature → DO → pH → first reading
+      var PARAM_PRIORITY = ['00060','00065','00010','00300','00400'];
+      var activeCodes = (_selectedParams || []).map(function(p){ return p.code; });
+      var labelParam = null;
+
+      // Find highest-priority param that is both active and has upstream data
+      for (var pi = 0; pi < PARAM_PRIORITY.length; pi++) {
+        var code = PARAM_PRIORITY[pi];
+        if (!activeCodes.length || activeCodes.includes(code)) {
+          var r = upReadings.find(function(r){ return r.param_code === code; });
+          if (r && r.value != null) { labelParam = r; break; }
+        }
+      }
+      // Fallback: any reading with a value
+      if (!labelParam) {
+        labelParam = upReadings.find(function(r){ return r.value != null; }) || null;
+      }
+
+      var flowLbl = '';
+      var pct     = null;
+      if (labelParam) {
+        var ti   = labelParam.trend === 'rising' ? '↑' : labelParam.trend === 'falling' ? '↓' : '→';
+        var val  = labelParam.value;
+        var unit = labelParam.unit || '';
+        // Compact value formatting
+        var valStr = (labelParam.param_code === '00060' && val >= 1000)
+          ? (val/1000).toFixed(1)+'k'
+          : (Number.isInteger(val) ? val : val.toFixed(1));
+        flowLbl = valStr + ' ' + unit + ' ' + ti;
+
+        // Confluence % only meaningful for discharge
+        if (labelParam.param_code === '00060' && qDn.value) {
+          pct = Math.round(val / qDn.value * 100);
+        }
+        // Delta for quality params (upstream vs downstream)
+        if (['00010','00300','00400'].includes(labelParam.param_code)) {
+          var dnParam = dnReadings.find(function(r){ return r.param_code === labelParam.param_code; });
+          if (dnParam && dnParam.value != null) {
+            var delta = (val - dnParam.value);
+            var sign  = delta > 0 ? '+' : '';
+            flowLbl += '  Δ' + sign + delta.toFixed(1);
+          }
+        }
+      }
+
+      return { source: src, target: tgt, thick, color,
+               flowLabel: flowLbl, distLabel: distKm ? Math.round(distKm)+' km' : '', pct };
+    })
+    .filter(Boolean);
+}
+
+// ── Bezier path helpers ───────────────────────────────────────────────────────
+function bezierPath(src, tgt) {
+  var sh = NODE_H, th = NODE_H;
+  var sx = src.x, sy = src.y + sh/2;   // exit: bottom port of source
+  var tx = tgt.x, ty = tgt.y - th/2;  // enter: top port of target
+  var dy = Math.abs(ty - sy), dx = Math.abs(tx - sx);
+  var ctrl = Math.max(dy * 0.45, dx * 0.3, 55);
+  return 'M '+f(sx)+' '+f(sy)+' C '+f(sx)+' '+f(sy+ctrl)+' '+f(tx)+' '+f(ty-ctrl)+' '+f(tx)+' '+f(ty);
+}
+function f(n) { return n.toFixed(1); }
+function linkMidX(d) { return (d.source.x + d.target.x) / 2; }
+function linkMidY(d) {
+  return (d.source.y + NODE_H/2 + d.target.y - NODE_H/2) / 2;
+}
+
+// ── SVG render ────────────────────────────────────────────────────────────────
+function renderSvg(W, H) {
+  var svg = d3.select('#network-svg');
+  svg.selectAll('*').remove();
+  svg.attr('viewBox', '0 0 '+W+' '+H).attr('height', H);
+  if (!_d3Nodes.length) return;
+
+  svg.append('defs').html(`
+    <marker id="arr-stable"  viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,-4L10,0L0,4" fill="#64748b"/></marker>
+    <marker id="arr-rising"  viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,-4L10,0L0,4" fill="#38bdf8"/></marker>
+    <marker id="arr-falling" viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,-4L10,0L0,4" fill="#fb923c"/></marker>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  `);
+
+  var linkG = svg.append('g').attr('class', 'links');
+  var nodeG = svg.append('g').attr('class', 'nodes');
+
+  var linkSel = linkG.selectAll('.link-group').data(_d3Links).enter().append('g').attr('class', 'link-group');
+
+  linkSel.append('path').attr('class','link-halo')
+    .attr('stroke', function(d){ return d.color; }).attr('stroke-width', function(d){ return d.thick+10; })
+    .attr('stroke-opacity', 0.08).attr('d', function(d){ return bezierPath(d.source, d.target); });
+
+  linkSel.append('path').attr('class','link-path')
+    .attr('stroke', function(d){ return d.color; }).attr('stroke-width', function(d){ return d.thick; })
+    .attr('stroke-opacity', 0.9).attr('fill','none')
+    .attr('marker-end', function(d){
+      return d.color==='#38bdf8' ? 'url(#arr-rising)' : d.color==='#fb923c' ? 'url(#arr-falling)' : 'url(#arr-stable)';
+    })
+    .attr('d', function(d){ return bezierPath(d.source, d.target); });
+
+  linkSel.append('text').attr('class','link-label lbl-flow').attr('text-anchor','middle')
+    .attr('fill', function(d){ return d.color; }).attr('font-size','10px').attr('font-weight','600')
+    .attr('x', linkMidX).attr('y', function(d){ return linkMidY(d)-7; })
+    .text(function(d){ return d.flowLabel; });
+
+  linkSel.append('text').attr('class','link-label lbl-dist').attr('text-anchor','middle')
+    .attr('fill','#94a3b8').attr('font-size','9px')
+    .attr('x', linkMidX).attr('y', function(d){ return linkMidY(d)+7; })
+    .text(function(d){ return d.distLabel; });
+
+  linkSel.append('text').attr('class','link-label lbl-pct').attr('text-anchor','middle')
+    .attr('fill','#64748b').attr('font-size','8.5px')
+    .attr('x', linkMidX).attr('y', function(d){ return linkMidY(d)+20; })
+    .text(function(d){ return d.pct ? d.pct+'% of downstream' : ''; });
+
+  var nodeSel = nodeG.selectAll('.node-group').data(_d3Nodes).enter()
+    .append('g').attr('class','node-group')
+    .attr('transform', function(d){ return 'translate('+d.x+','+d.y+')'; })
+    .call(d3.drag()
+      .on('start', function(event, d) {
+        _dragMoved = false;
+        _dragStartClient = event.sourceEvent ? { x: event.sourceEvent.clientX, y: event.sourceEvent.clientY } : null;
+        if (!event.active) _simulation.alphaTarget(0.15).restart();
+        d.fx = d.x; d.fy = d.y;
+      })
+      .on('drag', function(event, d) {
+        _dragMoved = true;
+        d.fx = event.x; d.fy = event.y;
+      })
+      .on('end', function(event, d) {
+        // Measure pointer travel to distinguish click from drag
+        var travelPx = 0;
+        if (_dragStartClient && event.sourceEvent) {
+          var dx = event.sourceEvent.clientX - _dragStartClient.x;
+          var dy = event.sourceEvent.clientY - _dragStartClient.y;
+          travelPx = Math.sqrt(dx*dx + dy*dy);
+        }
+        _dragStartClient = null;
+
+        if (travelPx < 5) {
+          // Treat as click — open slideover, don't scatter other nodes
+          d.fx = null; d.fy = null;
+          if (!event.active) _simulation.alphaTarget(0);
+          openSlideover(d.id);
+        } else {
+          // Real drag — update anchor and redistribute
+          d.targetX = d.fx; d.targetY = d.fy;
+          d.fx = null; d.fy = null;
+          if (!event.active) _simulation.alphaTarget(0).alpha(0.5).restart();
+        }
+      })
+    );
+
+  // Icon SVG paths (18×18 viewport)
+  var ICON_PATHS = {
+    river:     'M1 9 C4 5 7 13 11 9 C14 5 16 10 17 9',
+    stream:    'M1 9 C4 5 7 13 11 9 C14 5 16 10 17 9',
+    reservoir: 'M9 2 C5 2 2 6 2 10 a7 7 0 0 0 14 0 C16 6 13 2 9 2 Z',
+    dam:       'M2 5 L16 5 L16 13 L2 13 Z M6 5 L6 13 M10 5 L10 13 M2 9 L6 9 M10 9 L16 9',
+  };
+
+  nodeSel.each(function(d) {
+    var g       = d3.select(this);
+    var isDam   = d.siteType === 'dam';
+    var isRes   = d.siteType === 'reservoir';
+    var accent  = isDam ? '#f97316' : isRes ? '#06b6d4' : d.color;
+    var NW = NODE_W, NH = NODE_H, IW = ICON_W;
+    var textX = -NW/2 + IW + 10;
+    var primary = (d.readings||[]).find(function(r){ return r.param_code==='00060'; }) || (d.readings||[])[0];
+
+    // Outer glow
+    g.append('rect')
+      .attr('x',-NW/2-3).attr('y',-NH/2-3).attr('width',NW+6).attr('height',NH+6)
+      .attr('rx',10).attr('fill',accent).attr('opacity',0.1);
+
+    // Card body
+    g.append('rect').attr('class','node-body')
+      .attr('x',-NW/2).attr('y',-NH/2).attr('width',NW).attr('height',NH)
+      .attr('rx',7).attr('fill','#0d1f35').attr('stroke',accent).attr('stroke-width',1.5);
+
+    // Icon panel background
+    g.append('rect')
+      .attr('x',-NW/2).attr('y',-NH/2).attr('width',IW).attr('height',NH)
+      .attr('rx',7).attr('fill',accent).attr('opacity',0.13);
+    // Square off the right side of the icon panel
+    g.append('rect')
+      .attr('x',-NW/2+IW-8).attr('y',-NH/2).attr('width',8).attr('height',NH)
+      .attr('fill',accent).attr('opacity',0.13);
+
+    // Left accent bar
+    g.append('rect')
+      .attr('x',-NW/2).attr('y',-NH/2).attr('width',3).attr('height',NH)
+      .attr('rx',3).attr('fill',accent);
+
+    // Divider
+    g.append('line')
+      .attr('x1',-NW/2+IW).attr('y1',-NH/2+4).attr('x2',-NW/2+IW).attr('y2',NH/2-4)
+      .attr('stroke',accent).attr('stroke-width',0.5).attr('opacity',0.25);
+
+    // Icon
+    var iconPath = ICON_PATHS[d.siteType] || ICON_PATHS.river;
+    g.append('path')
+      .attr('d', iconPath)
+      .attr('transform','translate('+(-NW/2+IW/2-9)+','+ (-9) +')')
+      .attr('fill', isRes ? accent : 'none')
+      .attr('fill-opacity', isRes ? 0.3 : 0)
+      .attr('stroke', accent).attr('stroke-width', 1.8)
+      .attr('stroke-linecap','round').attr('stroke-linejoin','round');
+
+    // Site name
+    g.append('text').attr('class','node-name')
+      .attr('x', textX).attr('y', primary ? -6 : 4)
+      .attr('fill','#e2e8f0').attr('font-size','11px').attr('font-weight','600')
+      .attr('font-family','Inter,sans-serif')
+      .text(truncate(d.name, 17));
+
+    // Primary reading
+    if (primary) {
+      var ti = primary.trend==='rising'?'↑':primary.trend==='falling'?'↓':'→';
+      var tc = primary.trend==='rising'?'#34d399':primary.trend==='falling'?'#f87171':'#64748b';
+      var valStr = primary.value >= 1000
+        ? (primary.value/1000).toFixed(1)+'k' : primary.value.toFixed(0);
+      g.append('text')
+        .attr('x', textX).attr('y', 10)
+        .attr('fill',tc).attr('font-size','10px')
+        .attr('font-family','JetBrains Mono,Courier New,monospace')
+        .text(valStr+' '+primary.unit+' '+ti);
+    }
+
+    // Input port (top)
+    g.append('circle').attr('cx',0).attr('cy',-NH/2)
+      .attr('r',4).attr('fill','#0d1f35').attr('stroke',accent).attr('stroke-width',1.5);
+    // Output port (bottom)
+    g.append('circle').attr('cx',0).attr('cy',NH/2)
+      .attr('r',4).attr('fill','#0d1f35').attr('stroke',accent).attr('stroke-width',1.5);
+  });
+}
+
+// ── Force simulation ──────────────────────────────────────────────────────────
+// Geographic anchor forces keep relative lat/lon relationships intact.
+// Collision force spreads nodes so they don't overlap.
+function runSimulation(W, H) {
+  if (_simulation) _simulation.stop();
+
+  _simulation = d3.forceSimulation(_d3Nodes)
+    // Pull each node toward its geographic target
+    .force('anchorX', d3.forceX(function(d){ return d.targetX; }).strength(0.08))
+    .force('anchorY', d3.forceY(function(d){ return d.targetY; }).strength(0.08))
+    // Prevent overlap — radius from half-diagonal of bounding box
+    .force('collide', d3.forceCollide(collisionR).strength(0.85).iterations(3))
+    .alphaDecay(0.018)
+    .velocityDecay(0.45)
+    .on('tick', function() {
+      // Clamp to canvas bounds
+      _d3Nodes.forEach(function(d) {
+        d.x = Math.max(NODE_W/2+4, Math.min(W - NODE_W/2 - 4, d.x));
+        d.y = Math.max(NODE_H/2+4, Math.min(H - NODE_H/2 - 4, d.y));
+      });
+      updatePositions();
+    });
+}
+
+// ── Position update (simulation tick + drag) ──────────────────────────────────
+function updatePositions() {
+  d3.selectAll('.node-group').attr('transform', function(d){ return 'translate('+d.x+','+d.y+')'; });
+  d3.selectAll('.link-path').attr('d', function(d){ return bezierPath(d.source, d.target); });
+  d3.selectAll('.link-halo').attr('d', function(d){ return bezierPath(d.source, d.target); });
+  d3.selectAll('.link-group').each(function(d) {
+    var mx = linkMidX(d), my = linkMidY(d);
+    d3.select(this).select('.lbl-flow').attr('x', mx).attr('y', my-7);
+    d3.select(this).select('.lbl-dist').attr('x', mx).attr('y', my+7);
+    d3.select(this).select('.lbl-pct' ).attr('x', mx).attr('y', my+20);
+  });
+}
+
+// ── Canvas dimensions ─────────────────────────────────────────────────────────
+function canvasSize() {
+  var card = document.getElementById('canvas-card');
+  var r    = card.getBoundingClientRect();
+  return { W: r.width || 900, H: Math.max(r.height - 42, 300) }; // 42 = toolbar
+}
+
+// ── Main redraw entry point ───────────────────────────────────────────────────
+function redrawNetwork() {
+  if (_simulation) { _simulation.stop(); _simulation = null; }
+
+  var cs = canvasSize();
+  var W = cs.W, H = cs.H;
+
+  syncNodes(W, H);
+  buildLinks();
+  renderSvg(W, H);
+  if (_d3Nodes.length) runSimulation(W, H);
+}
+
+// ── Reset layout ──────────────────────────────────────────────────────────────
+function resetLayout() {
+  var cs = canvasSize();
+  var W = cs.W, H = cs.H;
+  var targets = computeGeoTargets(W, H);
+
+  // Snap all nodes back to geographic targets and clear velocity
+  _d3Nodes.forEach(function(d) {
+    var t = targets[d.id];
+    if (t) { d.targetX = t.tx; d.targetY = t.ty; d.x = t.tx; d.y = t.ty; }
+    d.vx = 0; d.vy = 0;
+    d.fx = null; d.fy = null;
+  });
+
+  renderSvg(W, H);
+  if (_d3Nodes.length) runSimulation(W, H);
+}
+
+// ── Fullscreen ────────────────────────────────────────────────────────────────
+function toggleFullscreen() {
+  _fullscreen = !_fullscreen;
+  var card  = document.getElementById('canvas-card');
+  var label = document.getElementById('expand-label');
+  card.classList.toggle('fn-fullscreen', _fullscreen);
+  if (label) label.textContent = _fullscreen ? '✕' : '⛶';
+  setTimeout(function() {
+    if (_mapMode && _leafletMap) _leafletMap.invalidateSize();
+    else redrawNetwork();
+  }, 60);
+}
+
+// ── Map mode ──────────────────────────────────────────────────────────────────
+function toggleMapMode() {
+  _mapMode = !_mapMode;
+  var svgEl  = document.getElementById('network-svg');
+  var mapEl  = document.getElementById('map-view');
+  var btn    = document.getElementById('mapToggleBtn');
+  var rst    = document.getElementById('resetBtn');
+  var hint   = document.getElementById('view-hint');
+
+  if (_mapMode) {
+    svgEl.style.display = 'none';
+    mapEl.style.display = 'block';
+    btn.innerHTML = '⊕ Diagram';
+    btn.style.color = '#0ea5e9';
+    btn.style.borderColor = '#0ea5e9';
+    if (rst)  rst.style.display = 'none';
+    if (hint) hint.textContent = 'OpenStreetMap · accurate geographic positions · click markers for data';
+    if (!_leafletMap) _initLeafletMap();
+    else { _leafletMap.invalidateSize(); renderLeafletMap(); }
+  } else {
+    mapEl.style.display = 'none';
+    svgEl.style.display = 'block';
+    btn.innerHTML = '⊕ Map';
+    btn.style.color = '';
+    btn.style.borderColor = '';
+    if (rst)  rst.style.display = '';
+    if (hint) hint.textContent = 'Geographic lat/lon layout · drag nodes to adjust · topology from NLDI';
+    redrawNetwork();
+  }
+}
+
+function _initLeafletMap() {
+  var mapEl = document.getElementById('map-view');
+  _leafletMap = L.map(mapEl, { zoomControl: true, attributionControl: true });
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ'
+  }).addTo(_leafletMap);
+  renderLeafletMap();
+}
+
+// Returns compass bearing (degrees clockwise from north) between two lat/lon points
+function mapBearing(lat1, lon1, lat2, lon2) {
+  var φ1 = lat1 * Math.PI/180, φ2 = lat2 * Math.PI/180;
+  var Δλ = (lon2 - lon1) * Math.PI/180;
+  var y = Math.sin(Δλ) * Math.cos(φ2);
+  var x = Math.cos(φ1)*Math.sin(φ2) - Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+  return (Math.atan2(y, x) * 180/Math.PI + 360) % 360;
+}
+
+// ── Waterway path loading — served from server-side cache ────────────────────
+// Paths are pre-computed by the server (services/waterways.js) and stored in
+// the DB. The browser just fetches them; no Overpass queries from the client.
+// If a pair is still pending (server crawl in progress) we poll every 15s.
+
+var _OVERPASS_MIRRORS = [  // kept for potential manual fallback only
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.openstreetmap.ru/cgi/interpreter',
+];
+
+// Shared graph cache keyed by sorted site-ID string so re-renders with the
+// same selection skip the crawl entirely.
+var _waterwayGraphCache = null; // { key: string, nodes: Map }
+
+function _sleep(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
+
+// POST to Overpass with mirror rotation + 3-attempt retry on full-round failure.
+// A 429 or 504 on one mirror tries the next; if all fail, wait 3 s and retry.
+async function _postQL(ql) {
+  var body = 'data=' + encodeURIComponent(ql);
+  var RETRIES = 3, RETRY_DELAY = 3000;
+
+  for (var attempt = 0; attempt < RETRIES; attempt++) {
+    for (var i = 0; i < _OVERPASS_MIRRORS.length; i++) {
+      try {
+        var resp = await fetch(_OVERPASS_MIRRORS[i], {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body,
+          signal: AbortSignal.timeout ? AbortSignal.timeout(60000) : undefined,
+        });
+        if (resp.ok) return resp.json();
+        console.warn('[Flowlines] mirror', i, 'HTTP', resp.status, '(attempt', attempt+1+')');
+      } catch(e) {
+        console.warn('[Flowlines] mirror', i, ':', e.message, '(attempt', attempt+1+')');
+      }
+    }
+    if (attempt < RETRIES - 1) {
+      console.warn('[Flowlines] all mirrors failed, waiting', RETRY_DELAY/1000, 's before retry…');
+      await _sleep(RETRY_DELAY);
+    }
+  }
+  throw new Error('all Overpass mirrors failed after ' + RETRIES + ' attempts');
+}
+
+// Exact QL from FlowNet._ql_seedDiscover (out skel qt gives nodes array on ways)
+function _ql_seed(lat, lon, seedM) {
+  return '[out:json][timeout:120];'
+    + '('
+    + '  way(around:' + seedM + ',' + lat + ',' + lon + ')'
+    + '   ["waterway"~"^(river|canal|stream)$"]["intermittent"!="yes"]["name"];'
+    + ')->.w0;'
+    + 'node(w.w0)->.n0;'
+    + '.w0 out skel qt;'
+    + '>;  out skel qt;';
+}
+
+// Exact QL from FlowNet._ql_expandFromNodes
+function _ql_expand(nodeIds, rx) {
+  return '[out:json][timeout:120];'
+    + 'node(id:' + nodeIds.join(',') + ')->.front;'
+    + 'way(bn.front)'
+    + '  ["waterway"~"' + rx + '"]["intermittent"!="yes"]->.wk;'
+    + '.wk out skel qt;'
+    + '>;  out skel qt;';
+}
+
+function _fnChunk(arr, n) {
+  var out = [];
+  for (var i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+
+// Turn raw merged OSM elements into a directed node→node graph.
+function _buildFlowGraph(osm) {
+  var nodes = new Map();
+  var els = osm.elements || [];
+  var i, el;
+  for (i = 0; i < els.length; i++) {
+    el = els[i];
+    if (el.type === 'node') nodes.set(el.id, { id:el.id, lat:el.lat, lon:el.lon, out:new Map() });
+  }
+  for (i = 0; i < els.length; i++) {
+    el = els[i];
+    if (el.type !== 'way' || !Array.isArray(el.nodes) || el.nodes.length < 2) continue;
+    for (var j = 0; j < el.nodes.length - 1; j++) {
+      var a = nodes.get(el.nodes[j]);
+      var b = nodes.get(el.nodes[j + 1]);
+      if (!a || !b) continue;
+      var w = _geoDistM(a.lat, a.lon, b.lat, b.lon);
+      if (!a.out.has(b.id) || w < a.out.get(b.id)) a.out.set(b.id, w);
+    }
+  }
+  return nodes;
+}
+
+function _snapNode(nodes, lat, lon, maxM) {
+  var bestId = null, bestD = Infinity;
+  nodes.forEach(function(n) {
+    var d = _geoDistM(lat, lon, n.lat, n.lon);
+    if (d < bestD) { bestD = d; bestId = n.id; }
+  });
+  return bestD <= maxM ? bestId : null;
+}
+
+// Dijkstra on directed graph — returns node-ID array or null.
+function _dijkstraPath(nodes, startId, goalId) {
+  if (startId === null || goalId === null) return null;
+  var dist = new Map([[startId, 0]]);
+  var prev = new Map();
+  var Q    = [{ id:startId, d:0 }];
+  while (Q.length) {
+    Q.sort(function(a, b) { return a.d - b.d; });
+    var u = Q.shift();
+    if (u.id === goalId) break;
+    var uNode = nodes.get(u.id);
+    if (!uNode) continue;
+    uNode.out.forEach(function(w, vid) {
+      var alt = (dist.get(u.id) || 0) + w;
+      if (alt < (dist.has(vid) ? dist.get(vid) : Infinity)) {
+        dist.set(vid, alt);
+        prev.set(vid, u.id);
+        Q.push({ id:vid, d:alt });
+      }
+    });
+  }
+  if (!prev.has(goalId) && startId !== goalId) return null;
+  var path = [goalId];
+  for (var c = goalId; c !== startId;) {
+    var p = prev.get(c);
+    if (p === undefined) return null;
+    path.push(p); c = p;
+  }
+  path.reverse();
+  return path;
+}
+
+function _geoDistM(lat1, lon1, lat2, lon2) {
+  var R = 6371000, r = Math.PI / 180;
+  var dLat = (lat2-lat1)*r, dLon = (lon2-lon1)*r;
+  var a = Math.sin(dLat/2)*Math.sin(dLat/2)
+        + Math.cos(lat1*r)*Math.cos(lat2*r)*Math.sin(dLon/2)*Math.sin(dLon/2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// ── ONE shared crawl for all active sites ────────────────────────────────────
+// Returns a Promise<Map> (the directed graph) cached by site-key.
+// Exact crawl pattern from FlowNet.submitOverpassQuery iterative path.
+async function _buildSharedWaterwayGraph(sites) {
+  var cacheKey = sites.map(function(s){ return s.site_id; }).sort().join('|');
+  if (_waterwayGraphCache && _waterwayGraphCache.key === cacheKey) {
+    console.log('[Flowlines] using cached graph for', cacheKey);
+    return _waterwayGraphCache.nodes;
+  }
+
+  var cfg = {
+    seedM:     8600,
+    hops:      20,
+    rx:        '^(river|stream|canal|drain|ditch)$',
+    batchSize: 4000,
+    sleepMs:   150,
+  };
+
+  // bbox padded 25 km around all sites
+  var PAD_KM = 25;
+  var lats = sites.map(function(s){ return s.latitude; });
+  var lons = sites.map(function(s){ return s.longitude; });
+  var midLat = (Math.min.apply(null, lats) + Math.max.apply(null, lats)) / 2;
+  var padLat = PAD_KM / 111.32;
+  var padLon = PAD_KM / (111.32 * Math.cos(midLat * Math.PI / 180));
+  var bbox = {
+    s: Math.min.apply(null, lats) - padLat,
+    n: Math.max.apply(null, lats) + padLat,
+    w: Math.min.apply(null, lons) - padLon,
+    e: Math.max.apply(null, lons) + padLon,
+  };
+  var inBBox = function(lat, lon) {
+    return lat >= bbox.s && lat <= bbox.n && lon >= bbox.w && lon <= bbox.e;
+  };
+
+  var seenNode = new Set();
+  var seenWay  = new Set();
+  var elements = [];
+
+  // Crawl each site sequentially — exact FlowNet crawlNextSeed pattern
+  for (var si = 0; si < sites.length; si++) {
+    var site = sites[si];
+    console.log('[Flowlines] seed', si+1, '/', sites.length, '—', site.site_id);
+
+    // Seed query
+    var r0    = await _postQL(_ql_seed(site.latitude, site.longitude, cfg.seedM));
+    var ways0 = (r0.elements || []).filter(function(e){ return e.type === 'way'; });
+    var nds0  = (r0.elements || []).filter(function(e){ return e.type === 'node'; });
+    var nMap0 = new Map(nds0.map(function(n){ return [n.id, n]; }));
+    var frontier = new Set();
+
+    ways0.forEach(function(w) {
+      if (seenWay.has(w.id)) return;
+      var ok = (w.nodes||[]).some(function(nid){ var n=nMap0.get(nid); return n && inBBox(n.lat,n.lon); });
+      if (!ok) return;
+      seenWay.add(w.id);
+      elements.push({ type:'way', id:w.id, nodes:w.nodes });
+      (w.nodes||[]).forEach(function(nid) {
+        var n = nMap0.get(nid); if (!n) return;
+        if (!seenNode.has(n.id)) { seenNode.add(n.id); elements.push({ type:'node', id:n.id, lat:n.lat, lon:n.lon }); }
+        if (inBBox(n.lat, n.lon)) frontier.add(n.id);
+      });
+    });
+
+    // Hop expansion — exact FlowNet expandHop / runBatch pattern
+    for (var hop = 0; hop < cfg.hops && frontier.size > 0; hop++) {
+      var ids     = Array.from(frontier);
+      frontier    = new Set();
+      var batches = _fnChunk(ids, cfg.batchSize);
+
+      for (var bi = 0; bi < batches.length; bi++) {
+        await _sleep(cfg.sleepMs);
+        var rk    = await _postQL(_ql_expand(batches[bi], cfg.rx));
+        var wsk   = (rk.elements||[]).filter(function(e){ return e.type==='way'; });
+        var nsk   = (rk.elements||[]).filter(function(e){ return e.type==='node'; });
+        var nMapK = new Map(nsk.map(function(n){ return [n.id, n]; }));
+
+        wsk.forEach(function(w) {
+          if (seenWay.has(w.id)) return;
+          var ok = (w.nodes||[]).some(function(nid){ var n=nMapK.get(nid); return n && inBBox(n.lat,n.lon); });
+          if (!ok) return;
+          seenWay.add(w.id);
+          elements.push({ type:'way', id:w.id, nodes:w.nodes });
+          (w.nodes||[]).forEach(function(nid) {
+            var n = nMapK.get(nid); if (!n) return;
+            if (!seenNode.has(n.id)) { seenNode.add(n.id); elements.push({ type:'node', id:n.id, lat:n.lat, lon:n.lon }); }
+            if (inBBox(n.lat, n.lon)) frontier.add(n.id);
+          });
+        });
+      }
+    }
+    // sleep before next seed (polite pacing, matches FlowNet nap between seeds)
+    await _sleep(cfg.sleepMs);
+  }
+
+  console.log('[Flowlines] crawl done — ways:', seenWay.size, 'nodes:', seenNode.size);
+  var nodes = _buildFlowGraph({ elements: elements });
+  console.log('[Flowlines] graph nodes:', nodes.size);
+  _waterwayGraphCache = { key: cacheKey, nodes: nodes };
+  return nodes;
+}
+
+// Derive [[lat,lon],...] path for one pair from the shared graph.
+// Tries both directions (handles tributary→upstream-mainstem).
+function _pairFlowline(nodes, fromSite, toSite) {
+  var SNAP_MAX = 30000;
+  var fromNode = _snapNode(nodes, fromSite.latitude, fromSite.longitude, SNAP_MAX);
+  var toNode   = _snapNode(nodes, toSite.latitude,   toSite.longitude,   SNAP_MAX);
+  if (!fromNode || !toNode) return null;
+  var path = _dijkstraPath(nodes, fromNode, toNode)
+          || _dijkstraPath(nodes, toNode,   fromNode);
+  if (!path || path.length < 2) return null;
+  return path.map(function(id) { var n = nodes.get(id); return [n.lat, n.lon]; });
+}
+
+// Place a directional arrow + optional discharge label along a polyline path
+function _addFlowArrow(latlngs, color, upQ, token) {
+  if (_mapRenderToken !== token) return;
+  var mid  = Math.floor(latlngs.length / 2);
+  var p1   = latlngs[Math.max(mid - 1, 0)];
+  var p2   = latlngs[Math.min(mid, latlngs.length - 1)];
+  var bear = mapBearing(p1[0], p1[1], p2[0], p2[1]);
+
+  // Directional arrow at midpoint
+  var arrowSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22"'
+    + ' style="display:block;transform:rotate('+bear.toFixed(1)+'deg);transform-origin:11px 11px;">'
+    + '<polygon points="11,2 19,17 11,12 3,17" fill="'+color+'" opacity="0.95"/>'
+    + '<polygon points="11,2 19,17 11,12 3,17" fill="none" stroke="rgba(8,18,32,0.7)" stroke-width="1.5" stroke-linejoin="round"/>'
+    + '</svg>';
+  var arrowIcon = L.divIcon({ className:'', html:arrowSvg, iconSize:[22,22], iconAnchor:[11,11] });
+  var am = L.marker(latlngs[mid], { icon:arrowIcon, interactive:false }).addTo(_leafletMap);
+  _leafletLayers.push(am);
+
+  if (upQ && upQ.value) {
+    var ti  = upQ.trend==='rising'?'↑':upQ.trend==='falling'?'↓':'→';
+    var lbl = (upQ.value >= 1000 ? (upQ.value/1000).toFixed(1)+'k' : Math.round(upQ.value)) + ' cfs ' + ti;
+    // iconSize:[0,0] + iconAnchor:[0,0] lets the div size itself naturally.
+    // The inner div uses transform to center itself above the arrow.
+    var lblIcon = L.divIcon({
+      className: '',
+      iconSize:   [0, 0],
+      iconAnchor: [0, 0],
+      html: '<div style="'
+          + 'position:absolute;transform:translate(-50%,-180%);'
+          + 'font-family:JetBrains Mono,monospace;font-size:10px;font-weight:700;'
+          + 'color:'+color+';background:rgba(8,18,32,0.92);'
+          + 'border:1.5px solid '+color+';padding:2px 8px;border-radius:4px;'
+          + 'white-space:nowrap;pointer-events:none;'
+          + 'box-shadow:0 1px 5px rgba(0,0,0,0.5);">'+lbl+'</div>',
+    });
+    var lm = L.marker(latlngs[mid], { icon:lblIcon, interactive:false }).addTo(_leafletMap);
+    _leafletLayers.push(lm);
+  }
+}
+
+// Returns the accent color for a site — matches the node card color in the diagram.
+// DAMs are always orange, reservoirs cyan, rivers use the chip palette color.
+function _nodeColor(siteId) {
+  var full = SITES.find(function(s){ return s.site_id === siteId; }) || {};
+  var type = (full.type || 'river').toLowerCase();
+  if (type === 'dam')       return '#f97316';
+  if (type === 'reservoir') return '#06b6d4';
+  var sel = _selectedSites.find(function(s){ return s.site_id === siteId; });
+  return sel ? sel.color : '#64748b';
+}
+
+function renderLeafletMap() {
+  var token = ++_mapRenderToken;
+  if (!_leafletMap) return;
+
+  _leafletLayers.forEach(function(l) { try { _leafletMap.removeLayer(l); } catch(_) {} });
+  _leafletLayers = [];
+  _setFlowlineStatus(null); // clear any prior indicator
+
+  var selectedIds = _selectedSites.map(function(s){ return s.site_id; });
+  var bounds = [];
+
+  // ── Inactive connections: faint straight dashed lines (drawn immediately) ──
+  _connections.forEach(function(c) {
+    if (selectedIds.includes(c.from_site_id) && selectedIds.includes(c.to_site_id)) return;
+    var from = SITES.find(function(s){ return s.site_id === c.from_site_id; });
+    var to   = SITES.find(function(s){ return s.site_id === c.to_site_id; });
+    if (!from || !to || !from.latitude || !to.latitude) return;
+    var l = L.polyline([[from.latitude,from.longitude],[to.latitude,to.longitude]],
+      { color:'#94a3b8', weight:1, opacity:0.3, dashArray:'5,6' }).addTo(_leafletMap);
+    _leafletLayers.push(l);
+  });
+
+  // ── Active connections: placeholder straight lines drawn NOW, replaced when waterways arrive ──
+  var activeConns = _connections.filter(function(c) {
+    return selectedIds.includes(c.from_site_id) && selectedIds.includes(c.to_site_id);
+  });
+
+  // Draw placeholder dashed lines immediately so the map isn't empty
+  var placeholders = {}; // key → [placeholder layers] to remove when real geometry arrives
+  activeConns.forEach(function(c) {
+    var from = SITES.find(function(s){ return s.site_id === c.from_site_id; });
+    var to   = SITES.find(function(s){ return s.site_id === c.to_site_id; });
+    if (!from || !to || !from.latitude || !to.latitude) return;
+    var color = _nodeColor(c.from_site_id);
+    var pts = [[from.latitude,from.longitude],[to.latitude,to.longitude]];
+    var pl = L.polyline(pts, { color:color, weight:2, opacity:0.55, dashArray:'8,6' }).addTo(_leafletMap);
+    _leafletLayers.push(pl);
+    placeholders[c.from_site_id + '->' + c.to_site_id] = pl;
+  });
+
+  // ── Site markers (drawn immediately, on top of placeholder lines) ──
+  _selectedSites.forEach(function(s) {
+    var full = SITES.find(function(f){ return f.site_id === s.site_id; }) || {};
+    if (!full.latitude || !full.longitude) return;
+    bounds.push([full.latitude, full.longitude]);
+
+    var isDam  = (full.type||'river').toLowerCase() === 'dam';
+    var isRes  = (full.type||'river').toLowerCase() === 'reservoir';
+    var accent = isDam ? '#f97316' : isRes ? '#06b6d4' : s.color;
+    var readings = _readings[s.site_id] || [];
+
+    var hoverHtml = '<div style="font-family:Inter,sans-serif;min-width:170px;max-width:220px;">'
+      + '<div style="font-weight:700;font-size:12px;margin-bottom:5px;color:#e2e8f0;">' + esc(s.name) + '</div>'
+      + (isDam ? '<div style="font-size:9px;color:#fb923c;font-weight:700;letter-spacing:.06em;margin-bottom:4px;">DAM</div>'
+               : isRes ? '<div style="font-size:9px;color:#22d3ee;font-weight:700;letter-spacing:.06em;margin-bottom:4px;">RESERVOIR</div>' : '')
+      + (readings.length
+          ? readings.map(function(r) {
+              var ti = r.trend==='rising'?'↑':r.trend==='falling'?'↓':'→';
+              var tc = r.trend==='rising'?'#34d399':r.trend==='falling'?'#f87171':'#94a3b8';
+              return '<div style="display:flex;justify-content:space-between;gap:12px;font-size:11px;margin-bottom:3px;">'
+                + '<span style="color:#64748b;">' + esc(r.param_name) + '</span>'
+                + '<span style="font-weight:600;color:'+tc+';">' + r.value.toFixed(1)+' '+esc(r.unit)+' '+ti+'</span>'
+                + '</div>';
+            }).join('')
+          : '<div style="font-size:11px;color:#475569;">No data loaded</div>')
+      + '<div style="margin-top:6px;padding-top:6px;border-top:1px solid #1e293b;font-size:9px;color:#334155;">Click for full details</div>'
+      + '</div>';
+
+    var marker = L.circleMarker([full.latitude, full.longitude], {
+      radius: isDam ? 11 : isRes ? 12 : 9,
+      fillColor: accent, color: '#0a1628', weight: 2.5, fillOpacity: 0.9,
+    }).addTo(_leafletMap);
+
+    marker.bindPopup(hoverHtml, { maxWidth: 240, closeButton: false, autoPan: false });
+    marker.on('mouseover', function() { this.openPopup(); });
+    marker.on('mouseout',  function() { this.closePopup(); });
+    marker.on('click', function(e) { L.DomEvent.stopPropagation(e); openSlideover(s.site_id); });
+
+    var typeTag = isDam ? ' · DAM' : isRes ? ' · RESVR' : '';
+    marker.bindTooltip(truncate(s.name, 22) + typeTag, {
+      permanent: true, direction: 'top', offset: [0, -14], className: 'fn-map-label',
+    });
+
+    _leafletLayers.push(marker);
+  });
+
+  if (bounds.length > 1)        _leafletMap.fitBounds(bounds, { padding: [55, 55] });
+  else if (bounds.length === 1) _leafletMap.setView(bounds[0], 11);
+
+  // ── Waterway paths: fetch pre-computed paths from server cache ───────────────
+  if (!activeConns.length) return;
+  _setFlowlineStatus('loading', activeConns.length);
+
+  var activeSiteIds = [];
+  activeConns.forEach(function(c) {
+    if (activeSiteIds.indexOf(c.from_site_id) === -1) activeSiteIds.push(c.from_site_id);
+    if (activeSiteIds.indexOf(c.to_site_id)   === -1) activeSiteIds.push(c.to_site_id);
+  });
+
+  function _drawWaterwayPaths(pathData) {
+    if (token !== _mapRenderToken) { _setFlowlineStatus(null); return; }
+
+    var stillPending = 0;
+    // Only draw paths where both endpoints are currently selected
+    pathData = pathData.filter(function(entry) {
+      return selectedIds.includes(entry.from_site_id) && selectedIds.includes(entry.to_site_id);
+    });
+    pathData.forEach(function(entry) {
+      var key  = entry.from_site_id + '->' + entry.to_site_id;
+      var from = SITES.find(function(s){ return s.site_id === entry.from_site_id; });
+      var to   = SITES.find(function(s){ return s.site_id === entry.to_site_id; });
+      var upQ   = (_readings[entry.from_site_id]||[]).find(function(r){ return r.param_code==='00060'; }) || {};
+      var color = _nodeColor(entry.from_site_id);
+
+      if (entry.status === 'pending') { stillPending++; return; } // server still crawling
+
+      // Remove placeholder straight line
+      if (placeholders[key]) {
+        try { _leafletMap.removeLayer(placeholders[key]); } catch(_) {}
+        var idx = _leafletLayers.indexOf(placeholders[key]);
+        if (idx !== -1) _leafletLayers.splice(idx, 1);
+        delete placeholders[key];
+      }
+
+      var seg = (entry.status === 'ok' && entry.path && entry.path.length >= 2) ? entry.path : null;
+      console.log('[Flowlines]', entry.from_site_id, '->', entry.to_site_id,
+                  '|', entry.status, seg ? seg.length + ' pts' : 'no path');
+
+      if (seg) {
+        // Animation speed class based on discharge magnitude
+        var qVal = upQ && upQ.value ? upQ.value : 0;
+        var animCls = qVal > 50000 ? 'flow-line-anim-fast' : qVal > 3000 ? 'flow-line-anim' : 'flow-line-anim-slow';
+        var h = L.polyline(seg, { color:'#0a1628', weight:6, opacity:0.22 }).addTo(_leafletMap);
+        var l = L.polyline(seg, { color:color, weight:3.5, opacity:0.85,
+          dashArray:'14, 8', className: animCls }).addTo(_leafletMap);
+        _leafletLayers.push(h, l);
+        h.bringToBack();
+        _addFlowArrow(seg, color, upQ, token);
+      } else if (from && to) {
+        // Fallback dashed straight line (status=none means no OSM path exists)
+        var pts = [[from.latitude,from.longitude],[to.latitude,to.longitude]];
+        var fl = L.polyline(pts, { color:color, weight:2, opacity:0.45, dashArray:'10,6' }).addTo(_leafletMap);
+        _leafletLayers.push(fl);
+        _addFlowArrow(pts, color, upQ, token);
+      }
+    });
+
+    _leafletLayers.forEach(function(ll) { if (ll.bringToFront) ll.bringToFront(); });
+
+    if (stillPending > 0) {
+      // Server crawl still in progress — poll again in 15s
+      _setFlowlineStatus('loading', stillPending);
+      setTimeout(function() {
+        if (token !== _mapRenderToken) return;
+        _fetchAndDrawWaterways();
+      }, 15000);
+    } else {
+      _setFlowlineStatus('done');
+    }
+  }
+
+  function _fetchAndDrawWaterways() {
+    fetch('/api/connections/waterways?sites=' + activeSiteIds.join(','))
+      .then(function(r){ return r.json(); })
+      .then(function(json){ _drawWaterwayPaths(json.data || []); })
+      .catch(function(err){
+        console.error('[Flowlines] fetch failed:', err);
+        if (token === _mapRenderToken) _setFlowlineStatus('done');
+      });
+  }
+
+  _fetchAndDrawWaterways();
+}
+
+// Show/hide the "fetching waterways" pill inside the map
+function _setFlowlineStatus(state, remaining) {
+  var el = document.getElementById('flowline-status');
+  if (!el) return;
+  if (!state || state === 'done') {
+    el.style.display = 'none';
+  } else {
+    el.style.display = 'flex';
+    var txt = document.getElementById('flowline-status-text');
+    if (txt) txt.textContent = remaining > 1
+      ? 'Mapping waterways… (' + remaining + ' remaining)'
+      : 'Mapping waterways…';
+  }
+}
+
+// ── Slideover ─────────────────────────────────────────────────────────────────
+var ICON_PATHS_SO = {
+  river:     'M1 9 C4 5 7 13 11 9 C14 5 16 10 17 9',
+  stream:    'M1 9 C4 5 7 13 11 9 C14 5 16 10 17 9',
+  reservoir: 'M9 2 C5 2 2 6 2 10 a7 7 0 0 0 14 0 C16 6 13 2 9 2 Z',
+  dam:       'M2 5 L16 5 L16 13 L2 13 Z M6 5 L6 13 M10 5 L10 13 M2 9 L6 9 M10 9 L16 9',
+};
+
+// ── Collapsible section state ──────────────────────────────────────────────────
+var _soCollapsed = {};
+try { _soCollapsed = JSON.parse(localStorage.getItem('so_collapsed') || '{}'); } catch(_) {}
+
+function soToggle(id) {
+  var body = document.getElementById('so-sect-' + id);
+  var chev = document.getElementById('so-chev-' + id);
+  if (!body) return;
+  var nowHidden = body.style.display === 'none';
+  body.style.display = nowHidden ? '' : 'none';
+  if (chev) chev.style.transform = nowHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
+  _soCollapsed[id] = !nowHidden; // true = collapsed
+  try { localStorage.setItem('so_collapsed', JSON.stringify(_soCollapsed)); } catch(_) {}
+}
+
+function _soMkSection(id, label, labelColor, bodyHtml, defaultOpen) {
+  var open     = defaultOpen !== false && !_soCollapsed[id];
+  var chevRot  = open ? 'rotate(0deg)' : 'rotate(-90deg)';
+  var display  = open ? '' : 'none';
+  var chevSvg  = '<svg id="so-chev-'+id+'" style="width:11px;height:11px;flex-shrink:0;transition:transform 0.2s;transform:'+chevRot+';color:#334155;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 9l-7 7-7-7"/></svg>';
+  return '<div class="so-sect">'
+    + '<div class="so-sect-hdr" onclick="soToggle(\''+id+'\')">'
+    + '<span class="so-section-label"'+(labelColor?' style="color:'+labelColor+';"':'')+'>'+label+'</span>'
+    + chevSvg
+    + '</div>'
+    + '<div class="so-sect-body" id="so-sect-'+id+'" style="display:'+display+';">'
+    + bodyHtml
+    + '</div>'
+    + '</div>';
+}
+
+// Spinner placeholder while async sections load
+function _soLoading() {
+  return '<div class="so-async-ph"><svg style="width:11px;height:11px;animation:spin 1s linear infinite;color:#0ea5e9;" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity=".25"/><path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>loading…</div>';
+}
+
+// ── Sparkline SVG ──────────────────────────────────────────────────────────────
+function _sparklineSvg(points, color, w, h) {
+  var vals = (points || []).map(function(d){ return +d.value; }).filter(isFinite);
+  if (vals.length < 2) return '<div style="font-size:10px;color:#334155;padding:6px 0;">no history</div>';
+  var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals), rng = mx - mn || 1;
+  var toX = function(i){ return ((i / (vals.length-1)) * (w-4) + 2).toFixed(1); };
+  var toY = function(v){ return ((h-4) - ((v-mn)/rng)*(h-8) + 4).toFixed(1); };
+  var pts  = vals.map(function(v,i){ return toX(i)+','+toY(v); }).join(' ');
+  var area = 'M2,'+(h-2)+' L'+vals.map(function(v,i){ return toX(i)+','+toY(v); }).join(' L')+' L'+(w-2)+','+(h-2)+' Z';
+  var gid  = 'spkg'+color.replace(/[^a-z0-9]/gi,'');
+  return '<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'" style="display:block;overflow:visible;">'
+    + '<defs><linearGradient id="'+gid+'" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="'+color+'" stop-opacity="0.3"/><stop offset="100%" stop-color="'+color+'" stop-opacity="0.02"/></linearGradient></defs>'
+    + '<path d="'+area+'" fill="url(#'+gid+')"/>'
+    + '<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>'
+    + '</svg>';
+}
+
+// ── Anomaly: z-score against 7-day baseline ───────────────────────────────────
+function _anomalyScore(histPoints, current) {
+  var vals = (histPoints || []).map(function(d){ return +d.value; }).filter(isFinite);
+  if (vals.length < 12 || current == null) return null;
+  var mean = vals.reduce(function(a,b){ return a+b; },0) / vals.length;
+  var std  = Math.sqrt(vals.reduce(function(a,b){ return a+Math.pow(b-mean,2); },0) / vals.length);
+  var z    = std > 0 ? (current - mean) / std : 0;
+  return { z: z, absZ: Math.abs(z), mean: mean, std: std, n: vals.length };
+}
+
+// ── Travel-time estimate (rough empirical) ────────────────────────────────────
+function _travelTime(distKm, qCfs) {
+  var vMs = qCfs > 100000 ? 2.5 : qCfs > 10000 ? 1.8 : qCfs > 1000 ? 1.2 : qCfs > 100 ? 0.7 : 0.4;
+  var hrs = (distKm * 1000) / vMs / 3600;
+  if (hrs < 1) return Math.round(hrs*60)+' min';
+  if (hrs < 24) return hrs.toFixed(1)+' hr';
+  return (hrs/24).toFixed(1)+' days';
+}
+
+// ── Flood stage pill ──────────────────────────────────────────────────────────
+function _floodPill(cls) {
+  var map = {
+    normal:   ['#334155','#64748b','NORMAL'],
+    action:   ['rgba(250,204,21,0.18)','#facc15','ACTION'],
+    watch:    ['rgba(251,191,36,0.18)','#fbbf24','WATCH'],
+    flood:    ['rgba(251,146,60,0.18)','#fb923c','FLOOD'],
+    moderate: ['rgba(248,113,113,0.18)','#f87171','MODERATE'],
+    major:    ['rgba(239,68,68,0.18)','#ef4444','MAJOR FLOOD'],
+    record:   ['rgba(167,139,250,0.22)','#a78bfa','RECORD'],
+  };
+  var c = map[cls] || map.normal;
+  return '<span class="so-badge" style="background:'+c[0]+';color:'+c[1]+';">'+c[2]+'</span>';
+}
+
+// ── Main openSlideover ────────────────────────────────────────────────────────
+function openSlideover(siteId) {
+  var sel      = _selectedSites.find(function(s){ return s.site_id === siteId; });
+  var full     = SITES.find(function(s){ return s.site_id === siteId; }) || {};
+  var readings = _readings[siteId] || [];
+  var siteType = (full.type || 'river').toLowerCase();
+  var isDam    = siteType === 'dam';
+  var isRes    = siteType === 'reservoir';
+  var accent   = isDam ? '#f97316' : isRes ? '#06b6d4' : (sel ? sel.color : '#0ea5e9');
+  var typeLabel= isDam ? 'DAM' : isRes ? 'RESERVOIR' : 'RIVER';
+  var typeBg   = isDam ? 'rgba(249,115,22,0.18)' : isRes ? 'rgba(6,182,212,0.18)' : 'rgba(14,165,233,0.18)';
+
+  var panel  = document.getElementById('fn-slideover');
+  var iconBg = document.getElementById('so-icon');
+  iconBg.style.background = 'rgba('+( isDam?'249,115,22':isRes?'6,182,212':'14,165,233' )+',0.15)';
+  iconBg.style.border = '1.5px solid '+accent;
+  document.getElementById('so-icon-svg').style.color = accent;
+  document.getElementById('so-icon-svg').innerHTML = '<path d="'+(ICON_PATHS_SO[siteType]||ICON_PATHS_SO.river)+'" fill="'+(isRes?accent:'none')+'" fill-opacity="0.3" stroke="'+accent+'" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>';
+  document.getElementById('so-site-name').textContent = full.name || siteId;
+  document.getElementById('so-site-meta').innerHTML =
+    '<span style="font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px;background:'+typeBg+';color:'+accent+';letter-spacing:.07em;">'+typeLabel+'</span>'
+    + (full.latitude ? '&nbsp;<span style="color:#334155;">'+full.latitude.toFixed(4)+'°N '+Math.abs(full.longitude).toFixed(4)+'°W</span>' : '')
+    + '&nbsp;<span style="color:#334155;">USGS '+esc(siteId)+'</span>';
+  panel.style.borderLeftColor = accent;
+
+  var incoming = _connections.filter(function(c){ return c.to_site_id   === siteId; });
+  var outgoing = _connections.filter(function(c){ return c.from_site_id === siteId; });
+  var qR = readings.find(function(r){ return r.param_code==='00060'; });
+  var hR = readings.find(function(r){ return r.param_code==='00065'; });
+
+  // ── Section: Current Readings ──────────────────────────────────────────────
+  var readHtml = '';
+  if (readings.length) {
+    readings.forEach(function(r) {
+      var ti = r.trend==='rising'?'↑':r.trend==='falling'?'↓':'→';
+      var tc = r.trend==='rising'?'#34d399':r.trend==='falling'?'#f87171':'#94a3b8';
+      var bg = r.trend==='rising'?'rgba(52,211,153,0.07)':r.trend==='falling'?'rgba(248,113,113,0.07)':'rgba(100,116,139,0.06)';
+      readHtml += '<div class="so-reading-row" style="background:'+bg+';border-color:rgba(255,255,255,0.04);">'
+        + '<span style="font-size:11px;color:#94a3b8;">'+esc(r.param_name)+'</span>'
+        + '<span style="font-size:12px;font-weight:700;color:'+tc+';font-family:JetBrains Mono,monospace;">'
+        + r.value.toFixed(2)+' <span style="font-size:9px;font-weight:400;color:#475569;">'+esc(r.unit)+'</span> '+ti+'</span>'
+        + '</div>';
+    });
+  } else {
+    readHtml = '<div style="font-size:11px;color:#475569;padding:4px 0;">No readings loaded — select parameters above.</div>';
+  }
+
+  // ── Section: Upstream (flows in) ──────────────────────────────────────────
+  var upHtml = '';
+  if (incoming.length) {
+    incoming.forEach(function(c) {
+      var fs    = SITES.find(function(s){ return s.site_id === c.from_site_id; }) || {};
+      var fSel  = _selectedSites.find(function(s){ return s.site_id === c.from_site_id; });
+      var upR   = (_readings[c.from_site_id]||[]).find(function(r){ return r.param_code==='00060'; });
+      var fType = (fs.type||'river').toLowerCase();
+      var fAcc  = fType==='dam'?'#f97316':fType==='reservoir'?'#06b6d4':(fSel?fSel.color:'#64748b');
+      var distKm = haversineKm(fs.latitude, fs.longitude, full.latitude, full.longitude);
+      // confluence %: what fraction of this site's discharge comes from upstream?
+      var pct = (upR && qR && qR.value) ? Math.round(upR.value/qR.value*100) : null;
+      var tt  = (distKm && upR) ? _travelTime(distKm, upR.value) : null;
+      upHtml += '<div class="so-conn-row" style="background:rgba(14,165,233,0.05);border-color:rgba(14,165,233,0.14);opacity:'+(fSel?1:0.45)+';">'
+        + '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="'+fAcc+'" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="'+(ICON_PATHS_SO[fType]||ICON_PATHS_SO.river)+'"/></svg>'
+        + '<div style="flex:1;min-width:0;">'
+        + '<div style="font-size:11px;font-weight:600;color:#cbd5e1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(fs.name||c.from_site_id)+'</div>'
+        + '<div style="font-size:10px;color:#475569;margin-top:2px;display:flex;flex-wrap:wrap;gap:6px;">'
+        + (upR ? '<span>'+upR.value.toFixed(0)+' cfs</span>' : '<span>no data</span>')
+        + (distKm ? '<span>'+Math.round(distKm)+' km</span>' : '')
+        + (pct !== null ? '<span style="color:#38bdf8;">'+pct+'% of flow</span>' : '')
+        + (tt ? '<span style="color:#64748b;">~'+tt+' travel</span>' : '')
+        + '</div></div>'
+        + '<span style="font-size:20px;color:#38bdf8;opacity:0.7;flex-shrink:0;">↓</span>'
+        + '</div>';
+    });
+  } else {
+    upHtml = '<div style="font-size:11px;color:#334155;padding:4px 0;">No upstream connections.</div>';
+  }
+
+  // ── Section: Downstream (flows out) ───────────────────────────────────────
+  var dnHtml = '';
+  if (outgoing.length) {
+    outgoing.forEach(function(c) {
+      var ts    = SITES.find(function(s){ return s.site_id === c.to_site_id; }) || {};
+      var tSel  = _selectedSites.find(function(s){ return s.site_id === c.to_site_id; });
+      var dnR   = (_readings[c.to_site_id]||[]).find(function(r){ return r.param_code==='00060'; });
+      var tType = (ts.type||'river').toLowerCase();
+      var tAcc  = tType==='dam'?'#f97316':tType==='reservoir'?'#06b6d4':(tSel?tSel.color:'#64748b');
+      var distKm = haversineKm(full.latitude, full.longitude, ts.latitude, ts.longitude);
+      var pct  = (qR && dnR && dnR.value) ? Math.round(qR.value/dnR.value*100) : null;
+      var tt   = (distKm && qR) ? _travelTime(distKm, qR.value) : null;
+      dnHtml += '<div class="so-conn-row" style="background:rgba(52,211,153,0.05);border-color:rgba(52,211,153,0.14);opacity:'+(tSel?1:0.45)+';">'
+        + '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="'+tAcc+'" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="'+(ICON_PATHS_SO[tType]||ICON_PATHS_SO.river)+'"/></svg>'
+        + '<div style="flex:1;min-width:0;">'
+        + '<div style="font-size:11px;font-weight:600;color:#cbd5e1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(ts.name||c.to_site_id)+'</div>'
+        + '<div style="font-size:10px;color:#475569;margin-top:2px;display:flex;flex-wrap:wrap;gap:6px;">'
+        + (dnR ? '<span>'+dnR.value.toFixed(0)+' cfs</span>' : '<span>no data</span>')
+        + (distKm ? '<span>'+Math.round(distKm)+' km</span>' : '')
+        + (pct !== null ? '<span style="color:#34d399;">'+pct+'% of recv flow</span>' : '')
+        + (tt ? '<span style="color:#64748b;">~'+tt+' travel</span>' : '')
+        + '</div></div>'
+        + '<span style="font-size:20px;color:#34d399;opacity:0.7;flex-shrink:0;">↓</span>'
+        + '</div>';
+    });
+  } else {
+    dnHtml = '<div style="font-size:11px;color:#334155;padding:4px 0;">No downstream connections.</div>';
+  }
+
+  // ── Section: Situation Report (on-demand) ─────────────────────────────────
+  var sitrepHtml = '<button class="so-sitrep-btn" onclick="_soLoadSitrep(\''+siteId+'\')" id="so-sitrep-btn">✦ Generate Situation Report</button>'
+    + '<div id="so-sitrep-result" style="display:none;margin-top:10px;font-size:11px;color:#cbd5e1;line-height:1.7;"></div>';
+
+  // ── Assemble all sections ──────────────────────────────────────────────────
+  var html = ''
+    + _soMkSection('readings',   'Current Readings',         null,      readHtml,          true)
+    + _soMkSection('trends',     '48-Hour Trends',           '#818cf8', _soLoading(),      true)
+    + _soMkSection('flood',      'Flood Stage Status',       '#fb923c', _soLoading(),      true)
+    + _soMkSection('anomaly',    'Anomaly Detection',        '#a78bfa', _soLoading(),      true)
+    + _soMkSection('upstream',   'Upstream · Flows In',      '#38bdf8', upHtml,            true)
+    + _soMkSection('downstream', 'Downstream · Flows Out',   '#34d399', dnHtml,            true)
+    + _soMkSection('snotel',     'Upstream Snow (SNOTEL)',   '#22d3ee', _soLoading(),      false)
+    + _soMkSection('sitrep',     'Situation Report',         '#a78bfa', sitrepHtml,        false);
+
+  document.getElementById('so-body').innerHTML = html;
+  document.getElementById('fn-slideover-backdrop').style.display = 'block';
+  requestAnimationFrame(function(){ panel.style.transform = 'translateX(0)'; });
+
+  // ── Kick off async section loads ──────────────────────────────────────────
+  _soLoadTrends(siteId, readings, accent);
+  _soLoadFloodStages(siteId, hR);
+  _soLoadAnomaly(siteId, readings);
+  if (full.latitude) _soLoadSnotel(siteId, full.latitude, full.longitude);
+}
+
+function closeSlideover() {
+  document.getElementById('fn-slideover').style.transform = 'translateX(100%)';
+  document.getElementById('fn-slideover-backdrop').style.display = 'none';
+}
+
+// ── Async section loaders ──────────────────────────────────────────────────────
+
+// 48-hour sparkline trends
+async function _soLoadTrends(siteId, readings, accent) {
+  var el = document.getElementById('so-sect-trends');
+  if (!el) return;
+  try {
+    var params = readings.length ? readings : [{ param_code:'00060', param_name:'Discharge', unit:'cfs' }];
+    var rows = await Promise.all(params.map(async function(r) {
+      var resp = await fetch('/api/data/timeseries?site='+siteId+'&param='+r.param_code+'&hours=48');
+      var json = await resp.json();
+      return { r: r, data: json.data || [] };
+    }));
+    var html = '';
+    rows.forEach(function(row) {
+      if (!row.data.length) return;
+      var color = row.r.param_code==='00060' ? accent : '#64748b';
+      var vals  = row.data.map(function(d){ return +d.value; }).filter(isFinite);
+      var cur   = vals[vals.length-1], mn = Math.min.apply(null,vals), mx = Math.max.apply(null,vals);
+      html += '<div class="so-sparkline-row">'
+        + '<div style="width:80px;flex-shrink:0;">'
+        + '<div style="font-size:9px;color:#475569;text-transform:uppercase;letter-spacing:.06em;">'+esc(row.r.param_name)+'</div>'
+        + '<div style="font-size:11px;font-weight:700;color:#e2e8f0;font-family:JetBrains Mono,monospace;margin-top:1px;">'+(cur!=null?cur.toFixed(1):'–')+' <span style="font-size:9px;font-weight:400;color:#475569;">'+esc(row.r.unit||'')+'</span></div>'
+        + '<div style="font-size:9px;color:#334155;margin-top:2px;">'+mn.toFixed(0)+'–'+mx.toFixed(0)+'</div>'
+        + '</div>'
+        + '<div style="flex:1;min-width:0;">'+_sparklineSvg(row.data, color, 200, 36)+'</div>'
+        + '</div>';
+    });
+    el.innerHTML = html || '<div style="font-size:11px;color:#334155;padding:6px 0;">No timeseries data available.</div>';
+  } catch(e) {
+    if (el) el.innerHTML = '<div style="font-size:11px;color:#475569;">Could not load trends.</div>';
+  }
+}
+
+// Flood stage thresholds from USGS WaterWatch
+async function _soLoadFloodStages(siteId, hR) {
+  var el = document.getElementById('so-sect-flood');
+  if (!el) return;
+  try {
+    var resp = await fetch('/api/data/flood-stages?sites='+siteId);
+    var json = await resp.json();
+    var st   = (json.data || {})[siteId];
+    if (!st) { el.innerHTML = '<div style="font-size:11px;color:#334155;padding:4px 0;">No stage thresholds on record for this site.</div>'; return; }
+
+    var cur = hR ? hR.value : null;
+    var html = '';
+    // Status pill
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
+      + (cur != null ? '<span style="font-size:12px;font-weight:700;color:#e2e8f0;font-family:JetBrains Mono,monospace;">'+cur.toFixed(2)+' ft</span>' : '')
+      + _floodPill(st.class || 'normal')
+      + '</div>';
+
+    // Stage bar
+    if (cur != null && st.major) {
+      var maxVal = Math.max(st.major * 1.15, cur * 1.1);
+      var pctCur = Math.min(cur / maxVal * 100, 100);
+      var barColor = st.class==='flood'||st.class==='moderate'||st.class==='major' ? '#f87171'
+                   : st.class==='action'||st.class==='watch' ? '#facc15' : '#34d399';
+      html += '<div class="so-flood-bar">'
+        + '<div class="so-stage-pip" style="width:'+pctCur.toFixed(1)+'%;background:'+barColor+';"></div>';
+      [['action',st.action,'#facc15'],['flood',st.flood,'#fb923c'],['moderate',st.moderate,'#f87171'],['major',st.major,'#ef4444']].forEach(function(m){
+        if (m[1] == null) return;
+        var pct = Math.min(m[1]/maxVal*100, 100);
+        html += '<div class="so-flood-marker" style="left:'+pct.toFixed(1)+'%;background:'+m[2]+';"></div>';
+      });
+      html += '</div>';
+      html += '<div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;">';
+      [['Action',st.action,'#facc15'],['Flood',st.flood,'#fb923c'],['Moderate',st.moderate,'#f87171'],['Major',st.major,'#ef4444']].forEach(function(m){
+        if (m[1] == null) return;
+        html += '<div style="font-size:9px;color:'+m[2]+';"><span style="color:#334155;">'+m[0]+'</span> '+m[1].toFixed(1)+' ft</div>';
+      });
+      html += '</div>';
+    } else {
+      // Just show thresholds as text
+      html += '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px;">';
+      [['Action',st.action,'#facc15'],['Flood',st.flood,'#fb923c'],['Moderate',st.moderate,'#f87171'],['Major',st.major,'#ef4444']].forEach(function(m){
+        if (m[1] == null) return;
+        html += '<div style="font-size:9px;color:'+m[2]+';"><span style="color:#334155;">'+m[0]+'</span> '+m[1].toFixed(1)+' ft</div>';
+      });
+      if (!hR) html += '<div style="font-size:10px;color:#334155;margin-top:4px;">Add Gage Height param to see live position.</div>';
+      html += '</div>';
+    }
+    el.innerHTML = html;
+  } catch(e) {
+    if (el) el.innerHTML = '<div style="font-size:11px;color:#475569;">Flood stages unavailable.</div>';
+  }
+}
+
+// Anomaly detection via z-score on 7-day history
+async function _soLoadAnomaly(siteId, readings) {
+  var el = document.getElementById('so-sect-anomaly');
+  if (!el) return;
+  try {
+    var html = '';
+    var hasAny = false;
+    await Promise.all((readings.length ? readings : []).map(async function(r) {
+      var resp = await fetch('/api/data/timeseries?site='+siteId+'&param='+r.param_code+'&hours=168');
+      var json = await resp.json();
+      var hist = json.data || [];
+      var score = _anomalyScore(hist, r.value);
+      if (!score) return;
+      hasAny = true;
+      var flag = score.absZ > 3.0 ? 'high' : score.absZ > 2.0 ? 'moderate' : 'normal';
+      var fc   = flag==='high' ? '#ef4444' : flag==='moderate' ? '#facc15' : '#34d399';
+      var fb   = flag==='high' ? 'rgba(239,68,68,0.1)' : flag==='moderate' ? 'rgba(250,204,21,0.1)' : 'rgba(52,211,153,0.07)';
+      var dir  = score.z > 0 ? 'above' : 'below';
+      html += '<div style="padding:7px 10px;border-radius:7px;margin-bottom:6px;background:'+fb+';border:1px solid rgba(255,255,255,0.04);">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">'
+        + '<span style="font-size:11px;color:#94a3b8;">'+esc(r.param_name)+'</span>'
+        + '<span class="so-badge" style="background:'+fb+';color:'+fc+';">'+flag.toUpperCase()+' z='+score.absZ.toFixed(1)+'</span>'
+        + '</div>'
+        + '<div style="font-size:10px;color:#475569;">'
+        + score.absZ.toFixed(1)+'σ '+dir+' 7-day mean of '+score.mean.toFixed(1)+' '+esc(r.unit)+' (n='+score.n+')'
+        + '</div>'
+        + '</div>';
+    }));
+    el.innerHTML = hasAny ? html : '<div style="font-size:11px;color:#334155;padding:4px 0;">No readings to analyze.</div>';
+  } catch(e) {
+    if (el) el.innerHTML = '<div style="font-size:11px;color:#475569;">Anomaly detection unavailable.</div>';
+  }
+}
+
+// SNOTEL snow water equivalent from NRCS
+async function _soLoadSnotel(siteId, lat, lon) {
+  var el = document.getElementById('so-sect-snotel');
+  if (!el) return;
+  try {
+    var resp = await fetch('/api/data/snotel?lat='+lat+'&lon='+lon+'&radius=75');
+    var json = await resp.json();
+    var data = json.data || [];
+    if (!data.length) { el.innerHTML = '<div style="font-size:11px;color:#334155;padding:4px 0;">No SNOTEL stations within 75 km.</div>'; return; }
+    var html = '';
+    data.forEach(function(st) {
+      var swe = st.swe_in != null ? st.swe_in.toFixed(1)+' in SWE' : 'no data';
+      var sweColor = st.swe_in > 20 ? '#22d3ee' : st.swe_in > 5 ? '#94a3b8' : '#334155';
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-radius:6px;margin-bottom:4px;background:rgba(34,211,238,0.04);border:1px solid rgba(34,211,238,0.08);">'
+        + '<div style="min-width:0;">'
+        + '<div style="font-size:11px;color:#cbd5e1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px;">'+esc(st.name)+'</div>'
+        + '<div style="font-size:9px;color:#475569;margin-top:1px;">'+(st.elevation ? Math.round(st.elevation)+' ft elev' : '')+(st.date ? ' · '+st.date : '')+'</div>'
+        + '</div>'
+        + '<div style="font-size:12px;font-weight:700;color:'+sweColor+';font-family:JetBrains Mono,monospace;flex-shrink:0;margin-left:8px;">'+swe+'</div>'
+        + '</div>';
+    });
+    el.innerHTML = html;
+  } catch(e) {
+    if (el) el.innerHTML = '<div style="font-size:11px;color:#475569;">SNOTEL unavailable.</div>';
+  }
+}
+
+// Situation report via AI — triggered on button click
+async function _soLoadSitrep(siteId) {
+  var btn = document.getElementById('so-sitrep-btn');
+  var res = document.getElementById('so-sitrep-result');
+  if (!btn || !res) return;
+  btn.disabled = true;
+  btn.textContent = 'Generating…';
+  res.style.display = 'none';
+  try {
+    var site     = SITES.find(function(s){ return s.site_id === siteId; }) || {};
+    var readings = _readings[siteId] || [];
+    var readingsSummary = readings.map(function(r){
+      return r.param_name+': '+r.value.toFixed(2)+' '+r.unit+' ('+r.trend+')';
+    }).join(', ');
+    var incoming = _connections.filter(function(c){ return c.to_site_id   === siteId; });
+    var outgoing = _connections.filter(function(c){ return c.from_site_id === siteId; });
+    var query = 'Provide a brief operational situation report for '+(site.name||siteId)
+      + ', a '+(site.type||'river')+' gauge in the flow network. '
+      + (readingsSummary ? 'Current readings: '+readingsSummary+'. ' : '')
+      + (incoming.length ? incoming.length+' upstream source(s). ' : '')
+      + (outgoing.length ? outgoing.length+' downstream connection(s). ' : '')
+      + 'Include: current flow status, notable trends, any concerns, and recommended monitoring actions. Keep it under 120 words.';
+    var resp = await fetch('/api/insights/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: query, site_ids: [siteId] })
+    });
+    var json = await resp.json();
+    res.innerHTML = json.response
+      ? json.response.replace(/\n/g,'<br>')
+      : '<span style="color:#475569;">No response received.</span>';
+    res.style.display = 'block';
+    btn.textContent = '↺ Regenerate';
+    btn.disabled = false;
+  } catch(e) {
+    res.innerHTML = '<span style="color:#f87171;">Could not generate report: '+esc(e.message)+'</span>';
+    res.style.display = 'block';
+    btn.textContent = '↺ Retry';
+    btn.disabled = false;
+  }
+}
+
+// ── Auto-analyze (debounced) ──────────────────────────────────────────────────
+function scheduleAnalysis() {
+  clearTimeout(_analyzeTimer);
+  if (_selectedSites.length < 1) { cancelAnalysis(); return; }
+
+  var panel   = document.getElementById('ai-panel');
+  var pending = document.getElementById('analysis-pending');
+  var bar     = document.getElementById('analysis-progress-bar');
+
+  panel.style.display = 'block';
+  if (pending) pending.classList.remove('hidden');
+
+  // Animate progress bar over the delay window
+  if (bar) {
+    bar.style.transition = 'none';
+    bar.style.width = '0%';
+    bar.getBoundingClientRect(); // force reflow
+    bar.style.transition = 'width ' + (ANALYZE_DELAY/1000) + 's linear';
+    bar.style.width = '100%';
+  }
+
+  _analyzeTimer = setTimeout(function() {
+    if (pending) pending.classList.add('hidden');
+    if (bar) { bar.style.transition = 'none'; bar.style.width = '0%'; }
+    analyzeNetwork();
+  }, ANALYZE_DELAY);
+}
+
+function cancelAnalysis() {
+  clearTimeout(_analyzeTimer);
+  _analyzeTimer = null;
+  var pending = document.getElementById('analysis-pending');
+  var bar     = document.getElementById('analysis-progress-bar');
+  if (pending) pending.classList.add('hidden');
+  if (bar) { bar.style.transition = 'none'; bar.style.width = '0%'; }
+}
+
+// ── AI Analysis ───────────────────────────────────────────────────────────────
+async function analyzeNetwork() {
+  var panel   = document.getElementById('ai-panel');
+  var loading = document.getElementById('ai-loading');
+  var body    = document.getElementById('ai-body');
+
+  panel.style.display = 'block';
+  loading.classList.remove('hidden');
+  body.style.display = 'none';
+  ['ai-summary-wrap','ai-implications-wrap','ai-sitenotes-wrap','ai-rec-wrap','ai-raw'].forEach(function(id) {
+    document.getElementById(id).classList.add('hidden');
+  });
+  document.getElementById('ai-cached').classList.add('hidden');
+
+  var hours = parseInt(document.getElementById('fnHours').value);
+  var activeIds = _selectedSites.map(function(s){ return s.site_id; });
+  var activeConns = _connections.filter(function(c){ return activeIds.includes(c.from_site_id) && activeIds.includes(c.to_site_id); });
+  var nodes = _selectedSites.map(function(s){ return { site_id: s.site_id, site_name: s.name, readings: _readings[s.site_id] || [] }; });
+
+  try {
+    var resp = await fetch('/api/insights/network', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodes: nodes, edges: activeConns, hours: hours })
+    });
+    var json = await resp.json();
+    loading.classList.add('hidden');
+    body.style.display = 'block';
+    if (json.cached) document.getElementById('ai-cached').classList.remove('hidden');
+
+    var d = json.data || {};
+    if (d._raw) {
+      document.getElementById('ai-raw').textContent = d._raw;
+      document.getElementById('ai-raw').classList.remove('hidden');
+      return;
+    }
+
+    if (d.network_summary) {
+      document.getElementById('ai-summary').textContent = d.network_summary;
+      if (d.flow_status) {
+        var sc = { normal:'#34d399', elevated:'#fbbf24', flood_risk:'#f87171', drought:'#fb923c', variable:'#94a3b8' };
+        document.getElementById('ai-status').innerHTML = '<span style="color:' + (sc[d.flow_status]||'#94a3b8') + ';font-weight:600;text-transform:capitalize;">' + d.flow_status.replace('_',' ') + '</span>';
+      }
+      document.getElementById('ai-summary-wrap').classList.remove('hidden');
+    }
+
+    if (d.implications && d.implications.length) {
+      document.getElementById('ai-implications').innerHTML = d.implications.map(function(im) {
+        var sc = im.severity ? 'sev-' + im.severity : 'sev-info';
+        var cc = im.severity === 'critical' ? 'critical' : im.severity === 'warning' ? 'warning' : im.severity === 'watch' ? 'watch' : '';
+        return '<div class="impl-card ' + cc + '">'
+          + '<div class="flex items-center gap-2 mb-1">'
+          + '<span style="color:#38bdf8;font-size:11px;font-weight:600;">' + esc(im.from_site) + '</span>'
+          + '<span style="color:#475569;">→</span>'
+          + '<span style="color:#34d399;font-size:11px;font-weight:600;">' + esc(im.to_site) + '</span>'
+          + (im.severity ? '<span class="sev-badge ' + sc + ' ml-auto">' + im.severity + '</span>' : '')
+          + '</div>'
+          + '<div class="text-xs text-slate-300 leading-relaxed">' + esc(im.finding) + '</div>'
+          + (im.lag_estimate ? '<div class="text-xs text-slate-600 mt-1">Signal lag: ' + esc(im.lag_estimate) + '</div>' : '')
+          + '</div>';
+      }).join('');
+      document.getElementById('ai-implications-wrap').classList.remove('hidden');
+    }
+
+    if (d.site_notes && d.site_notes.length) {
+      document.getElementById('ai-sitenotes').innerHTML = d.site_notes.map(function(n) {
+        return '<div class="text-xs p-2 rounded" style="background:#0f172a;border:1px solid #1e293b;">'
+          + '<span class="font-medium text-slate-300">' + esc(n.site) + ':</span> '
+          + '<span class="text-slate-400">' + esc(n.note) + '</span></div>';
+      }).join('');
+      document.getElementById('ai-sitenotes-wrap').classList.remove('hidden');
+    }
+
+    if (d.recommendation) {
+      document.getElementById('ai-rec').textContent = d.recommendation;
+      document.getElementById('ai-rec-wrap').classList.remove('hidden');
+    }
+
+  } catch(e) {
+    loading.classList.add('hidden');
+    body.style.display = 'block';
+    document.getElementById('ai-raw').innerHTML = 'Analysis unavailable. <button onclick="analyzeNetwork()" style="background:none;border:none;cursor:pointer;color:#38bdf8;text-decoration:underline;font-size:inherit;padding:0;">Try again</button>';
+    document.getElementById('ai-raw').classList.remove('hidden');
+  }
+}
+
+// ── NLDI Topology Discovery ───────────────────────────────────────────────────
+async function syncTopology() {
+  var btn = document.getElementById('syncBtn');
+  var status = document.getElementById('sync-status');
+  btn.disabled = true;
+  btn.querySelector('svg').classList.add('animate-spin');
+  status.textContent = 'Querying USGS stream network…';
+
+  try {
+    var resp = await fetch('/api/connections/sync', { method: 'POST' });
+    var json = await resp.json();
+    if (!resp.ok) throw new Error(json.error || 'Discovery failed');
+    _connections = json.connections || [];
+    var n = json.discovered;
+    status.textContent = n
+      ? 'Found ' + n + ' connection' + (n !== 1 ? 's' : '') + ' · ' + fmtTime(json.synced_at)
+      : 'NLDI returned no connections';
+    if (_mapMode) renderLeafletMap(); else redrawNetwork();
+    renderConnections();
+  } catch(e) {
+    status.textContent = 'Discovery failed — check console';
+    console.error('[NLDI sync]', e);
+  } finally {
+    btn.disabled = false;
+    btn.querySelector('svg').classList.remove('animate-spin');
+  }
+}
+
+// ── Connections sidebar ───────────────────────────────────────────────────────
+function renderConnections() {
+  var el = document.getElementById('conn-list');
+  if (!_connections.length) {
+    el.innerHTML = '<span class="text-slate-600 text-xs">Discovering from USGS…</span>';
+    return;
+  }
+  var activeIds = _selectedSites.map(function(s){ return s.site_id; });
+  el.innerHTML = _connections.map(function(c) {
+    var fSite = SITES.find(function(s){ return s.site_id === c.from_site_id; });
+    var tSite = SITES.find(function(s){ return s.site_id === c.to_site_id; });
+    var active = activeIds.includes(c.from_site_id) && activeIds.includes(c.to_site_id);
+    return '<div class="conn-row" style="opacity:' + (active ? '1' : '0.3') + ';display:inline-flex;">'
+      + '<span class="conn-from">' + esc(short(fSite ? fSite.name : c.from_site_id)) + '</span>'
+      + '<span class="conn-arrow">›</span>'
+      + '<span class="conn-to">'   + esc(short(tSite ? tSite.name : c.to_site_id))   + '</span>'
+      + '</div>';
+  }).join('');
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function haversineKm(lat1, lon1, lat2, lon2) {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return null;
+  var R = 6371, dLat = (lat2-lat1)*Math.PI/180, dLon = (lon2-lon1)*Math.PI/180;
+  var a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+function truncate(str, n) { return str.length > n ? str.slice(0, n-1)+'…' : str; }
+function short(name) {
+  return name.replace(/^(.*?)\s+(River|Creek|Run|Brook)\s+/i, function(m, p1, p2) {
+    return p1.split(' ').slice(-1)[0] + ' ' + p2 + ' ';
+  }).slice(0, 28);
+}
+function esc(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmtTime(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', function() {
+  _selectedParams = Array.from(document.querySelectorAll('#param-chips .param-chip.active')).map(function(b) {
+    return { code: b.dataset.code, name: b.dataset.name, unit: b.dataset.unit };
+  });
+  renderConnections();
+  document.getElementById('fnHours').addEventListener('change', refreshData);
+
+  // Pre-select site from ?site= and auto-include its direct neighbours
+  var urlSite = new URLSearchParams(location.search).get('site');
+  if (urlSite) {
+    // IDs to activate: the target site + its direct upstream/downstream neighbours
+    var neighbourIds = INIT_CONNS
+      .filter(function(c) { return c.from_site_id === urlSite || c.to_site_id === urlSite; })
+      .map(function(c)    { return c.from_site_id === urlSite ? c.to_site_id : c.from_site_id; });
+    var idsToActivate = [urlSite].concat(neighbourIds);
+
+    // Activate chips without triggering per-chip refreshData calls
+    idsToActivate.forEach(function(id) {
+      var chip = document.querySelector('#site-chips .fn-chip[data-id="' + id + '"]');
+      if (!chip) return;
+      chip.classList.add('active');
+      chip.querySelector('.cdot').style.background = chip.dataset.color;
+    });
+
+    // Rebuild _selectedSites from newly active chips and fire one refresh
+    _selectedSites = Array.from(document.querySelectorAll('#site-chips .fn-chip.active')).map(function(b) {
+      return { site_id: b.dataset.id, name: b.dataset.name, color: b.dataset.color };
+    });
+    document.getElementById('site-count').textContent = _selectedSites.length + ' selected';
+    if (_selectedSites.length) refreshData();
+  }
+
+  // Resize: redraw so nodes reposition to new canvas dimensions
+  var _resizeTimer = null;
+  window.addEventListener('resize', function() {
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(function() {
+      if (_mapMode && _leafletMap) _leafletMap.invalidateSize();
+      else if (_d3Nodes.length) redrawNetwork();
+    }, 150);
+  });
+
+  fetch('/api/connections/sync-status')
+    .then(function(r){ return r.json(); })
+    .then(function(json) {
+      var status = document.getElementById('sync-status');
+      if (json.count > 0 && json.synced_at) {
+        var ageH = (Date.now() - new Date(json.synced_at).getTime()) / 3600000;
+        if (ageH < STALE_HOURS) {
+          status.textContent = json.count + ' connection' + (json.count !== 1 ? 's' : '') + ' · synced ' + fmtTime(json.synced_at);
+          return;
+        }
+      }
+      status.textContent = 'Discovering topology…';
+      syncTopology();
+    })
+    .catch(function() { syncTopology(); });
+});
+</script>
+
+<%- include('partials/foot') %>

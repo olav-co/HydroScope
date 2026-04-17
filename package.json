@@ -10,7 +10,7 @@
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
     "axios": "^1.7.9",
-    "better-sqlite3": "^9.6.0",
+    "better-sqlite3": "^8.7.0",
     "ejs": "^3.1.10",
     "express": "^4.19.2",
     "node-cron": "^3.0.3"

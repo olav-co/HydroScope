@@ -1,0 +1,361 @@
+<%- include('partials/head', { title: 'Weather Data' }) %>
+<%- include('partials/nav') %>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Weather Data</h1>
+      <p class="text-xs text-slate-400 mt-0.5">Open-Meteo upstream precipitation &amp; temperature — Portland watershed</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="text-xs px-2 py-1 rounded" style="background:rgba(14,165,233,0.1);color:#38bdf8;border:1px solid rgba(14,165,233,0.2);">Open-Meteo · No API key</span>
+    </div>
+  </header>
+
+  <div class="flex-1 overflow-y-auto p-6">
+
+    <!-- Controls -->
+    <div class="card mb-5">
+      <div class="flex flex-wrap gap-4 items-end">
+        <div style="flex:1;min-width:160px;">
+          <label class="label">Location</label>
+          <select id="locSelect" class="input">
+            <option value="portland">Portland</option>
+            <option value="bull_run">Bull Run Watershed</option>
+            <option value="mt_hood">Mt. Hood / Upper Cascades</option>
+          </select>
+        </div>
+        <div style="flex:1;min-width:200px;">
+          <label class="label">Parameter</label>
+          <select id="paramSelect" class="input" onchange="onParamChange()">
+            <optgroup label="Hourly">
+              <option value="precipitation">Precipitation (in/hr)</option>
+              <option value="rain">Rain (in/hr)</option>
+              <option value="snowfall">Snowfall (in/hr)</option>
+              <option value="temperature">Temperature (°F)</option>
+            </optgroup>
+            <optgroup label="Daily totals">
+              <option value="precip_daily">Daily Precipitation (in)</option>
+              <option value="temp_max_daily">Daily High Temp (°F)</option>
+              <option value="temp_min_daily">Daily Low Temp (°F)</option>
+              <option value="snowfall_daily">Daily Snowfall (in)</option>
+            </optgroup>
+          </select>
+        </div>
+        <div style="flex:1;min-width:140px;">
+          <label class="label">Time Range</label>
+          <select id="hoursSelect" class="input">
+            <option value="24">24 Hours</option>
+            <option value="72">3 Days</option>
+            <option value="168" selected>7 Days</option>
+            <option value="336">14 Days</option>
+          </select>
+        </div>
+        <div class="flex items-center gap-2 pb-0.5">
+          <label class="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
+            <input type="checkbox" id="showForecast" checked style="accent-color:#0ea5e9;cursor:pointer;">
+            Show forecast
+          </label>
+        </div>
+        <button onclick="loadChart()" class="btn-primary">Load</button>
+      </div>
+    </div>
+
+    <!-- Metrics row -->
+    <div id="metricsRow" class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3 mb-5" style="display:none;">
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Readings</div>
+        <div id="mCount" class="text-xl font-mono font-semibold text-slate-200">—</div>
+      </div>
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Actual</div>
+        <div id="mActual" class="text-xl font-mono font-semibold" style="color:#34d399;">—</div>
+      </div>
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Forecast</div>
+        <div id="mForecast" class="text-xl font-mono font-semibold" style="color:#a78bfa;">—</div>
+      </div>
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Earliest</div>
+        <div id="mEarliest" class="text-xs font-mono font-semibold text-slate-300 leading-snug">—</div>
+      </div>
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Latest</div>
+        <div id="mLatest" class="text-xs font-mono font-semibold text-slate-300 leading-snug">—</div>
+      </div>
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Min / Max</div>
+        <div id="mMinMax" class="text-xs font-mono font-semibold text-slate-300">—</div>
+      </div>
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Mean</div>
+        <div id="mMean" class="text-xl font-mono font-semibold" style="color:#38bdf8;">—</div>
+      </div>
+    </div>
+
+    <!-- Source + interval info bar -->
+    <div id="infoBar" class="mb-5 rounded-xl border px-4 py-3 flex flex-wrap items-center gap-4 text-xs" style="display:none!important;background:rgba(15,23,42,0.6);border-color:#1e293b;">
+      <div class="flex items-center gap-2">
+        <span class="text-slate-500">Source</span>
+        <span class="font-medium text-slate-300">Open-Meteo (api.open-meteo.com)</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-500">Interval</span>
+        <span id="iBand" class="font-medium text-slate-300">—</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-500">Avg gap</span>
+        <span id="iAvgGap" class="font-medium text-slate-300">—</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-500">Coverage</span>
+        <span id="iCoverage" class="font-medium text-slate-300">—</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-500">Last fetched</span>
+        <span id="iFetched" class="font-medium text-slate-300">—</span>
+      </div>
+      <div class="ml-auto flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full inline-block" style="background:#0ea5e9;"></span>
+        <span class="text-slate-400">Actual</span>
+        <span class="w-2 h-2 rounded-full inline-block ml-2" style="background:#a78bfa;"></span>
+        <span class="text-slate-400">Forecast</span>
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="card mb-5">
+      <div class="flex items-center justify-between mb-4">
+        <h2 id="chartTitle" class="text-sm font-semibold text-slate-200">Select a location and parameter</h2>
+        <span id="chartBadge" class="text-xs text-slate-500"></span>
+      </div>
+      <div class="relative" style="height:320px;">
+        <canvas id="wxChart"></canvas>
+        <div id="chartEmpty" class="absolute inset-0 flex items-center justify-center text-slate-600 text-sm">No data loaded.</div>
+      </div>
+    </div>
+
+    <!-- Recent readings table -->
+    <div id="tableCard" class="card" style="display:none;">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-slate-300">Recent Readings</h2>
+        <span id="tableCaption" class="text-xs text-slate-500"></span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead>
+            <tr style="border-bottom:1px solid #1e293b;">
+              <th class="text-left py-2 pr-4 text-slate-500 font-medium">Timestamp</th>
+              <th class="text-right py-2 pr-4 text-slate-500 font-medium">Value</th>
+              <th class="text-right py-2 pr-4 text-slate-500 font-medium">Unit</th>
+              <th class="text-right py-2 text-slate-500 font-medium">Type</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+var wxChart = null;
+var _rows = [];
+
+var PARAM_LABELS = {
+  precipitation:   'Precipitation',
+  rain:            'Rain',
+  snowfall:        'Snowfall',
+  temperature:     'Temperature',
+  precip_daily:    'Daily Precipitation',
+  temp_max_daily:  'Daily High Temp',
+  temp_min_daily:  'Daily Low Temp',
+  snowfall_daily:  'Daily Snowfall',
+};
+
+var PARAM_COLORS = {
+  precipitation:  '#38bdf8',
+  rain:           '#0ea5e9',
+  snowfall:       '#a78bfa',
+  temperature:    '#fb923c',
+  precip_daily:   '#38bdf8',
+  temp_max_daily: '#fb923c',
+  temp_min_daily: '#60a5fa',
+  snowfall_daily: '#a78bfa',
+};
+
+function onParamChange() {
+  // daily params — clamp time range to 14 days max (daily rows cover far fewer points)
+  var param = document.getElementById('paramSelect').value;
+  var hoursEl = document.getElementById('hoursSelect');
+  if (param.endsWith('_daily') && parseInt(hoursEl.value) < 168) {
+    hoursEl.value = '168';
+  }
+}
+
+function fmt(ts) {
+  return new Date(ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z').toLocaleString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+}
+function fmtDate(ts) {
+  return new Date(ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z').toLocaleDateString('en-US', { month:'short', day:'numeric' });
+}
+
+async function loadChart() {
+  var loc   = document.getElementById('locSelect').value;
+  var param = document.getElementById('paramSelect').value;
+  var hours = parseInt(document.getElementById('hoursSelect').value);
+  var showForecast = document.getElementById('showForecast').checked;
+
+  var locName = document.getElementById('locSelect').selectedOptions[0].textContent;
+  var paramLabel = PARAM_LABELS[param] || param;
+  var color = PARAM_COLORS[param] || '#0ea5e9';
+
+  document.getElementById('chartTitle').textContent = locName + ' — ' + paramLabel;
+  document.getElementById('chartBadge').textContent = 'Loading...';
+  document.getElementById('chartEmpty').classList.add('hidden');
+
+  var resp = await fetch('/api/data/weather?location=' + loc + '&param=' + param + '&hours=' + hours);
+  var json = await resp.json();
+  _rows = json.data || [];
+
+  if (!_rows.length) {
+    document.getElementById('chartEmpty').classList.remove('hidden');
+    document.getElementById('chartBadge').textContent = 'No data';
+    document.getElementById('metricsRow').style.display = 'none';
+    document.getElementById('infoBar').style.removeProperty('display');
+    document.getElementById('infoBar').style.display = 'none';
+    document.getElementById('tableCard').style.display = 'none';
+    return;
+  }
+
+  var displayRows = showForecast ? _rows : _rows.filter(function(r) { return !r.is_forecast; });
+
+  // Split for dual-color dataset
+  var actualRows   = _rows.filter(function(r) { return !r.is_forecast; });
+  var forecastRows = _rows.filter(function(r) { return  r.is_forecast; });
+
+  // Build unified label array across actual + forecast
+  var allTimestamps = _rows.map(function(r) { return r.recorded_at; });
+
+  function makeDataset(subset, fillColor, borderColor, label) {
+    var tsSet = new Set(subset.map(function(r) { return r.recorded_at; }));
+    return {
+      label: label,
+      data: allTimestamps.map(function(ts) {
+        return tsSet.has(ts) ? subset.find(function(r) { return r.recorded_at === ts; }).value : null;
+      }),
+      borderColor: borderColor,
+      backgroundColor: fillColor,
+      fill: true,
+      tension: 0.3,
+      pointRadius: 0,
+      borderWidth: 2,
+      spanGaps: false,
+    };
+  }
+
+  var datasets = [];
+  if (actualRows.length)   datasets.push(makeDataset(actualRows,   color + '18', color,     'Actual'));
+  if (forecastRows.length && showForecast) datasets.push(makeDataset(forecastRows, '#a78bfa18', '#a78bfa', 'Forecast'));
+
+  var labels = allTimestamps.map(function(ts) {
+    return param.endsWith('_daily') ? fmtDate(ts) : fmt(ts);
+  });
+  if (!showForecast) {
+    var actTs = new Set(actualRows.map(function(r) { return r.recorded_at; }));
+    labels = allTimestamps.filter(function(ts) { return actTs.has(ts); }).map(function(ts) {
+      return param.endsWith('_daily') ? fmtDate(ts) : fmt(ts);
+    });
+    datasets = datasets.map(function(ds) {
+      return Object.assign({}, ds, { data: ds.data.filter(function(_,i) { return actTs.has(allTimestamps[i]); }) });
+    });
+  }
+
+  var isLight = document.body.classList.contains('light');
+  var unit = _rows[0].unit || '';
+
+  document.getElementById('chartBadge').textContent = displayRows.length + ' readings · ' + unit;
+
+  if (wxChart) wxChart.destroy();
+  wxChart = new Chart(document.getElementById('wxChart'), {
+    type: param === 'temperature' || param === 'temp_max_daily' || param === 'temp_min_daily' ? 'line' : 'bar',
+    data: { labels: labels, datasets: datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: { display: datasets.length > 1, labels: { color: isLight ? '#334155' : '#94a3b8', font: { size: 11 } } },
+        tooltip: { backgroundColor: isLight ? '#fff' : '#1e293b', titleColor: '#64748b', bodyColor: isLight ? '#0f172a' : '#f1f5f9' }
+      },
+      scales: {
+        x: { ticks: { color: isLight ? '#64748b' : '#475569', maxTicksLimit: 10, maxRotation: 0, font: { size: 11 } }, grid: { color: isLight ? 'rgba(0,0,0,0.06)' : '#1e293b' } },
+        y: { ticks: { color: isLight ? '#64748b' : '#475569', font: { size: 11 } }, grid: { color: isLight ? 'rgba(0,0,0,0.06)' : '#1e293b' } }
+      }
+    }
+  });
+
+  // ── Metrics ──────────────────────────────────────────────
+  var vals = displayRows.map(function(r) { return r.value; });
+  var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+  var mean = vals.reduce(function(a,b){return a+b;},0) / vals.length;
+
+  document.getElementById('mCount').textContent    = _rows.length.toLocaleString();
+  document.getElementById('mActual').textContent   = actualRows.length.toLocaleString();
+  document.getElementById('mForecast').textContent = forecastRows.length.toLocaleString();
+  document.getElementById('mEarliest').textContent = fmtDate(_rows[0].recorded_at);
+  document.getElementById('mLatest').textContent   = fmtDate(_rows[_rows.length-1].recorded_at);
+  document.getElementById('mMinMax').textContent   = min.toFixed(2) + ' / ' + max.toFixed(2) + ' ' + unit;
+  document.getElementById('mMean').textContent     = mean.toFixed(2) + ' ' + unit;
+  document.getElementById('metricsRow').style.display = 'grid';
+
+  // ── Info bar ──────────────────────────────────────────────
+  var isDailyParam = param.endsWith('_daily');
+  document.getElementById('iBand').textContent = isDailyParam ? 'Daily' : 'Hourly';
+
+  // Average gap between consecutive timestamps
+  var avgGapMin = null;
+  if (_rows.length > 1) {
+    var totalMs = 0;
+    for (var i = 1; i < _rows.length; i++) {
+      totalMs += new Date(_rows[i].recorded_at + 'Z') - new Date(_rows[i-1].recorded_at + 'Z');
+    }
+    avgGapMin = Math.round(totalMs / (_rows.length - 1) / 60000);
+  }
+  document.getElementById('iAvgGap').textContent = avgGapMin !== null ? (avgGapMin >= 60 ? Math.round(avgGapMin/60) + 'h' : avgGapMin + 'min') : '—';
+
+  // Coverage span
+  var spanMs = new Date(_rows[_rows.length-1].recorded_at + 'Z') - new Date(_rows[0].recorded_at + 'Z');
+  var spanDays = (spanMs / 86400000).toFixed(1);
+  document.getElementById('iCoverage').textContent = spanDays + ' days';
+
+  // Last fetched
+  var lastFetched = _rows.reduce(function(m,r){ return r.fetched_at > m ? r.fetched_at : m; }, '');
+  document.getElementById('iFetched').textContent = lastFetched ? new Date(lastFetched + 'Z').toLocaleString() : '—';
+
+  document.getElementById('infoBar').style.removeProperty('display');
+
+  // ── Table ────────────────────────────────────────────────
+  var tableRows = _rows.slice().reverse().slice(0, 25);
+  document.getElementById('tableCaption').textContent = 'Last ' + tableRows.length + ' of ' + _rows.length;
+  document.getElementById('tableBody').innerHTML = tableRows.map(function(r) {
+    var isFc = r.is_forecast;
+    return '<tr style="border-bottom:1px solid #1e293b;">' +
+      '<td class="py-1.5 pr-4 font-mono" style="color:#94a3b8;">' + fmt(r.recorded_at) + '</td>' +
+      '<td class="py-1.5 pr-4 text-right font-mono font-semibold" style="color:' + (isFc ? '#a78bfa' : color) + ';">' + r.value.toFixed(3) + '</td>' +
+      '<td class="py-1.5 pr-4 text-right" style="color:#64748b;">' + (r.unit || '') + '</td>' +
+      '<td class="py-1.5 text-right">' +
+        '<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:' + (isFc ? 'rgba(167,139,250,0.12)' : 'rgba(52,211,153,0.1)') + ';color:' + (isFc ? '#a78bfa' : '#34d399') + ';">' +
+          (isFc ? 'forecast' : 'actual') +
+        '</span>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+  document.getElementById('tableCard').style.display = 'block';
+}
+
+// Auto-load on open
+window.addEventListener('DOMContentLoaded', loadChart);
+</script>
+
+<%- include('partials/foot') %>

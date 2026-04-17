@@ -1,0 +1,510 @@
+<%- include('partials/head', { title: 'Data Explorer' }) %>
+<%- include('partials/nav') %>
+
+<%
+// Build unified series array for JSON embedding
+var allSeries = [];
+
+measurementSeries.forEach(function(s) {
+  var spanMs = s.earliest && s.latest ? new Date(s.latest + 'Z') - new Date(s.earliest + 'Z') : 0;
+  allSeries.push({
+    source:        'USGS',
+    source_url:    'waterservices.usgs.gov',
+    group:         s.site_name,
+    group_id:      s.site_id,
+    parameter:     s.parameter_name,
+    parameter_code: s.parameter_code,
+    interval:      s.avg_interval_min != null && s.avg_interval_min < 30 ? 'sub-hourly' : 'hourly',
+    row_count:     s.row_count,
+    actual_count:  s.row_count,
+    forecast_count: 0,
+    earliest:      s.earliest || null,
+    latest:        s.latest   || null,
+    span_ms:       spanMs,
+    avg_interval_min: s.avg_interval_min,
+    unit:          s.unit || '',
+    last_fetched:  null,
+    chart_link:    '/visualize?site=' + s.site_id + '&param=' + s.parameter_code,
+  });
+});
+
+weatherSeries.forEach(function(s) {
+  var spanMs = s.earliest && s.latest ? new Date(s.latest + 'Z') - new Date(s.earliest + 'Z') : 0;
+  allSeries.push({
+    source:        'Open-Meteo',
+    source_url:    'api.open-meteo.com',
+    group:         s.location_name,
+    group_id:      s.location_id,
+    parameter:     s.parameter,
+    parameter_code: null,
+    interval:      s.data_interval,
+    row_count:     s.row_count,
+    actual_count:  s.actual_count,
+    forecast_count: s.forecast_count,
+    earliest:      s.earliest || null,
+    latest:        s.latest   || null,
+    span_ms:       spanMs,
+    avg_interval_min: s.avg_interval_min,
+    unit:          s.unit || '',
+    last_fetched:  s.last_fetched || null,
+    chart_link:    '/weather',
+  });
+});
+%>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Data Explorer</h1>
+      <p class="text-xs text-slate-400 mt-0.5">All time-series in the database — filter by any combination</p>
+    </div>
+    <button onclick="clearFilters()" class="btn-secondary text-xs py-1 px-3">Clear filters</button>
+  </header>
+
+  <div class="flex-1 overflow-y-auto p-6">
+
+    <!-- Filter bar -->
+    <div class="card mb-5">
+      <div class="flex flex-wrap gap-3 items-end">
+
+        <div style="flex:1;min-width:120px;">
+          <label class="label">Source</label>
+          <select id="fSource" class="input" onchange="applyFilters()">
+            <option value="">All sources</option>
+          </select>
+        </div>
+
+        <div style="flex:1.5;min-width:160px;">
+          <label class="label">Site / Location</label>
+          <select id="fGroup" class="input" onchange="applyFilters()">
+            <option value="">All sites</option>
+          </select>
+        </div>
+
+        <div style="flex:2;min-width:180px;">
+          <label class="label">Parameter</label>
+          <select id="fParam" class="input" onchange="applyFilters()">
+            <option value="">All parameters</option>
+          </select>
+        </div>
+
+        <div style="flex:1;min-width:120px;">
+          <label class="label">Interval</label>
+          <select id="fInterval" class="input" onchange="applyFilters()">
+            <option value="">All intervals</option>
+          </select>
+        </div>
+
+        <div style="flex:1;min-width:100px;">
+          <label class="label">Has forecast</label>
+          <select id="fForecast" class="input" onchange="applyFilters()">
+            <option value="">Either</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Summary tiles — update on filter -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Series</div>
+        <div id="mSeries" class="text-2xl font-mono font-semibold text-slate-200">—</div>
+      </div>
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Total rows</div>
+        <div id="mRows" class="text-2xl font-mono font-semibold" style="color:#38bdf8;">—</div>
+      </div>
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Actual rows</div>
+        <div id="mActual" class="text-2xl font-mono font-semibold" style="color:#34d399;">—</div>
+      </div>
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Forecast rows</div>
+        <div id="mForecast" class="text-2xl font-mono font-semibold" style="color:#a78bfa;">—</div>
+      </div>
+      <div class="card text-center py-3">
+        <div class="text-xs text-slate-400 mb-1">Avg interval</div>
+        <div id="mInterval" class="text-xl font-mono font-semibold text-slate-200">—</div>
+      </div>
+    </div>
+
+    <!-- Results table -->
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-slate-300">Series</h2>
+        <span id="resultCount" class="text-xs text-slate-500"></span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs" id="seriesTable">
+          <thead>
+            <tr style="border-bottom:1px solid #1e293b;">
+              <th class="text-left py-2 px-3 text-slate-500 font-medium cursor-pointer select-none" onclick="sortBy('source')">Source <span id="sort-source"></span></th>
+              <th class="text-left py-2 px-3 text-slate-500 font-medium cursor-pointer select-none" onclick="sortBy('group')">Site / Location <span id="sort-group"></span></th>
+              <th class="text-left py-2 px-3 text-slate-500 font-medium cursor-pointer select-none" onclick="sortBy('parameter')">Parameter <span id="sort-parameter"></span></th>
+              <th class="text-left py-2 px-3 text-slate-500 font-medium cursor-pointer select-none" onclick="sortBy('interval')">Interval <span id="sort-interval"></span></th>
+              <th class="text-right py-2 px-3 text-slate-500 font-medium cursor-pointer select-none" onclick="sortBy('row_count')">Rows <span id="sort-row_count"></span></th>
+              <th class="text-right py-2 px-3 text-slate-500 font-medium cursor-pointer select-none" onclick="sortBy('actual_count')">Actual <span id="sort-actual_count"></span></th>
+              <th class="text-right py-2 px-3 text-slate-500 font-medium cursor-pointer select-none" onclick="sortBy('forecast_count')">Forecast <span id="sort-forecast_count"></span></th>
+              <th class="text-left py-2 px-3 text-slate-500 font-medium cursor-pointer select-none" onclick="sortBy('earliest')">Earliest <span id="sort-earliest"></span></th>
+              <th class="text-left py-2 px-3 text-slate-500 font-medium cursor-pointer select-none" onclick="sortBy('latest')">Latest <span id="sort-latest"></span></th>
+              <th class="text-right py-2 px-3 text-slate-500 font-medium cursor-pointer select-none" onclick="sortBy('span_ms')">Span <span id="sort-span_ms"></span></th>
+              <th class="text-right py-2 px-3 text-slate-500 font-medium cursor-pointer select-none" onclick="sortBy('avg_interval_min')">Avg interval <span id="sort-avg_interval_min"></span></th>
+              <th class="text-left py-2 px-3 text-slate-500 font-medium">Unit</th>
+              <th class="text-left py-2 px-3 text-slate-500 font-medium">Last fetched</th>
+              <th class="py-2 px-3"></th>
+            </tr>
+          </thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+        <div id="tableEmpty" class="text-xs text-slate-600 py-8 text-center" style="display:none;">No series match the current filters.</div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<!-- Records modal -->
+<div id="recModal" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.6);backdrop-filter:blur(2px);" onclick="if(event.target===this)closeRecords()">
+  <div style="position:absolute;inset:40px 5%;max-width:1100px;margin:0 auto;display:flex;flex-direction:column;background:#0f172a;border:1px solid #1e293b;border-radius:16px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,0.6);">
+
+    <!-- Modal header -->
+    <div class="flex items-center gap-3 px-5 py-4" style="border-bottom:1px solid #1e293b;flex-shrink:0;">
+      <h2 id="recTitle" class="text-sm font-semibold text-slate-200 flex-1 truncate"></h2>
+      <span id="recCount" class="text-xs text-slate-500 flex-shrink-0"></span>
+      <div class="flex items-center gap-3 text-xs text-slate-500 flex-shrink-0">
+        Sort:
+        <button onclick="sortRecords('recorded_at')" id="rsort-recorded_at" class="hover:text-white px-1">Timestamp</button>
+        <button onclick="sortRecords('value')"       id="rsort-value"       class="hover:text-white px-1">Value</button>
+        <button onclick="sortRecords('fetched_at')"  id="rsort-fetched_at"  class="hover:text-white px-1">Fetched at</button>
+      </div>
+      <button onclick="exportSeries('csv')"  class="text-xs px-3 py-1 rounded" style="background:#1e293b;border:1px solid #334155;color:#94a3b8;cursor:pointer;" title="Export CSV">↓ CSV</button>
+      <button onclick="exportSeries('xlsx')" class="text-xs px-3 py-1 rounded" style="background:#1e293b;border:1px solid #334155;color:#94a3b8;cursor:pointer;" title="Export Excel">↓ Excel</button>
+      <button onclick="closeRecords()" class="ml-1 text-slate-500 hover:text-white text-lg leading-none flex-shrink-0" style="background:none;border:none;cursor:pointer;">✕</button>
+    </div>
+
+    <!-- Modal body -->
+    <div class="flex-1 overflow-y-auto px-5 py-4">
+      <div id="recLoading" class="py-12 text-center text-xs text-slate-500">Loading records...</div>
+      <div id="recTableWrap" style="display:none;">
+        <table class="w-full text-xs">
+          <thead style="position:sticky;top:0;z-index:1;background:#0f172a;">
+            <tr style="border-bottom:1px solid #1e293b;">
+              <th class="text-left py-2 px-3 text-slate-500 font-medium">#</th>
+              <th class="text-left py-2 px-3 text-slate-500 font-medium">Recorded at</th>
+              <th class="text-right py-2 px-3 text-slate-500 font-medium">Value</th>
+              <th class="text-left py-2 px-3 text-slate-500 font-medium">Unit</th>
+              <th id="recFcHeader" class="text-left py-2 px-3 text-slate-500 font-medium" style="display:none;">Type</th>
+              <th class="text-left py-2 px-3 text-slate-500 font-medium">Fetched at</th>
+            </tr>
+          </thead>
+          <tbody id="recTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+var ALL = <%- JSON.stringify(allSeries) %>;
+var _sort = { col: 'source', dir: 1 };
+
+// ── Populate filter dropdowns from data ───────────────────────────────────────
+function populateFilters(rows) {
+  function fill(id, vals) {
+    var el = document.getElementById(id);
+    var cur = el.value;
+    var opts = el.querySelectorAll('option:not(:first-child)');
+    opts.forEach(function(o) { o.remove(); });
+    vals.forEach(function(v) {
+      var o = document.createElement('option');
+      o.value = v; o.textContent = v;
+      if (v === cur) o.selected = true;
+      el.appendChild(o);
+    });
+  }
+  fill('fSource',   [...new Set(rows.map(function(r){return r.source;}))].sort());
+  fill('fGroup',    [...new Set(rows.map(function(r){return r.group;}))].sort());
+  fill('fParam',    [...new Set(rows.map(function(r){return r.parameter;}))].sort());
+  fill('fInterval', [...new Set(rows.map(function(r){return r.interval;}))].sort());
+}
+
+// ── Filter ────────────────────────────────────────────────────────────────────
+function getFilters() {
+  return {
+    source:   document.getElementById('fSource').value,
+    group:    document.getElementById('fGroup').value,
+    param:    document.getElementById('fParam').value,
+    interval: document.getElementById('fInterval').value,
+    forecast: document.getElementById('fForecast').value,
+  };
+}
+
+function matchesFilters(r, f) {
+  if (f.source   && r.source    !== f.source)    return false;
+  if (f.group    && r.group     !== f.group)      return false;
+  if (f.param    && r.parameter !== f.param)      return false;
+  if (f.interval && r.interval  !== f.interval)   return false;
+  if (f.forecast === 'yes' && r.forecast_count === 0) return false;
+  if (f.forecast === 'no'  && r.forecast_count  >  0) return false;
+  return true;
+}
+
+function clearFilters() {
+  ['fSource','fGroup','fParam','fInterval','fForecast'].forEach(function(id) {
+    document.getElementById(id).value = '';
+  });
+  applyFilters();
+}
+
+// ── Sort ──────────────────────────────────────────────────────────────────────
+function sortBy(col) {
+  if (_sort.col === col) { _sort.dir *= -1; }
+  else { _sort.col = col; _sort.dir = 1; }
+  applyFilters();
+}
+
+function sortRows(rows) {
+  var col = _sort.col, dir = _sort.dir;
+  return rows.slice().sort(function(a, b) {
+    var av = a[col], bv = b[col];
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'string') return av.localeCompare(bv) * dir;
+    return (av - bv) * dir;
+  });
+}
+
+function updateSortIndicators() {
+  document.querySelectorAll('[id^="sort-"]').forEach(function(el) {
+    el.textContent = '';
+  });
+  var el = document.getElementById('sort-' + _sort.col);
+  if (el) el.textContent = _sort.dir === 1 ? ' ↑' : ' ↓';
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function fmtTs(ts) {
+  if (!ts) return '—';
+  var s = ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z';
+  return new Date(s).toLocaleString('en-US', { month:'short', day:'numeric', year:'2-digit', hour:'2-digit', minute:'2-digit' });
+}
+function fmtSpan(ms) {
+  if (!ms) return '—';
+  var d = ms / 86400000;
+  if (d < 1) return Math.round(d * 24) + 'h';
+  return d.toFixed(1) + 'd';
+}
+function fmtInterval(min) {
+  if (min == null) return '—';
+  if (min < 60)    return Math.round(min) + ' min';
+  if (min < 1440)  return (min / 60).toFixed(1) + ' hr';
+  return (min / 1440).toFixed(1) + 'd';
+}
+
+var _activeRowIdx = null;
+
+function renderTable(rows) {
+  var body = document.getElementById('tableBody');
+  var empty = document.getElementById('tableEmpty');
+
+  if (!rows.length) {
+    body.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  body.innerHTML = rows.map(function(r, i) {
+    var srcColor = r.source === 'USGS' ? '#38bdf8' : '#a78bfa';
+    var srcBg    = r.source === 'USGS' ? 'rgba(14,165,233,0.1)'  : 'rgba(167,139,250,0.1)';
+    var srcBorder= r.source === 'USGS' ? 'rgba(14,165,233,0.25)' : 'rgba(167,139,250,0.25)';
+    var ivColor  = r.interval === 'hourly' ? '#38bdf8' : r.interval === 'daily' ? '#34d399' : '#94a3b8';
+    var ivBg     = r.interval === 'hourly' ? 'rgba(14,165,233,0.08)' : r.interval === 'daily' ? 'rgba(52,211,153,0.08)' : 'rgba(148,163,184,0.08)';
+    var isActive = (_activeRowIdx === i);
+
+    return '<tr data-idx="' + i + '" onclick="openRecords(' + i + ')" style="border-bottom:1px solid #1e293b;cursor:pointer;' + (isActive ? 'background:rgba(14,165,233,0.07);' : '') + '" class="hover:bg-slate-800/40">' +
+      '<td class="py-2 px-3">' +
+        '<span style="font-size:10px;padding:2px 7px;border-radius:4px;background:' + srcBg + ';color:' + srcColor + ';border:1px solid ' + srcBorder + ';">' + r.source + '</span>' +
+      '</td>' +
+      '<td class="py-2 px-3 font-medium text-slate-200">' + r.group + (r.parameter_code ? '<br><span class="font-mono" style="color:#64748b;font-size:10px;">' + (r.group_id || '') + '</span>' : '') + '</td>' +
+      '<td class="py-2 px-3 text-slate-300">' + r.parameter + (r.parameter_code ? '<br><span class="font-mono" style="color:#64748b;font-size:10px;">' + r.parameter_code + '</span>' : '') + '</td>' +
+      '<td class="py-2 px-3"><span style="font-size:10px;padding:2px 6px;border-radius:4px;background:' + ivBg + ';color:' + ivColor + ';">' + r.interval + '</span></td>' +
+      '<td class="py-2 px-3 text-right font-mono font-semibold" style="color:#38bdf8;">' + r.row_count.toLocaleString() + '</td>' +
+      '<td class="py-2 px-3 text-right font-mono" style="color:#34d399;">' + r.actual_count.toLocaleString() + '</td>' +
+      '<td class="py-2 px-3 text-right font-mono" style="color:' + (r.forecast_count > 0 ? '#a78bfa' : '#475569') + ';">' + r.forecast_count.toLocaleString() + '</td>' +
+      '<td class="py-2 px-3 font-mono text-slate-400" style="font-size:11px;">' + fmtTs(r.earliest) + '</td>' +
+      '<td class="py-2 px-3 font-mono text-slate-400" style="font-size:11px;">' + fmtTs(r.latest) + '</td>' +
+      '<td class="py-2 px-3 text-right font-mono text-slate-400">' + fmtSpan(r.span_ms) + '</td>' +
+      '<td class="py-2 px-3 text-right font-mono text-slate-400">' + fmtInterval(r.avg_interval_min) + '</td>' +
+      '<td class="py-2 px-3 text-slate-500">' + (r.unit || '—') + '</td>' +
+      '<td class="py-2 px-3 font-mono text-slate-500" style="font-size:11px;">' + fmtTs(r.last_fetched) + '</td>' +
+      '<td class="py-2 px-3" onclick="event.stopPropagation()"><a href="' + r.chart_link + '" style="color:#38bdf8;white-space:nowrap;">Chart →</a></td>' +
+    '</tr>';
+  }).join('');
+}
+
+// ── Records panel ─────────────────────────────────────────────────────────────
+var _recData = [];
+var _recSort = { col: 'recorded_at', dir: -1 }; // newest first by default
+var _recSeries = null;
+
+async function openRecords(idx) {
+  var sorted = sortRows(ALL.filter(function(r) {
+    return matchesFilters(r, getFilters());
+  }));
+  var series = sorted[idx];
+  if (!series) return;
+
+  // Toggle off if same row clicked again
+  if (_activeRowIdx === idx) { closeRecords(); return; }
+  _activeRowIdx = idx;
+  _recSeries = series;
+
+  // Re-render series table to highlight active row
+  applyFilters();
+
+  document.getElementById('recModal').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+
+  document.getElementById('recTitle').textContent = series.group + ' — ' + series.parameter + ' (' + series.interval + ')';
+  document.getElementById('recCount').textContent = '';
+  document.getElementById('recLoading').style.display = 'block';
+  document.getElementById('recTableWrap').style.display = 'none';
+
+  // Show/hide forecast column
+  var hasFc = series.forecast_count > 0;
+  document.getElementById('recFcHeader').style.display = hasFc ? '' : 'none';
+
+  // Build query string
+  var qs;
+  if (series.source === 'USGS') {
+    qs = 'source=usgs&group_id=' + encodeURIComponent(series.group_id) + '&param_code=' + encodeURIComponent(series.parameter_code);
+  } else {
+    qs = 'source=weather&group_id=' + encodeURIComponent(series.group_id) + '&parameter=' + encodeURIComponent(series.parameter) + '&interval=' + encodeURIComponent(series.interval);
+  }
+
+  try {
+    var resp = await fetch('/api/data/records?' + qs);
+    var json = await resp.json();
+    _recData = json.data || [];
+    _recSort = { col: 'recorded_at', dir: -1 };
+    renderRecords();
+  } catch(e) {
+    document.getElementById('recLoading').textContent = 'Failed to load records. Please try again.';
+  }
+}
+
+function exportSeries(fmt) {
+  if (!_recSeries) return;
+  var url;
+  if (_recSeries.source === 'USGS') {
+    url = '/api/export/measurements?site_id=' + encodeURIComponent(_recSeries.group_id)
+        + '&param_code=' + encodeURIComponent(_recSeries.parameter_code) + '&fmt=' + fmt;
+  } else {
+    url = '/api/export/weather?location_id=' + encodeURIComponent(_recSeries.group_id)
+        + '&parameter=' + encodeURIComponent(_recSeries.parameter)
+        + '&interval='  + encodeURIComponent(_recSeries.interval) + '&fmt=' + fmt;
+  }
+  window.location.href = url;
+}
+
+function closeRecords() {
+  _activeRowIdx = null;
+  _recData = [];
+  document.getElementById('recModal').style.display = 'none';
+  document.body.style.overflow = '';
+  applyFilters(); // remove highlight
+}
+
+function sortRecords(col) {
+  if (_recSort.col === col) { _recSort.dir *= -1; }
+  else { _recSort.col = col; _recSort.dir = col === 'recorded_at' ? -1 : 1; }
+  renderRecords();
+}
+
+function renderRecords() {
+  var col = _recSort.col, dir = _recSort.dir;
+  var sorted = _recData.slice().sort(function(a, b) {
+    var av = a[col], bv = b[col];
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'string') return av.localeCompare(bv) * dir;
+    return (av - bv) * dir;
+  });
+
+  // Update sort button styles
+  ['recorded_at','value','fetched_at'].forEach(function(c) {
+    var btn = document.getElementById('rsort-' + c);
+    if (!btn) return;
+    btn.style.color = (_recSort.col === c) ? '#38bdf8' : '';
+    btn.textContent = c.replace('_at','').replace('_',' ') + (c === 'recorded_at' ? ' timestamp' : '') + (_recSort.col === c ? (_recSort.dir === 1 ? ' ↑' : ' ↓') : '');
+  });
+
+  var hasFc = _recSeries && _recSeries.forecast_count > 0;
+  var unit = _recSeries ? _recSeries.unit : '';
+  var valColor = _recSeries ? (PARAM_VALUE_COLORS[_recSeries.source] || '#38bdf8') : '#38bdf8';
+
+  document.getElementById('recCount').textContent = sorted.length.toLocaleString() + ' records';
+  document.getElementById('recLoading').style.display = 'none';
+  document.getElementById('recTableWrap').style.display = 'block';
+
+  document.getElementById('recTableBody').innerHTML = sorted.map(function(r, i) {
+    var isFc = r.is_forecast;
+    return '<tr style="border-bottom:1px solid #1e293b;">' +
+      '<td class="py-1.5 px-3 font-mono" style="color:#475569;">' + (i + 1) + '</td>' +
+      '<td class="py-1.5 px-3 font-mono text-slate-300">' + fmtTsFull(r.recorded_at) + '</td>' +
+      '<td class="py-1.5 px-3 text-right font-mono font-semibold" style="color:' + (isFc ? '#a78bfa' : valColor) + ';">' + (typeof r.value === 'number' ? r.value.toFixed(4) : r.value) + '</td>' +
+      '<td class="py-1.5 px-3 text-slate-500">' + (unit || r.unit || '—') + '</td>' +
+      (hasFc ? '<td class="py-1.5 px-3">' + (isFc !== undefined ? '<span style="font-size:10px;padding:1px 5px;border-radius:4px;background:' + (isFc ? 'rgba(167,139,250,0.12)' : 'rgba(52,211,153,0.1)') + ';color:' + (isFc ? '#a78bfa' : '#34d399') + ';">' + (isFc ? 'forecast' : 'actual') + '</span>' : '') + '</td>' : '') +
+      '<td class="py-1.5 px-3 font-mono text-slate-500" style="font-size:11px;">' + fmtTs(r.fetched_at) + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+var PARAM_VALUE_COLORS = { 'USGS': '#38bdf8', 'Open-Meteo': '#34d399' };
+
+function fmtTsFull(ts) {
+  if (!ts) return '—';
+  var s = ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z';
+  return new Date(s).toLocaleString('en-US', { year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+}
+
+function updateSummary(rows) {
+  var totalRows    = rows.reduce(function(s,r){return s + r.row_count;}, 0);
+  var actualRows   = rows.reduce(function(s,r){return s + r.actual_count;}, 0);
+  var forecastRows = rows.reduce(function(s,r){return s + r.forecast_count;}, 0);
+  var intervals    = rows.filter(function(r){return r.avg_interval_min != null;}).map(function(r){return r.avg_interval_min;});
+  var avgInterval  = intervals.length ? intervals.reduce(function(a,b){return a+b;},0)/intervals.length : null;
+
+  document.getElementById('mSeries').textContent   = rows.length.toLocaleString();
+  document.getElementById('mRows').textContent     = totalRows.toLocaleString();
+  document.getElementById('mActual').textContent   = actualRows.toLocaleString();
+  document.getElementById('mForecast').textContent = forecastRows.toLocaleString();
+  document.getElementById('mInterval').textContent = fmtInterval(avgInterval);
+  document.getElementById('resultCount').textContent = rows.length + ' of ' + ALL.length + ' series';
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+function applyFilters() {
+  var f = getFilters();
+  var filtered = ALL.filter(function(r){ return matchesFilters(r, f); });
+  var sorted   = sortRows(filtered);
+
+  // Re-populate dropdowns based on full set (not filtered) so options don't vanish
+  populateFilters(ALL);
+
+  updateSortIndicators();
+  updateSummary(sorted);
+  renderTable(sorted);
+}
+
+// Init
+populateFilters(ALL);
+applyFilters();
+</script>
+
+<%- include('partials/foot') %>
