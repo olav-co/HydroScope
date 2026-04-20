@@ -2,21 +2,20 @@
 
 const express = require('express');
 const router  = express.Router();
-const path    = require('path');
-const fs      = require('fs');
 
 const {
   stopScheduler, startScheduler, reloadConfig,
-  runFetch, runWeatherFetch, runTopologyDiscovery, runWaterwayTick,
+  runFetch, runWeatherFetch, runTopologyDiscovery, runWaterwayTick, runCwmsFetch,
   restartService, getRunningState, getAllServiceConfigs, SERVICE_META,
 } = require('../../services/scheduler');
 const { resetProvider } = require('../../services/ai/index');
+const {
+  getAiConfig, reloadAiConfig, saveAiConfig,
+  getDatasourcesConfig, reloadDatasourcesConfig, saveDatasourcesConfig,
+} = require('../../services/config');
 const db = require('../../db/database');
 
-const CONFIG_PATH = path.join(__dirname, '../../../config/config.json');
-
 // Known models per provider type — used as the picker list in the UI.
-// Providers not listed here fall back to a single entry for whatever model is in config.
 const PROVIDER_MODELS = {
   gemini: [
     { id: 'gemini-2.5-flash',      label: 'Gemini 2.5 Flash (recommended)' },
@@ -50,65 +49,50 @@ const PROVIDER_LABELS = {
   anthropic: 'Anthropic Claude',
 };
 
-function readConfig() {
-  const p = require.resolve('../../../config/config.json');
-  if (require.cache[p]) delete require.cache[p];
-  return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-}
-
 // ── GET /api/settings ─────────────────────────────────────────────────────────
 
 router.get('/', (req, res) => {
   try {
-    const cfg = readConfig();
+    reloadAiConfig();
+    reloadDatasourcesConfig();
+    const aiCfg = getAiConfig();
+    const dsCfg = getDatasourcesConfig();
 
     // ── AI providers ───────────────────────────────────────────────────────────
-    let activeProvider = 'gemini';
+    let activeProvider = aiCfg.activeProvider || 'gemini';
     let activeModel    = null;
 
-    if (cfg.ai && cfg.ai.activeProvider) {
-      activeProvider = cfg.ai.activeProvider;
-      const pCfg = cfg.ai.providers && cfg.ai.providers[activeProvider];
-      if (pCfg) activeModel = pCfg.model;
-    } else if (cfg.gemini) {
-      activeModel = cfg.gemini.model;
+    const cfgProviders = aiCfg.providers ? { ...aiCfg.providers } : {};
+
+    // Legacy gemini key in datasources/config
+    if (!cfgProviders.gemini && aiCfg.gemini && aiCfg.gemini.apiKey) {
+      cfgProviders.gemini = { apiKey: aiCfg.gemini.apiKey, model: aiCfg.gemini.model };
     }
 
     const PLACEHOLDER_RE = /^YOUR_.+_KEY_HERE$|^$/;
     const providerState  = {};
 
-    // Walk every provider entry in config — no hard-coded list required
-    const cfgProviders = (cfg.ai && cfg.ai.providers) ? cfg.ai.providers : {};
-
-    // Also expose the legacy gemini key as a virtual provider entry
-    if (!cfgProviders.gemini && cfg.gemini && cfg.gemini.apiKey) {
-      cfgProviders.gemini = { apiKey: cfg.gemini.apiKey, model: cfg.gemini.model };
-    }
-
     for (const [id, pCfg] of Object.entries(cfgProviders)) {
+      if (id.startsWith('_')) continue;           // skip example/comment entries
       const apiKey = (pCfg.apiKey || '').trim();
-      if (PLACEHOLDER_RE.test(apiKey)) continue;   // skip unconfigured
+      if (PLACEHOLDER_RE.test(apiKey)) continue;  // skip unconfigured
 
-      // Determine the effective type (explicit type field, or fall back to provider id)
-      const type = pCfg.type || id;
-
-      // Known model list for this type, or build a single-item list from what's in config
+      const type       = pCfg.type || id;
       const knownModels = PROVIDER_MODELS[type];
       const configModel = pCfg.model || (knownModels && knownModels[0].id) || 'unknown';
       const models = knownModels
         ? knownModels
         : [{ id: configModel, label: configModel }];
 
-      // If the configured model isn't in the known list, prepend it
-      const modelInList = models.some(m => m.id === configModel);
-      const finalModels = modelInList
+      const modelInList  = models.some(m => m.id === configModel);
+      const finalModels  = modelInList
         ? models
         : [{ id: configModel, label: configModel + ' (configured)' }, ...models];
 
       providerState[id] = {
         model:   configModel,
         models:  finalModels,
-        label:   pCfg.label || PROVIDER_LABELS[type] || pCfg.label || id,
+        label:   pCfg.label || PROVIDER_LABELS[type] || id,
         baseUrl: pCfg.baseUrl || null,
       };
     }
@@ -117,9 +101,12 @@ router.get('/', (req, res) => {
     if (!providerState[activeProvider] && configuredIds.length) {
       activeProvider = configuredIds[0];
     }
+    if (providerState[activeProvider]) {
+      activeModel = providerState[activeProvider].model;
+    }
 
-    // ── Per-service scheduler config ───────────────────────────────────────────
-    const globalEnabled = (cfg.scheduler && cfg.scheduler.enabled) !== false;
+    // ── Scheduler ──────────────────────────────────────────────────────────────
+    const globalEnabled  = (dsCfg.scheduler && dsCfg.scheduler.enabled) !== false;
     const serviceConfigs = getAllServiceConfigs();
 
     // ── Status snapshot ────────────────────────────────────────────────────────
@@ -150,66 +137,67 @@ router.get('/', (req, res) => {
 
 router.put('/', (req, res) => {
   try {
-    const cfg = readConfig();
+    reloadAiConfig();
+    reloadDatasourcesConfig();
+    const aiCfg = getAiConfig();
+    const dsCfg = getDatasourcesConfig();
     const { scheduler, ai } = req.body;
 
-    // ── Global scheduler enabled ───────────────────────────────────────────────
-    if (scheduler) {
-      if (!cfg.scheduler) cfg.scheduler = {};
-
-      if (scheduler.enabled !== undefined) {
-        cfg.scheduler.enabled = !!scheduler.enabled;
-      }
-
-      // Legacy key — keep in sync for backwards compat
-      if (scheduler.services && scheduler.services.usgs && scheduler.services.usgs.intervalMinutes) {
-        cfg.scheduler.fetchIntervalMinutes = scheduler.services.usgs.intervalMinutes;
-      }
-
-      // Per-service configs
-      if (scheduler.services) {
-        if (!cfg.scheduler.services) cfg.scheduler.services = {};
-        for (const [name, svcData] of Object.entries(scheduler.services)) {
-          if (!SERVICE_META[name]) continue;
-          if (!cfg.scheduler.services[name]) cfg.scheduler.services[name] = {};
-          const target = cfg.scheduler.services[name];
-          const key    = SERVICE_META[name].intervalKey;
-          if (svcData.enabled !== undefined)   target.enabled  = !!svcData.enabled;
-          if (svcData[key]    !== undefined)    target[key]     = svcData[key];
-        }
-      }
-    }
+    let aiChanged = false;
+    let dsChanged = false;
 
     // ── AI settings ────────────────────────────────────────────────────────────
     if (ai) {
-      if (!cfg.ai) cfg.ai = { providers: {} };
-      if (!cfg.ai.providers) cfg.ai.providers = {};
+      if (!aiCfg.providers) aiCfg.providers = {};
 
-      if (ai.activeProvider) cfg.ai.activeProvider = ai.activeProvider;
+      if (ai.activeProvider) {
+        aiCfg.activeProvider = ai.activeProvider;
+        aiChanged = true;
+      }
 
       if (ai.providers) {
         for (const [id, pData] of Object.entries(ai.providers)) {
-          if (pData.model && cfg.ai.providers[id]) {
-            cfg.ai.providers[id].model = pData.model;
+          if (pData.model && aiCfg.providers[id]) {
+            aiCfg.providers[id].model = pData.model;
+            aiChanged = true;
           }
         }
       }
 
-      // Sync legacy gemini key
-      const gNew = cfg.ai.providers && cfg.ai.providers.gemini;
-      if (gNew) {
-        if (!cfg.gemini) cfg.gemini = {};
-        if (gNew.model) cfg.gemini.model = gNew.model;
-      }
+      if (aiChanged) saveAiConfig(aiCfg);
     }
 
-    // ── Write + hot-reload ─────────────────────────────────────────────────────
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+    // ── Scheduler settings ─────────────────────────────────────────────────────
+    if (scheduler) {
+      if (!dsCfg.scheduler) dsCfg.scheduler = {};
 
-    resetProvider();
-    reloadConfig();
-    stopScheduler();
-    startScheduler();
+      if (scheduler.enabled !== undefined) {
+        dsCfg.scheduler.enabled = !!scheduler.enabled;
+        dsChanged = true;
+      }
+
+      if (scheduler.services) {
+        if (!dsCfg.scheduler.services) dsCfg.scheduler.services = {};
+        for (const [name, svcData] of Object.entries(scheduler.services)) {
+          if (!SERVICE_META[name]) continue;
+          if (!dsCfg.scheduler.services[name]) dsCfg.scheduler.services[name] = {};
+          const target = dsCfg.scheduler.services[name];
+          const key    = SERVICE_META[name].intervalKey;
+          if (svcData.enabled !== undefined) { target.enabled = !!svcData.enabled; dsChanged = true; }
+          if (svcData[key]    !== undefined) { target[key]    = svcData[key];       dsChanged = true; }
+        }
+      }
+
+      if (dsChanged) saveDatasourcesConfig(dsCfg);
+    }
+
+    // ── Hot-reload ─────────────────────────────────────────────────────────────
+    if (aiChanged)  resetProvider();
+    if (dsChanged) {
+      reloadConfig();
+      stopScheduler();
+      startScheduler();
+    }
 
     res.json({ ok: true });
   } catch (err) {
@@ -219,8 +207,6 @@ router.put('/', (req, res) => {
 });
 
 // ── POST /api/settings/run/:service ──────────────────────────────────────────
-// Manually trigger a single service run. Returns immediately after launch
-// (the run is async; poll GET /api/settings for updated status).
 
 router.post('/run/:service', async (req, res) => {
   const { service } = req.params;
@@ -230,18 +216,16 @@ router.post('/run/:service', async (req, res) => {
     weather:   runWeatherFetch,
     topology:  runTopologyDiscovery,
     waterways: runWaterwayTick,
+    cwms:      runCwmsFetch,
   };
 
   const fn = runners[service];
   if (!fn) return res.status(400).json({ error: `Unknown service: ${service}` });
 
-  // Check if already running
   const state = getRunningState();
   if (state[service]) return res.json({ ok: false, skipped: true, reason: 'already running' });
 
-  // Fire and respond immediately — client polls for status update
   fn().catch(e => console.error(`[Settings] run/${service} error:`, e.message));
-
   res.json({ ok: true, started: true });
 });
 

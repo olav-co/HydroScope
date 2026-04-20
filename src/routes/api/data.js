@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../../db/database');
-const { runFetch, runWeatherFetch } = require('../../services/scheduler');
+const { runFetch, runWeatherFetch, runCwmsFetch } = require('../../services/scheduler');
 
 // GET /api/data/latest?sites=14211720,14142500
 router.get('/latest', (req, res) => {
@@ -48,6 +48,16 @@ router.post('/refresh', async (req, res) => {
   }
 });
 
+// POST /api/data/cwms/refresh — manually trigger a CWMS fetch
+router.post('/cwms/refresh', async (req, res) => {
+  try {
+    await runCwmsFetch();
+    res.json({ ok: true, message: 'CWMS fetch triggered.' });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET /api/data/weather?location=portland&param=precipitation&hours=72
 router.get('/weather', (req, res) => {
   const { location, param = 'precipitation', hours = 72 } = req.query;
@@ -79,22 +89,23 @@ router.post('/weather/refresh', async (req, res) => {
 });
 
 // GET /api/data/records?source=usgs&group_id=14211720&param_code=00060
+// GET /api/data/records?source=cwms&group_id=CEHT1-CENTER_HILL&param_code=Elev-Pool
 // GET /api/data/records?source=weather&group_id=portland&parameter=precipitation&interval=hourly
 router.get('/records', (req, res) => {
   const { source, group_id, param_code, parameter, interval, limit = 5000 } = req.query;
   if (!source || !group_id) return res.status(400).json({ error: 'source and group_id are required' });
 
   try {
-    if (source === 'usgs') {
-      if (!param_code) return res.status(400).json({ error: 'param_code required for usgs' });
-      const data = db.getMeasurementRecords(group_id, param_code, parseInt(limit));
+    if (source === 'usgs' || source === 'cwms') {
+      if (!param_code) return res.status(400).json({ error: 'param_code required for ' + source });
+      const data = db.getMeasurementRecords(group_id, param_code, parseInt(limit), source);
       res.json({ ok: true, data });
     } else if (source === 'weather') {
       if (!parameter || !interval) return res.status(400).json({ error: 'parameter and interval required for weather' });
       const data = db.getWeatherRecords(group_id, parameter, interval, parseInt(limit));
       res.json({ ok: true, data });
     } else {
-      res.status(400).json({ error: 'source must be usgs or weather' });
+      res.status(400).json({ error: 'source must be usgs, cwms, or weather' });
     }
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });

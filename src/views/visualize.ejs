@@ -14,16 +14,8 @@ var ROLE_RECOMMENDED = {
 };
 var recommended = ROLE_RECOMMENDED[profile && profile.role] || ROLE_RECOMMENDED.general;
 
-var ALL_PARAMS = [
-  { code: '00060', label: 'Discharge',           unit: 'ft³/s', group: 'flow' },
-  { code: '00065', label: 'Gage Height',         unit: 'ft',    group: 'flow' },
-  { code: '00010', label: 'Water Temperature',   unit: '°C',    group: 'quality' },
-  { code: '00300', label: 'Dissolved Oxygen',    unit: 'mg/L',  group: 'quality' },
-  { code: '00400', label: 'pH',                  unit: '',      group: 'quality' },
-];
-var recParams    = ALL_PARAMS.filter(function(p) { return recommended.indexOf(p.code) >= 0; });
-var otherFlow    = ALL_PARAMS.filter(function(p) { return p.group === 'flow'    && recommended.indexOf(p.code) < 0; });
-var otherQuality = ALL_PARAMS.filter(function(p) { return p.group === 'quality' && recommended.indexOf(p.code) < 0; });
+var usgsSites = sites.filter(function(s){ return s.source !== 'cwms'; });
+var cwmsSites = sites.filter(function(s){ return s.source === 'cwms'; });
 %>
 
 <style>
@@ -77,50 +69,28 @@ body.light .t-tooltip { background: #fff; border-color: #e2e8f0; color: #475569;
       <div class="flex flex-wrap gap-4 items-end">
         <div style="flex:1;min-width:180px;">
           <label class="label">Site</label>
-          <select id="siteSelect" class="input">
-            <% for (var i = 0; i < sites.length; i++) { var s = sites[i]; %>
-              <option value="<%= s.site_id %>" data-name="<%= s.name %>"><%= s.name %></option>
+          <select id="siteSelect" class="input" onchange="onVizSiteChange()">
+            <% if (usgsSites.length) { %>
+            <optgroup label="USGS Stream Gauges">
+              <% usgsSites.forEach(function(s) { %>
+                <option value="<%= s.site_id %>" data-name="<%= s.name %>" data-source="usgs"><%= s.name %></option>
+              <% }); %>
+            </optgroup>
+            <% } %>
+            <% if (cwmsSites.length) { %>
+            <optgroup label="CWMS Dam Operations">
+              <% cwmsSites.forEach(function(s) { %>
+                <option value="<%= s.site_id %>" data-name="<%= s.name %>" data-source="cwms">⬡ <%= s.name %></option>
+              <% }); %>
+            </optgroup>
             <% } %>
           </select>
         </div>
 
         <div style="flex:1;min-width:180px;">
-          <label class="label">
-            Parameter
-            <% if (recParams.length) { %>
-              <span style="font-size:10px;margin-left:4px;color:#0ea5e9;">★ = recommended for your role</span>
-            <% } %>
-          </label>
+          <label class="label" id="paramLabel">Parameter</label>
           <select id="paramSelect" class="input">
-            <% if (recParams.length) { %>
-            <optgroup label="★ Recommended for <%= (profile && profile.role || 'general').replace('_',' ') %>">
-              <% recParams.forEach(function(p) { %>
-                <option value="<%= p.code %>" data-name="<%= p.label %> (<%= p.unit %>)">★ <%= p.label %><% if(p.unit) { %> (<%= p.unit %>)<% } %></option>
-              <% }); %>
-            </optgroup>
-            <% } %>
-            <% if (otherFlow.length) { %>
-            <optgroup label="Flow &amp; Level">
-              <% otherFlow.forEach(function(p) { %>
-                <option value="<%= p.code %>" data-name="<%= p.label %> (<%= p.unit %>)"><%= p.label %><% if(p.unit) { %> (<%= p.unit %>)<% } %></option>
-              <% }); %>
-            </optgroup>
-            <% } %>
-            <% if (otherQuality.length) { %>
-            <optgroup label="Water Quality">
-              <% otherQuality.forEach(function(p) { %>
-                <option value="<%= p.code %>" data-name="<%= p.label %> (<%= p.unit %>)"><%= p.label %><% if(p.unit) { %> (<%= p.unit %>)<% } %></option>
-              <% }); %>
-            </optgroup>
-            <% } %>
-            <% // If all params are recommended, nothing fell into others — make sure all are rendered %>
-            <% if (!otherFlow.length && !otherQuality.length && !recParams.length) { %>
-              <option value="00060">Discharge (ft³/s)</option>
-              <option value="00065">Gage Height (ft)</option>
-              <option value="00010">Water Temperature (°C)</option>
-              <option value="00300">Dissolved Oxygen (mg/L)</option>
-              <option value="00400">pH</option>
-            <% } %>
+            <!-- populated by onVizSiteChange() -->
           </select>
         </div>
 
@@ -248,8 +218,125 @@ body.light .t-tooltip { background: #fff; border-color: #e2e8f0; color: #475569;
 </main>
 
 <script>
+var SITES_DATA = <%- JSON.stringify(sites) %>;
 var chart = null;
 var _currentSiteId = null, _currentSiteName = '', _currentParamCode = null, _currentParamName = null, _currentHours = 168, _currentUnit = '';
+var _currentSiteSource = 'usgs';  // 'usgs' or 'cwms'
+
+// ── Parameter definitions by source ─────────────────────────────────────────
+var ROLE_RECOMMENDED_JS = <%- JSON.stringify(recommended) %>;
+
+var USGS_PARAMS = [
+  { code: '00060', label: 'Discharge',         unit: 'ft³/s', group: 'flow',    recommended: ROLE_RECOMMENDED_JS.indexOf('00060') >= 0 },
+  { code: '00065', label: 'Gage Height',       unit: 'ft',    group: 'flow',    recommended: ROLE_RECOMMENDED_JS.indexOf('00065') >= 0 },
+  { code: '00010', label: 'Water Temperature', unit: '°C',    group: 'quality', recommended: ROLE_RECOMMENDED_JS.indexOf('00010') >= 0 },
+  { code: '00300', label: 'Dissolved Oxygen',  unit: 'mg/L',  group: 'quality', recommended: ROLE_RECOMMENDED_JS.indexOf('00300') >= 0 },
+  { code: '00400', label: 'pH',                unit: '',      group: 'quality', recommended: ROLE_RECOMMENDED_JS.indexOf('00400') >= 0 },
+];
+
+var CWMS_PARAMS = [
+  { code: 'Elev-Pool',    label: 'Pool Elevation',      unit: 'ft',    group: 'level'   },
+  { code: 'Elev-Tail',    label: 'Tailwater Elevation', unit: 'ft',    group: 'level'   },
+  { code: 'Elev-Forebay', label: 'Forebay Elevation',   unit: 'ft',    group: 'level'   },
+  { code: 'Flow-Out',     label: 'Outflow',             unit: 'cfs',   group: 'flow'    },
+  { code: 'Flow',         label: 'Outflow (Flow)',       unit: 'cfs',   group: 'flow'    },
+  { code: 'Flow-In',      label: 'Inflow',              unit: 'cfs',   group: 'flow'    },
+  { code: 'Flow-Turbine', label: 'Turbine Flow',        unit: 'cfs',   group: 'flow'    },
+  { code: 'Flow-Spillway',label: 'Spillway Flow',       unit: 'cfs',   group: 'flow'    },
+  { code: 'Stor',         label: 'Storage',             unit: 'ac-ft', group: 'storage' },
+  { code: 'Stor-Conservation Pool', label: 'Conservation Storage', unit: 'ac-ft', group: 'storage' },
+  { code: '%-Flood Control-Used',   label: 'Flood Pool Used',      unit: '%',     group: 'storage' },
+  { code: 'Conc-Do-Tail', label: 'DO (Tailwater)',      unit: 'mg/L',  group: 'quality' },
+  { code: 'Temp-Water-Tail', label: 'Water Temp (Tail)',unit: '°C',   group: 'quality' },
+  { code: 'pH-Tail',      label: 'pH (Tailwater)',      unit: '',      group: 'quality' },
+  { code: 'Precip-Inc',   label: 'Precipitation',       unit: 'in',    group: 'precip'  },
+  { code: 'Energy',       label: 'Power Generation',    unit: 'MWh',   group: 'power'   },
+];
+
+var CWMS_PARAM_GROUPS = ['level','flow','storage','quality','precip','power'];
+var CWMS_GROUP_LABELS = { level:'Level & Elevation', flow:'Flow', storage:'Storage', quality:'Water Quality', precip:'Precipitation', power:'Power' };
+
+function buildParamSelect(source) {
+  var sel = document.getElementById('paramSelect');
+  var prevVal = sel.value;
+  sel.innerHTML = '';
+
+  if (source === 'cwms') {
+    document.getElementById('paramLabel').textContent = 'Parameter';
+    CWMS_PARAM_GROUPS.forEach(function(grp) {
+      var params = CWMS_PARAMS.filter(function(p){ return p.group === grp; });
+      if (!params.length) return;
+      var og = document.createElement('optgroup');
+      og.label = CWMS_GROUP_LABELS[grp] || grp;
+      params.forEach(function(p) {
+        var o = document.createElement('option');
+        o.value = p.code;
+        o.setAttribute('data-name', p.label + (p.unit ? ' (' + p.unit + ')' : ''));
+        o.textContent = p.label + (p.unit ? ' (' + p.unit + ')' : '');
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    });
+  } else {
+    var roleName = (<%- JSON.stringify((profile && profile.role) || 'general') %>).replace('_',' ');
+    var recParams = USGS_PARAMS.filter(function(p){ return p.recommended; });
+    var otherFlow = USGS_PARAMS.filter(function(p){ return p.group === 'flow'    && !p.recommended; });
+    var otherQual = USGS_PARAMS.filter(function(p){ return p.group === 'quality' && !p.recommended; });
+    document.getElementById('paramLabel').innerHTML = 'Parameter <span style="font-size:10px;margin-left:4px;color:#0ea5e9;">★ = for your role</span>';
+
+    if (recParams.length) {
+      var og = document.createElement('optgroup');
+      og.label = '★ Recommended for ' + roleName;
+      recParams.forEach(function(p) {
+        var o = document.createElement('option');
+        o.value = p.code;
+        o.setAttribute('data-name', '★ ' + p.label + (p.unit ? ' (' + p.unit + ')' : ''));
+        o.textContent = '★ ' + p.label + (p.unit ? ' (' + p.unit + ')' : '');
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    }
+    if (otherFlow.length) {
+      var og2 = document.createElement('optgroup');
+      og2.label = 'Flow & Level';
+      otherFlow.forEach(function(p) {
+        var o = document.createElement('option');
+        o.value = p.code;
+        o.setAttribute('data-name', p.label + (p.unit ? ' (' + p.unit + ')' : ''));
+        o.textContent = p.label + (p.unit ? ' (' + p.unit + ')' : '');
+        og2.appendChild(o);
+      });
+      sel.appendChild(og2);
+    }
+    if (otherQual.length) {
+      var og3 = document.createElement('optgroup');
+      og3.label = 'Water Quality';
+      otherQual.forEach(function(p) {
+        var o = document.createElement('option');
+        o.value = p.code;
+        o.setAttribute('data-name', p.label + (p.unit ? ' (' + p.unit + ')' : ''));
+        o.textContent = p.label + (p.unit ? ' (' + p.unit + ')' : '');
+        og3.appendChild(o);
+      });
+      sel.appendChild(og3);
+    }
+  }
+
+  // Restore previous selection if still valid
+  if (prevVal && sel.querySelector('option[value="' + CSS.escape(prevVal) + '"]')) {
+    sel.value = prevVal;
+  }
+}
+
+function onVizSiteChange() {
+  var siteEl = document.getElementById('siteSelect');
+  var opt = siteEl.selectedOptions[0];
+  var newSource = (opt && opt.getAttribute('data-source')) || 'usgs';
+  if (newSource !== _currentSiteSource) {
+    _currentSiteSource = newSource;
+    buildParamSelect(newSource);
+  }
+}
 
 var TREND_ICONS   = { rising:'↑', falling:'↓', stable:'→', variable:'⇅' };
 var TREND_COLORS  = { rising:'#fb923c', falling:'#38bdf8', stable:'#34d399', variable:'#a78bfa' };
@@ -268,11 +355,25 @@ var thresholdState = {
   active: {}      // id -> bool
 };
 
-// Pre-select from URL
-var urlParams = new URLSearchParams(location.search);
-if (urlParams.get('site'))  document.getElementById('siteSelect').value  = urlParams.get('site');
-if (urlParams.get('param')) document.getElementById('paramSelect').value = urlParams.get('param');
-if (urlParams.get('site'))  loadChart();
+// Initialize param select based on first site in list
+(function initVizPage() {
+  var siteEl = document.getElementById('siteSelect');
+  var urlP   = new URLSearchParams(location.search);
+
+  // If ?site= in URL, select it first
+  if (urlP.get('site')) siteEl.value = urlP.get('site');
+
+  // Bootstrap source & param list
+  var opt = siteEl.selectedOptions[0];
+  _currentSiteSource = (opt && opt.getAttribute('data-source')) || 'usgs';
+  buildParamSelect(_currentSiteSource);
+
+  // If ?param= in URL, apply it
+  if (urlP.get('param')) document.getElementById('paramSelect').value = urlP.get('param');
+
+  // Auto-load chart
+  if (urlP.get('site')) loadChart();
+})();
 
 function getIsLight() { return document.body.classList.contains('light'); }
 
@@ -282,13 +383,14 @@ async function loadChart() {
   var paramEl = document.getElementById('paramSelect');
   var hoursEl = document.getElementById('hoursSelect');
 
-  _currentSiteId    = siteEl.value;
-  _currentSiteName  = siteEl.selectedOptions[0].getAttribute('data-name') || siteEl.value;
-  _currentParamCode = paramEl.value;
-  _currentParamName = (paramEl.selectedOptions[0].getAttribute('data-name') || paramEl.selectedOptions[0].textContent).replace(/★\s*/,'');
-  _currentHours     = parseInt(hoursEl.value);
+  _currentSiteId     = siteEl.value;
+  _currentSiteName   = (siteEl.selectedOptions[0].getAttribute('data-name') || siteEl.value).replace(/^⬡\s*/,'');
+  _currentSiteSource = siteEl.selectedOptions[0].getAttribute('data-source') || 'usgs';
+  _currentParamCode  = paramEl.value;
+  _currentParamName  = (paramEl.selectedOptions[0].getAttribute('data-name') || paramEl.selectedOptions[0].textContent).replace(/★\s*/,'');
+  _currentHours      = parseInt(hoursEl.value);
 
-  document.getElementById('chartTitle').textContent = _currentSiteName + ' — ' + _currentParamName;
+  document.getElementById('chartTitle').textContent = _currentSiteName + ' — ' + _currentParamName + '  …';
   document.getElementById('chartBadge').textContent = 'Loading...';
   document.getElementById('chartEmpty').classList.add('hidden');
 
@@ -306,7 +408,14 @@ async function loadChart() {
   var labels = rows.map(function(r) { return new Date(r.recorded_at + 'Z').toLocaleString(); });
   var values = rows.map(function(r) { return r.value; });
   var light  = getIsLight();
+  var isCwms = _currentSiteSource === 'cwms';
+  var lineColor = isCwms ? '#f59e0b' : '#0ea5e9';
+  var fillColor = isCwms ? 'rgba(245,158,11,0.07)' : 'rgba(14,165,233,0.07)';
+  var sourceBadge = isCwms
+    ? '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3);margin-left:5px;">CWMS</span>'
+    : '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(14,165,233,0.12);color:#38bdf8;border:1px solid rgba(14,165,233,0.25);margin-left:5px;">USGS</span>';
 
+  document.getElementById('chartTitle').innerHTML = _currentSiteName + ' — ' + _currentParamName + sourceBadge;
   document.getElementById('chartBadge').textContent = rows.length + ' readings · ' + _currentUnit;
 
   if (chart) chart.destroy();
@@ -314,7 +423,7 @@ async function loadChart() {
     type: 'line',
     data: {
       labels: labels,
-      datasets: [{ label: _currentParamName, data: values, borderColor: '#0ea5e9', backgroundColor: 'rgba(14,165,233,0.07)', fill: true, tension: 0.3, pointRadius: rows.length > 200 ? 0 : 2, borderWidth: 2 }]
+      datasets: [{ label: _currentParamName, data: values, borderColor: lineColor, backgroundColor: fillColor, fill: true, tension: 0.3, pointRadius: rows.length > 200 ? 0 : 2, borderWidth: 2 }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
@@ -403,11 +512,12 @@ var _vizChatHistory = [];
 
 function _vizPageContext() {
   return _currentSiteId ? {
-    site_id:    _currentSiteId,
-    site_name:  _currentSiteName,
-    param_code: _currentParamCode,
-    param_name: _currentParamName,
-    hours:      _currentHours,
+    site_id:     _currentSiteId,
+    site_name:   _currentSiteName,
+    site_source: _currentSiteSource,
+    param_code:  _currentParamCode,
+    param_name:  _currentParamName,
+    hours:       _currentHours,
   } : null;
 }
 

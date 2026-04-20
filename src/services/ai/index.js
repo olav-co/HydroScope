@@ -15,13 +15,13 @@ let _provider = null;
 let _providerKey = null;
 
 function getAIConfig() {
-  const configPath = require.resolve('../../../config/config.json');
-  if (require.cache[configPath]) delete require.cache[configPath];
-  const cfg = require('../../../config/config.json');
+  const { getAiConfig, reloadAiConfig } = require('../config');
+  reloadAiConfig();
+  const cfg = getAiConfig();
 
-  if (cfg.ai && cfg.ai.activeProvider && cfg.ai.providers) {
-    const id   = cfg.ai.activeProvider;
-    const prov = cfg.ai.providers[id] || {};
+  if (cfg.activeProvider && cfg.providers) {
+    const id   = cfg.activeProvider;
+    const prov = cfg.providers[id] || {};
     return {
       provider: id,
       type:     prov.type    || id,    // explicit type overrides id-as-type

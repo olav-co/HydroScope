@@ -2,19 +2,33 @@
 -- HydroScope Database Schema
 -- ============================================================
 
--- Monitoring sites (seeded from config on startup)
+-- Monitoring sites (managed via /sites UI, seeded from config on first boot)
 CREATE TABLE IF NOT EXISTS sites (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   site_id     TEXT    UNIQUE NOT NULL,
   name        TEXT    NOT NULL,
-  type        TEXT    NOT NULL DEFAULT 'river',  -- river, reservoir, stream
+  type        TEXT    NOT NULL DEFAULT 'river',  -- river, reservoir, dam, stream
+  source      TEXT    NOT NULL DEFAULT 'usgs',   -- usgs | cwms
+  enabled     INTEGER NOT NULL DEFAULT 1,        -- 1=active, 0=paused
   latitude    REAL,
   longitude   REAL,
   description TEXT,
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_sites_source_enabled ON sites(source, enabled);
 
--- Time-series measurements from USGS
+-- Per-site CWMS timeseries IDs (CDA fetch scheduling)
+CREATE TABLE IF NOT EXISTS site_timeseries (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  site_id    TEXT    NOT NULL,
+  ts_id      TEXT    NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(site_id, ts_id),
+  FOREIGN KEY (site_id) REFERENCES sites(site_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_site_ts ON site_timeseries(site_id);
+
+-- Time-series measurements (USGS and CWMS)
 CREATE TABLE IF NOT EXISTS measurements (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   site_id         TEXT    NOT NULL,
@@ -22,6 +36,7 @@ CREATE TABLE IF NOT EXISTS measurements (
   parameter_name  TEXT    NOT NULL,
   value           REAL,
   unit            TEXT,
+  source          TEXT    NOT NULL DEFAULT 'usgs',  -- usgs | cwms
   recorded_at     DATETIME NOT NULL,
   fetched_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (site_id) REFERENCES sites(site_id)
@@ -160,7 +175,8 @@ CREATE TABLE IF NOT EXISTS app_meta (
 -- Fetch job log
 CREATE TABLE IF NOT EXISTS fetch_log (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  status          TEXT    NOT NULL,  -- success | error | partial
+  source          TEXT    NOT NULL DEFAULT 'usgs',  -- usgs | cwms | weather
+  status          TEXT    NOT NULL,                 -- success | error | partial
   sites_attempted INTEGER DEFAULT 0,
   records_stored  INTEGER DEFAULT 0,
   error_message   TEXT,

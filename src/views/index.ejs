@@ -7,7 +7,7 @@
   <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
     <div>
       <h1 class="text-lg font-semibold text-white">Dashboard</h1>
-      <p class="text-xs text-slate-400 mt-0.5">Portland Region — USGS Real-Time Monitoring</p>
+      <p class="text-xs text-slate-400 mt-0.5">USGS Stream Gauges + CWMS Dam Operations — Real-Time Monitoring</p>
     </div>
     <div class="flex items-center gap-3">
       <% if (lastFetch) { %>
@@ -52,6 +52,13 @@
           onfocus="this.style.borderColor='#0ea5e9'" onblur="this.style.borderColor='#334155'">
       </div>
 
+      <!-- Source filter -->
+      <div class="flex gap-1">
+        <button class="dash-filter active" data-src="all"  onclick="setSrcFilter('all')">All Sources</button>
+        <button class="dash-filter"        data-src="usgs" onclick="setSrcFilter('usgs')" style="border-color:#0ea5e940;">USGS</button>
+        <button class="dash-filter"        data-src="cwms" onclick="setSrcFilter('cwms')" style="border-color:#f59e0b40;">CWMS</button>
+      </div>
+
       <!-- Status chips -->
       <div class="flex gap-1">
         <button class="dash-filter active" data-filter="all"     onclick="setFilter('all')">All</button>
@@ -86,31 +93,54 @@
     <!-- Site cards -->
     <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-6" id="siteCardsGrid">
       <% for (const site of sites) {
+           const isCwms   = site.source === 'cwms';
            const siteData = bysite[site.site_id];
-           const discharge = siteData && siteData.readings['00060'];
-           const temp     = siteData && siteData.readings['00010'];
-           const gage     = siteData && siteData.readings['00065'];
-           const ph       = siteData && siteData.readings['00400'];
            const hasData  = !!siteData;
+
+           // USGS readings
+           const discharge = siteData && siteData.readings['00060'];
+           const temp      = siteData && siteData.readings['00010'];
+           const gage      = siteData && siteData.readings['00065'];
+           const ph        = siteData && siteData.readings['00400'];
+
+           // CWMS readings
+           const poolElev  = siteData && siteData.readings['Elev-Pool'];
+           const tailElev  = siteData && siteData.readings['Elev-Tail'];
+           const outflow   = siteData && (siteData.readings['Flow'] || siteData.readings['Flow-Out']);
+           const inflow    = siteData && siteData.readings['Flow-In'];
+           const storage   = siteData && siteData.readings['Stor'];
+           const cwmsDo    = siteData && siteData.readings['Conc-Do-Tail'];
+           const cwmsTemp  = siteData && siteData.readings['Temp-Water-Tail'];
+
+           const primaryReading = isCwms ? (poolElev || outflow || inflow) : discharge;
       %>
       <div class="card group cursor-pointer" id="card-<%= site.site_id %>"
         data-name="<%= site.name %>"
         data-type="<%= (site.type || '').toLowerCase() %>"
+        data-source="<%= isCwms ? 'cwms' : 'usgs' %>"
         data-has-data="<%= hasData %>"
-        data-discharge="<%= (discharge && discharge.value) || -1 %>"
-        data-temp="<%= (temp && temp.value) || -1 %>"
-        data-has-discharge="<%= !!discharge %>"
-        data-has-temp="<%= !!temp %>"
-        data-has-ph="<%= !!ph %>"
+        data-discharge="<%= (discharge && discharge.value) || (outflow && outflow.value) || -1 %>"
+        data-temp="<%= (temp && temp.value) || (cwmsTemp && cwmsTemp.value) || -1 %>"
+        data-has-discharge="<%= !!(discharge || outflow) %>"
+        data-has-temp="<%= !!(temp || cwmsTemp) %>"
+        data-has-ph="<%= !!(ph || siteData && siteData.readings['pH-Tail']) %>"
         data-alert-level="idle"
         onclick="window.location='/visualize?site=<%= site.site_id %>'">
+
         <div class="flex items-start justify-between mb-3">
           <div class="flex-1 min-w-0">
             <div class="text-sm font-semibold text-white flex items-center gap-2">
               <%= site.name %>
               <span id="ai-badge-<%= site.site_id %>" class="hidden text-xs font-medium px-1.5 py-0.5 rounded" style="font-size:10px;"></span>
             </div>
-            <div class="text-xs text-slate-500 mt-0.5">USGS <%= site.site_id %> · <%= site.type %></div>
+            <div class="text-xs mt-0.5 flex items-center gap-1.5">
+              <% if (isCwms) { %>
+                <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3);letter-spacing:.05em;">CWMS</span>
+              <% } else { %>
+                <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(14,165,233,0.12);color:#38bdf8;border:1px solid rgba(14,165,233,0.25);letter-spacing:.05em;">USGS</span>
+              <% } %>
+              <span class="text-slate-500"><%= site.site_id %> · <%= site.type %></span>
+            </div>
           </div>
           <span class="text-xs px-2 py-0.5 rounded-full border flex-shrink-0
             <%= hasData ? 'text-emerald-400 border-emerald-800 bg-emerald-900/20' : 'text-slate-500 border-slate-700 bg-slate-800' %>">
@@ -119,6 +149,57 @@
         </div>
 
         <% if (hasData) { %>
+          <% if (isCwms) { %>
+          <!-- CWMS dam metrics -->
+          <div class="grid grid-cols-2 gap-2">
+            <% if (poolElev) { %>
+            <div class="rounded-lg p-2.5" style="background:rgba(30,41,59,0.6);">
+              <div class="text-xs text-slate-400 mb-1">Pool Elevation</div>
+              <div class="text-xl font-mono font-semibold" style="color:#f59e0b;"><%= poolElev.value.toFixed(1) %></div>
+              <div class="text-xs text-slate-500"><%= poolElev.unit || 'ft' %></div>
+            </div>
+            <% } %>
+            <% if (tailElev) { %>
+            <div class="rounded-lg p-2.5" style="background:rgba(30,41,59,0.6);">
+              <div class="text-xs text-slate-400 mb-1">Tailwater Elev</div>
+              <div class="text-xl font-mono font-semibold text-slate-200"><%= tailElev.value.toFixed(1) %></div>
+              <div class="text-xs text-slate-500"><%= tailElev.unit || 'ft' %></div>
+            </div>
+            <% } %>
+            <% if (outflow) { %>
+            <div class="rounded-lg p-2.5" style="background:rgba(30,41,59,0.6);">
+              <div class="text-xs text-slate-400 mb-1">Outflow</div>
+              <div class="text-xl font-mono font-semibold" style="color:#38bdf8;"><%= outflow.value.toLocaleString() %></div>
+              <div class="text-xs text-slate-500"><%= outflow.unit || 'cfs' %></div>
+            </div>
+            <% } %>
+            <% if (inflow) { %>
+            <div class="rounded-lg p-2.5" style="background:rgba(30,41,59,0.6);">
+              <div class="text-xs text-slate-400 mb-1">Inflow</div>
+              <div class="text-xl font-mono font-semibold" style="color:#34d399;"><%= inflow.value.toLocaleString() %></div>
+              <div class="text-xs text-slate-500"><%= inflow.unit || 'cfs' %></div>
+            </div>
+            <% } %>
+            <% if (storage) { %>
+            <div class="rounded-lg p-2.5" style="background:rgba(30,41,59,0.6);">
+              <div class="text-xs text-slate-400 mb-1">Storage</div>
+              <div class="text-xl font-mono font-semibold text-slate-300"><%= storage.value.toLocaleString() %></div>
+              <div class="text-xs text-slate-500"><%= storage.unit || 'ac-ft' %></div>
+            </div>
+            <% } %>
+            <% if (cwmsDo) { %>
+            <div class="rounded-lg p-2.5" style="background:rgba(30,41,59,0.6);">
+              <div class="text-xs text-slate-400 mb-1">DO (Tailwater)</div>
+              <div class="text-xl font-mono font-semibold
+                <%= cwmsDo.value >= 7 ? 'text-emerald-400' : cwmsDo.value >= 5 ? 'text-amber-400' : 'text-rose-400' %>">
+                <%= cwmsDo.value.toFixed(1) %>
+              </div>
+              <div class="text-xs text-slate-500"><%= cwmsDo.unit || 'mg/L' %></div>
+            </div>
+            <% } %>
+          </div>
+          <% } else { %>
+          <!-- USGS stream gauge metrics -->
           <div class="grid grid-cols-2 gap-2">
             <% if (discharge) { %>
             <div class="rounded-lg p-2.5" style="background:rgba(30,41,59,0.6);">
@@ -155,13 +236,14 @@
             </div>
             <% } %>
           </div>
+          <% } %>
 
           <!-- AI note for this site — injected after enrichment -->
           <div id="ai-note-<%= site.site_id %>" class="hidden mt-3 text-xs leading-relaxed rounded-lg px-3 py-2" style="color:#94a3b8;background:rgba(14,165,233,0.06);border:1px solid rgba(14,165,233,0.1);"></div>
 
-          <% if (discharge) { %>
+          <% if (primaryReading) { %>
           <div class="mt-2 text-xs text-slate-600">
-            <% var ageMs = new Date() - new Date(discharge.recorded_at + 'Z');
+            <% var ageMs = new Date() - new Date(primaryReading.recorded_at + 'Z');
                var ageMin = Math.round(ageMs/60000); %>
             <%= ageMin < 60 ? ageMin + 'm ago' : Math.round(ageMin/60) + 'h ago' %>
           </div>
@@ -172,10 +254,10 @@
 
         <!-- Card nav buttons -->
         <div class="mt-3 pt-2.5 flex gap-1.5 flex-wrap" style="border-top:1px solid rgba(30,41,59,0.8);" onclick="event.stopPropagation()">
-          <a href="/visualize?site=<%= site.site_id %>"   class="card-nav-btn">Charts</a>
-          <a href="/forecast?site=<%= site.site_id %>"    class="card-nav-btn">Forecast</a>
+          <a href="/visualize?site=<%= site.site_id %>"    class="card-nav-btn">Charts</a>
+          <a href="/forecast?site=<%= site.site_id %>"     class="card-nav-btn">Forecast</a>
           <a href="/flow-network?site=<%= site.site_id %>" class="card-nav-btn">Network</a>
-          <a href="/compare?site=<%= site.site_id %>"     class="card-nav-btn">Compare</a>
+          <a href="/compare?site=<%= site.site_id %>"      class="card-nav-btn">Compare</a>
         </div>
       </div>
       <% } %>
@@ -232,17 +314,30 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
   attribution: '© OpenStreetMap © CARTO', maxZoom: 19
 }).addTo(map);
 
-var markerIcon = L.divIcon({
+var markerIconUSGS = L.divIcon({
   className: '',
   html: '<div style="width:11px;height:11px;border-radius:50%;background:#0ea5e9;border:2px solid #38bdf8;box-shadow:0 0 8px rgba(14,165,233,0.6);"></div>',
   iconSize: [11,11], iconAnchor: [5,5]
 });
+var markerIconCWMS = L.divIcon({
+  className: '',
+  html: '<div style="width:13px;height:13px;border-radius:3px;background:#f59e0b;border:2px solid #fbbf24;box-shadow:0 0 8px rgba(245,158,11,0.6);"></div>',
+  iconSize: [13,13], iconAnchor: [6,6]
+});
 
 SITES.forEach(function(site) {
   if (site.latitude && site.longitude) {
-    L.marker([site.latitude, site.longitude], { icon: markerIcon })
+    var isCwms = site.source === 'cwms';
+    var icon = isCwms ? markerIconCWMS : markerIconUSGS;
+    var sourceLabel = isCwms ? 'CWMS' : 'USGS';
+    var sourceColor = isCwms ? '#f59e0b' : '#38bdf8';
+    L.marker([site.latitude, site.longitude], { icon: icon })
       .addTo(map)
-      .bindPopup('<b>' + site.name + '</b><br>USGS ' + site.site_id + '<br><a href="/visualize?site=' + site.site_id + '" style="color:#38bdf8;">View Data →</a>');
+      .bindPopup(
+        '<b>' + site.name + '</b><br>' +
+        '<span style="font-size:10px;color:' + sourceColor + ';">' + sourceLabel + ' ' + site.site_id + '</span><br>' +
+        '<a href="/visualize?site=' + site.site_id + '" style="color:#38bdf8;">View Data →</a>'
+      );
   }
 });
 
@@ -251,7 +346,11 @@ async function triggerRefresh(btn) {
   btn.textContent = 'Fetching...';
   btn.disabled = true;
   try {
-    await fetch('/api/data/refresh', { method: 'POST' });
+    // Fire both USGS and CWMS refreshes in parallel
+    await Promise.all([
+      fetch('/api/data/refresh',      { method: 'POST' }),
+      fetch('/api/data/cwms/refresh', { method: 'POST' }),
+    ]);
     setTimeout(function() { location.reload(); }, 2500);
   } catch(e) {
     btn.textContent = 'Error';
@@ -383,7 +482,16 @@ var ALERT_LEVEL_STYLES = {
 
 // ── Filter & Sort ─────────────────────────────────────────
 var _currentFilter = 'all';
+var _sourceFilter  = 'all';
 var _activeParams  = {};   // param key -> true when toggled on
+
+function setSrcFilter(src) {
+  _sourceFilter = src;
+  document.querySelectorAll('.dash-filter[data-src]').forEach(function(b) {
+    b.classList.toggle('active', b.getAttribute('data-src') === src);
+  });
+  applyFiltersAndSort();
+}
 
 function setFilter(f) {
   _currentFilter = f;
@@ -410,8 +518,13 @@ function applyFiltersAndSort() {
   cards.forEach(function(card) {
     var show = true;
 
+    // 0. Source filter
+    if (_sourceFilter !== 'all') {
+      if (card.getAttribute('data-source') !== _sourceFilter) show = false;
+    }
+
     // 1. Name search — matches site name or type
-    if (searchText) {
+    if (show && searchText) {
       var name = (card.getAttribute('data-name') || '').toLowerCase();
       var type = (card.getAttribute('data-type') || '').toLowerCase();
       if (name.indexOf(searchText) === -1 && type.indexOf(searchText) === -1) show = false;

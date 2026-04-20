@@ -1,8 +1,9 @@
 const express = require('express');
 const path = require('path');
-const { initDatabase } = require('./db/database');
+const db = require('./db/database');
 const { startScheduler } = require('./services/scheduler');
 const { runBackgroundCrawl } = require('./services/waterways');
+const { ensureMigrated, applySeedFile, getDatasourcesConfig } = require('./services/config');
 
 const pagesRouter       = require('./routes/pages');
 const dataRouter        = require('./routes/api/data');
@@ -13,28 +14,12 @@ const annotationsRouter = require('./routes/api/annotations');
 const wqRouter          = require('./routes/api/wq');
 const connectionsRouter = require('./routes/api/connections');
 const settingsRouter    = require('./routes/api/settings');
+const sitesRouter       = require('./routes/api/sites');
 
 const app = express();
 
-let cfg;
-try {
-  cfg = require('../config/config.json');
-  console.log('[HydroScope] Loaded config/config.json');
-} catch {
-  try {
-    cfg = require('../config/config.example.json');
-    console.warn('[HydroScope] config.json not found — loaded config.example.json (add your API keys to config.json)');
-  } catch {
-    console.error('[HydroScope] No config file found. Create config/config.json from config.example.json.');
-    process.exit(1);
-  }
-}
-
-const PORT = process.env.PORT || (cfg.server && cfg.server.port) || 3000;
-const HOST = process.env.HOST || (cfg.server && cfg.server.host) || '0.0.0.0';
-
 // ── Middleware ────────────────────────────────────────────────────────────────
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -52,6 +37,7 @@ app.use('/api/annotations',  annotationsRouter);
 app.use('/api/wq',           wqRouter);
 app.use('/api/connections',  connectionsRouter);
 app.use('/api/settings',     settingsRouter);
+app.use('/api/sites',        sitesRouter);
 
 // ── 404 / Error handlers ─────────────────────────────────────────────────────
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
@@ -62,13 +48,20 @@ app.use((err, req, res, _next) => {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 async function boot() {
-  initDatabase();
+  db.initDatabase();
   console.log('[DB] Initialized.');
+
+  // Migrate legacy config.json → split files; seed sites on first run
+  ensureMigrated(db);
+  applySeedFile(db);
+
+  const dsCfg = getDatasourcesConfig();
+  const PORT  = process.env.PORT || (dsCfg.server && dsCfg.server.port) || 3000;
+  const HOST  = process.env.HOST || (dsCfg.server && dsCfg.server.host) || '0.0.0.0';
+
   startScheduler();
   app.listen(PORT, HOST, () => {
     console.log(`[HydroScope] Listening on http://${HOST}:${PORT}`);
-    // Crawl waterway geometry in background for any uncached connection pairs.
-    // Non-blocking — the server is already accepting requests.
     setTimeout(runBackgroundCrawl, 3000);
   });
 }

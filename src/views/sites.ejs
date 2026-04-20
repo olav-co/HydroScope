@@ -1,0 +1,1359 @@
+<%- include('partials/head', { title: 'Sites' }) %>
+
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+<style>
+  /* MapLibre overrides — hide political attribution branding */
+  .maplibregl-ctrl-attrib-inner a[href*="maplibre"],
+  .maplibregl-ctrl-logo { display: none !important; }
+</style>
+
+<style>
+  .tab-btn {
+    padding: 8px 16px; font-size: 13px; font-weight: 500; color: #94a3b8;
+    border: none; background: none; cursor: pointer; border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+  }
+  .tab-btn.active { color: #38bdf8; border-bottom-color: #38bdf8; }
+  .tab-btn:hover:not(.active) { color: #e2e8f0; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+  /* ── Table styles ── */
+  .sites-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .sites-table th {
+    text-align: left; font-size: 11px; font-weight: 500; color: #64748b;
+    text-transform: uppercase; letter-spacing: .06em;
+    padding: 8px 12px; border-bottom: 1px solid #1e293b; white-space: nowrap;
+  }
+  .sites-table td { padding: 8px 12px; border-bottom: 1px solid #0f172a; vertical-align: middle; }
+  .sites-table tr:hover td { background: rgba(30,41,59,0.5); }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
+  }
+  .badge-usgs  { background: rgba(14,165,233,0.15); color: #38bdf8; }
+  .badge-cwms  { background: rgba(245,158,11,0.15); color: #fbbf24; }
+  .badge-on    { background: rgba(34,197,94,0.15);  color: #4ade80; }
+  .badge-off   { background: rgba(100,116,139,0.15); color: #64748b; }
+
+  .icon-btn {
+    padding: 4px 8px; border-radius: 5px; border: 1px solid #1e293b;
+    background: none; color: #94a3b8; cursor: pointer; font-size: 12px;
+    transition: all 0.1s;
+  }
+  .icon-btn:hover { border-color: #334155; color: #e2e8f0; background: #1e293b; }
+  .icon-btn.danger:hover { border-color: #ef4444; color: #ef4444; background: rgba(239,68,68,0.1); }
+
+  .region-btn {
+    padding: 5px 12px; border-radius: 6px; border: 1px solid #334155;
+    background: none; color: #94a3b8; font-size: 12px; cursor: pointer;
+    transition: all 0.1s; white-space: nowrap;
+  }
+  .region-btn:hover { border-color: #38bdf8; color: #38bdf8; background: rgba(56,189,248,0.07); }
+  #drawModeBtn.drawing { background: rgba(56,189,248,0.15); border-color: #38bdf8; color: #38bdf8; }
+  .src-filter-btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 10px; border-radius: 999px; border: 1px solid #334155;
+    background: none; color: #64748b; font-size: 12px; cursor: pointer; transition: all 0.15s;
+  }
+  .src-filter-btn.active { border-color: #475569; color: #e2e8f0; background: rgba(30,41,59,0.6); }
+  .src-filter-btn:not(.active) { opacity: 0.45; }
+  .src-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  /* MapLibre popup reset */
+  .maplibregl-popup-content {
+    background: #1e293b !important; border: 1px solid #334155 !important;
+    border-radius: 10px !important; padding: 0 !important; box-shadow: 0 4px 20px rgba(0,0,0,0.5) !important;
+  }
+  .maplibregl-popup-tip { display: none !important; }
+  .maplibregl-popup-close-button { color: #64748b !important; font-size: 16px !important; top: 6px !important; right: 8px !important; }
+
+  /* ── Discovery result cards ── */
+  .discover-card {
+    background: #1e293b; border: 1px solid #334155; border-radius: 8px;
+    padding: 10px 12px; font-size: 12px; color: #94a3b8;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .discover-card .dc-name { font-size: 13px; font-weight: 600; color: #e2e8f0; }
+  .discover-card .dc-id   { color: #64748b; font-family: monospace; font-size: 11px; }
+  .discover-card .dc-actions { display: flex; gap: 6px; margin-top: 6px; }
+
+  /* ── Import/export ── */
+  .drop-zone {
+    border: 2px dashed #334155; border-radius: 10px; padding: 32px;
+    text-align: center; color: #64748b; font-size: 13px; cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .drop-zone.drag-over { border-color: #38bdf8; background: rgba(56,189,248,0.05); color: #38bdf8; }
+
+  /* ── CWMS catalog ── */
+  .ts-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 9px; border-radius: 6px; font-size: 11px; font-family: monospace;
+    background: #0f172a; border: 1px solid #334155; color: #94a3b8;
+    margin: 2px; cursor: pointer; transition: all 0.1s;
+  }
+  .ts-pill.selected { background: rgba(14,165,233,0.15); border-color: #38bdf8; color: #38bdf8; }
+  .ts-pill:hover:not(.selected) { border-color: #475569; color: #e2e8f0; }
+
+  /* ── Spinners / states ── */
+  .spin { animation: spin 1s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty-state { text-align: center; padding: 48px 0; color: #475569; font-size: 13px; }
+</style>
+
+<%- include('partials/nav') %>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <!-- Header -->
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Sites</h1>
+      <p class="text-xs text-slate-400 mt-0.5">Manage monitoring locations — USGS gauges, CWMS dam &amp; reservoir sensors</p>
+    </div>
+    <div id="siteCountBadge" class="text-xs text-slate-500"></div>
+  </header>
+
+  <!-- Tab bar -->
+  <div style="border-bottom:1px solid #1e293b;background:#0f172a;display:flex;gap:0;padding:0 16px;overflow-x:auto;flex-shrink:0;">
+    <button class="tab-btn active" onclick="switchTab('active')"    id="tab-active">Active Sites</button>
+    <button class="tab-btn"        onclick="switchTab('map')"       id="tab-map">Map Discovery</button>
+    <button class="tab-btn"        onclick="switchTab('search')"    id="tab-search">Search &amp; Add</button>
+    <button class="tab-btn"        onclick="switchTab('cwms')"      id="tab-cwms">CWMS Catalog</button>
+    <button class="tab-btn"        onclick="switchTab('import')"    id="tab-import">Import / Export</button>
+  </div>
+
+  <!-- Tab panels -->
+  <div style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden;padding:16px;gap:12px;">
+
+    <!-- ══ TAB 1: Active Sites ══════════════════════════════════════════════════ -->
+    <div class="tab-panel active" id="panel-active" style="flex-direction:column;">
+      <!-- Toolbar -->
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+        <input id="siteSearch" type="search" placeholder="Search name or ID…" oninput="filterTable()"
+          class="input" style="width:220px;font-size:13px;" />
+        <select id="siteSourceFilter" onchange="filterTable()" class="input" style="font-size:13px;width:130px;">
+          <option value="">All sources</option>
+          <option value="usgs">USGS</option>
+          <option value="cwms">CWMS</option>
+        </select>
+        <select id="siteEnabledFilter" onchange="filterTable()" class="input" style="font-size:13px;width:130px;">
+          <option value="">All status</option>
+          <option value="1">Enabled</option>
+          <option value="0">Disabled</option>
+        </select>
+        <div style="flex:1;"></div>
+        <span id="tableCount" class="text-xs text-slate-500"></span>
+      </div>
+
+      <!-- Table container -->
+      <div style="flex:1;overflow-y:auto;border-radius:8px;border:1px solid #1e293b;">
+        <table class="sites-table">
+          <thead style="position:sticky;top:0;background:#0f172a;z-index:1;">
+            <tr>
+              <th>Source</th>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Lat</th>
+              <th>Lon</th>
+              <th>Timeseries</th>
+              <th>Status</th>
+              <th style="text-align:right;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="sitesTableBody">
+            <tr><td colspan="9" class="empty-state">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ══ TAB 2: Map Discovery ═════════════════════════════════════════════════ -->
+    <div class="tab-panel" id="panel-map" style="flex-direction:column;gap:8px;">
+
+      <!-- Row 1: discovery controls -->
+      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;flex-wrap:wrap;">
+        <!-- USGS draw -->
+        <button id="drawModeBtn" class="icon-btn" onclick="toggleDrawMode()" style="font-size:12px;padding:5px 11px;">
+          ⬚ Draw Box
+        </button>
+        <span id="drawHint" style="font-size:11px;color:#64748b;margin-left:4px;">Drag a box — discovers USGS + CWMS sites in that area</span>
+        <div style="flex:1;"></div>
+        <!-- Source filter pills -->
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="font-size:11px;color:#64748b;">Show:</span>
+          <button id="filterUsgsBtn" class="src-filter-btn active" data-src="usgs" onclick="toggleSourceFilter('usgs')">
+            <span class="src-dot" style="background:#38bdf8;"></span>USGS
+          </button>
+          <button id="filterCwmsBtn" class="src-filter-btn active" data-src="cwms" onclick="toggleSourceFilter('cwms')">
+            <span class="src-dot" style="background:#f59e0b;"></span>CWMS
+          </button>
+        </div>
+        <div style="width:1px;height:20px;background:#1e293b;margin:0 4px;"></div>
+        <!-- Presets -->
+        <button class="region-btn" onclick="jumpTo(-123.4,45.2,-121.6,45.8)">Portland</button>
+        <button class="region-btn" onclick="jumpTo(-124.6,41.9,-116.4,46.3)">Pacific NW</button>
+        <button class="region-btn" onclick="jumpTo(-89.0,34.5,-81.0,38.5)">Tennessee</button>
+        <button class="region-btn" onclick="jumpTo(-95.0,29.0,-88.0,34.0)">Gulf Coast</button>
+        <button class="region-btn" onclick="jumpTo(-74.1,40.5,-73.7,40.9)">NYC</button>
+      </div>
+
+      <!-- Map + Results panel side-by-side -->
+      <div style="flex:1;display:flex;gap:8px;min-height:0;">
+
+        <!-- Map -->
+        <div style="flex:1;min-height:0;position:relative;">
+          <div id="discoveryMap" style="width:100%;height:100%;border-radius:8px;overflow:hidden;"></div>
+          <!-- Legend -->
+          <div style="position:absolute;bottom:28px;left:10px;background:rgba(15,23,42,0.88);
+                      border:1px solid #1e293b;border-radius:8px;padding:8px 12px;font-size:11px;
+                      display:flex;flex-direction:column;gap:5px;pointer-events:none;">
+            <div style="font-weight:600;color:#94a3b8;margin-bottom:2px;">Legend</div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#38bdf8"/></svg>
+              <span style="color:#cbd5e1;">USGS — in DB</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#f59e0b"/></svg>
+              <span style="color:#cbd5e1;">CWMS — in DB</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="none" stroke="#38bdf8" stroke-width="2"/></svg>
+              <span style="color:#cbd5e1;">USGS — discovered</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="none" stroke="#f59e0b" stroke-width="2"/></svg>
+              <span style="color:#cbd5e1;">CWMS — discovered</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Discovered sites results panel -->
+        <div style="width:255px;flex-shrink:0;display:flex;flex-direction:column;gap:6px;
+                    overflow:hidden;border:1px solid #1e293b;border-radius:8px;
+                    padding:10px 8px;background:#0f172a;">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 4px;flex-shrink:0;">
+            <span style="font-size:11px;font-weight:500;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">Sites in View</span>
+            <span id="discPanelCount" style="font-size:11px;color:#475569;"></span>
+          </div>
+          <div id="discResultsList" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;">
+            <div class="empty-state" style="font-size:12px;">Draw a box on the map</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ══ TAB 3: Search & Add ══════════════════════════════════════════════════ -->
+    <div class="tab-panel" id="panel-search" style="flex-direction:column;gap:16px;overflow-y:auto;">
+
+      <!-- USGS by site ID -->
+      <div class="card">
+        <h3 style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:12px;">USGS — Look up by Site Number</h3>
+        <div style="display:flex;gap:8px;align-items:flex-end;">
+          <div style="flex:1;">
+            <label class="label">Site Number(s)</label>
+            <input id="usgsIdInput" type="text" class="input" placeholder="e.g. 14162500  or  14162500,14174000" style="font-family:monospace;" />
+          </div>
+          <button onclick="searchUsgsByIds()" class="btn-primary" style="white-space:nowrap;">Look up</button>
+        </div>
+        <div id="usgsIdResults" style="margin-top:12px;"></div>
+      </div>
+
+      <!-- USGS by name -->
+      <div class="card">
+        <h3 style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:12px;">USGS — Search by Station Name</h3>
+        <div style="display:flex;gap:8px;align-items:flex-end;">
+          <div style="flex:1;">
+            <label class="label">Station name contains</label>
+            <input id="usgsNameInput" type="text" class="input" placeholder="e.g. Willamette" />
+          </div>
+          <button onclick="searchUsgsByName()" class="btn-primary" style="white-space:nowrap;">Search</button>
+        </div>
+        <div id="usgsNameResults" style="margin-top:12px;"></div>
+      </div>
+
+      <!-- CWMS by location ID -->
+      <div class="card">
+        <h3 style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:12px;">CWMS — Add by Location ID</h3>
+        <p style="font-size:12px;color:#64748b;margin-bottom:12px;">
+          Enter a CWMS location ID (e.g. <code style="font-family:monospace;color:#94a3b8;">CEHT1-CENTER_HILL</code>). Timeseries will load automatically.
+        </p>
+        <div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:12px;">
+          <div style="flex:1;">
+            <label class="label">Location ID</label>
+            <input id="cwmsLocInput" type="text" class="input" placeholder="e.g. CEHT1-CENTER_HILL" style="font-family:monospace;" />
+          </div>
+          <div style="width:100px;">
+            <label class="label">Office</label>
+            <input id="cwmsLocOffice" type="text" class="input" placeholder="LRN" />
+          </div>
+          <button onclick="loadCwmsLocTimeseries()" class="btn-primary" style="white-space:nowrap;">Load timeseries</button>
+        </div>
+        <div id="cwmsLocResults"></div>
+      </div>
+    </div>
+
+    <!-- ══ TAB 4: CWMS Catalog ══════════════════════════════════════════════════ -->
+    <div class="tab-panel" id="panel-cwms" style="flex-direction:column;gap:12px;overflow:hidden;">
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-shrink:0;flex-wrap:wrap;">
+        <div>
+          <label class="label">Office / District</label>
+          <input id="cwmsCatalogOffice" type="text" class="input" placeholder="LRN" style="width:80px;" />
+        </div>
+        <div style="flex:1;min-width:160px;">
+          <label class="label">Filter by name (optional)</label>
+          <input id="cwmsCatalogFilter" type="text" class="input" placeholder="e.g. DALE" />
+        </div>
+        <button onclick="loadCwmsCatalog()" class="btn-primary">Load Catalog</button>
+      </div>
+
+      <div style="flex:1;overflow:hidden;display:flex;gap:12px;min-height:0;">
+        <!-- Location list -->
+        <div style="width:280px;flex-shrink:0;display:flex;flex-direction:column;gap:6px;overflow:hidden;">
+          <div style="font-size:11px;font-weight:500;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">Locations</div>
+          <div id="cwmsCatalogList" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;">
+            <div class="empty-state" style="font-size:12px;">Load catalog to browse</div>
+          </div>
+        </div>
+
+        <!-- Timeseries picker -->
+        <div style="flex:1;display:flex;flex-direction:column;gap:8px;min-width:0;overflow:hidden;">
+          <div id="cwmsLocHeader" style="font-size:13px;font-weight:600;color:#e2e8f0;display:none;"></div>
+          <div id="cwmsLocCoords" style="font-size:11px;color:#64748b;display:none;"></div>
+          <div id="cwmsTsLabel" style="font-size:11px;font-weight:500;color:#64748b;text-transform:uppercase;letter-spacing:.06em;display:none;">
+            Timeseries — click to select
+          </div>
+          <div id="cwmsTsList" style="flex:1;overflow-y:auto;display:flex;flex-wrap:wrap;align-content:flex-start;gap:4px;padding:2px;">
+            <div class="empty-state" style="width:100%;font-size:12px;">Select a location</div>
+          </div>
+          <div id="cwmsAddActions" style="display:none;flex-shrink:0;display:flex;align-items:center;gap:8px;">
+            <span id="cwmsSelCount" style="font-size:12px;color:#94a3b8;"></span>
+            <button onclick="addCwmsFromCatalog()" class="btn-primary" style="font-size:12px;">Add to Sites</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ TAB 5: Import / Export ═══════════════════════════════════════════════ -->
+    <div class="tab-panel" id="panel-import" style="flex-direction:column;gap:16px;overflow-y:auto;">
+
+      <!-- Export -->
+      <div class="card">
+        <h3 style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:4px;">Export</h3>
+        <p style="font-size:12px;color:#64748b;margin-bottom:12px;">Download all current sites as a JSON file that can be re-imported on any HydroScope instance.</p>
+        <button onclick="exportSites()" class="btn-primary">Download sites-export.json</button>
+      </div>
+
+      <!-- Drag-drop / paste import -->
+      <div class="card">
+        <h3 style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:4px;">Import</h3>
+        <p style="font-size:12px;color:#64748b;margin-bottom:12px;">
+          Drop a JSON file, paste JSON, or click Browse. Format: array of site objects matching the
+          <code style="color:#94a3b8;font-size:11px;">sites-seed.example.json</code> schema.
+        </p>
+
+        <div class="drop-zone" id="dropZone"
+          ondragover="event.preventDefault();this.classList.add('drag-over')"
+          ondragleave="this.classList.remove('drag-over')"
+          ondrop="onDrop(event)">
+          <svg style="width:28px;height:28px;margin:0 auto 8px;display:block;color:#334155;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>
+          </svg>
+          Drop JSON file here or <span style="color:#38bdf8;text-decoration:underline;cursor:pointer;" onclick="document.getElementById('fileInput').click()">Browse</span>
+          <input id="fileInput" type="file" accept=".json" style="display:none;" onchange="onFileSelect(event)" />
+        </div>
+
+        <div style="margin-top:12px;">
+          <label class="label">Or paste JSON</label>
+          <textarea id="importPaste" rows="6" class="input" style="font-family:monospace;font-size:11px;resize:vertical;"
+            placeholder='[{"source":"usgs","id":"14162500","name":"Willamette at Springfield","type":"river","lat":44.04,"lon":-123.08}]'></textarea>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+          <button onclick="previewImport()" class="icon-btn" style="font-size:12px;padding:6px 12px;">Preview</button>
+          <button onclick="runImport()"    class="btn-primary" style="font-size:12px;">Import</button>
+          <span id="importStatus" style="font-size:12px;color:#94a3b8;"></span>
+        </div>
+
+        <div id="importPreview" style="margin-top:12px;"></div>
+      </div>
+    </div>
+
+  </div><!-- /tab panels wrapper -->
+</main>
+
+<!-- Edit Site Modal -->
+<div id="editModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;width:500px;max-width:95vw;padding:24px;max-height:90vh;overflow-y:auto;">
+    <h3 style="font-size:15px;font-weight:600;color:#e2e8f0;margin-bottom:16px;">Edit Site</h3>
+    <input type="hidden" id="editSiteId" />
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <div><label class="label">Name</label><input id="editName" type="text" class="input" /></div>
+      <div style="display:flex;gap:8px;">
+        <div style="flex:1;"><label class="label">Lat</label><input id="editLat" type="number" step="any" class="input" /></div>
+        <div style="flex:1;"><label class="label">Lon</label><input id="editLon" type="number" step="any" class="input" /></div>
+      </div>
+      <div><label class="label">Type</label>
+        <select id="editType" class="input">
+          <option>river</option><option>dam</option><option>reservoir</option>
+          <option>lake</option><option>tidal</option><option>spring</option><option>wetland</option>
+        </select>
+      </div>
+      <div id="editTsSection" style="display:none;">
+        <label class="label">Timeseries IDs (one per line)</label>
+        <textarea id="editTimeseries" rows="5" class="input" style="font-family:monospace;font-size:11px;resize:vertical;"></textarea>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+      <button onclick="closeEditModal()" class="icon-btn">Cancel</button>
+      <button onclick="saveEdit()" class="btn-primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+'use strict';
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let _allSites  = [];
+let _cwmsActiveLoc  = null;
+let _cwmsSelTs      = new Set();
+let _cwmsCatalogData = [];
+let _discUsgs  = [];   // raw discovered USGS sites (last bbox search)
+let _discCwms  = [];   // raw discovered CWMS sites (last bbox search)
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('panel-' + name).classList.add('active');
+  if (name === 'map') setTimeout(initMap, 50); // allow panel to render before init
+}
+
+// ── Load all sites ────────────────────────────────────────────────────────────
+async function loadSites() {
+  try {
+    const r = await fetch('/api/sites');
+    _allSites = await r.json();
+    renderTable(_allSites);
+    document.getElementById('siteCountBadge').textContent = `${_allSites.length} site${_allSites.length !== 1 ? 's' : ''}`;
+  } catch (e) {
+    console.error('loadSites', e);
+  }
+}
+
+// ── Active Sites table ────────────────────────────────────────────────────────
+function filterTable() {
+  const q   = document.getElementById('siteSearch').value.toLowerCase();
+  const src = document.getElementById('siteSourceFilter').value;
+  const ena = document.getElementById('siteEnabledFilter').value;
+  const filtered = _allSites.filter(s => {
+    if (src && s.source !== src) return false;
+    if (ena !== '' && String(s.enabled) !== ena) return false;
+    if (q && !s.name.toLowerCase().includes(q) && !s.site_id.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  renderTable(filtered);
+}
+
+function renderTable(sites) {
+  const tbody = document.getElementById('sitesTableBody');
+  document.getElementById('tableCount').textContent = `${sites.length} shown`;
+
+  if (!sites.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="empty-state">No sites match the current filters.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = sites.map(s => {
+    const srcBadge = `<span class="badge badge-${s.source}">${s.source.toUpperCase()}</span>`;
+    const enaBadge = s.enabled
+      ? `<span class="badge badge-on">enabled</span>`
+      : `<span class="badge badge-off">disabled</span>`;
+    const tsCount = s.timeseries && s.timeseries.length
+      ? `<span style="color:#64748b;font-size:11px;">${s.timeseries.length} ts</span>`
+      : `<span style="color:#334155;font-size:11px;">—</span>`;
+    const lat = s.latitude  != null ? s.latitude.toFixed(4)  : '—';
+    const lon = s.longitude != null ? s.longitude.toFixed(4) : '—';
+    return `<tr>
+      <td>${srcBadge}</td>
+      <td style="font-family:monospace;font-size:11px;color:#94a3b8;">${esc(s.site_id)}</td>
+      <td style="color:#e2e8f0;">${esc(s.name)}</td>
+      <td style="color:#64748b;font-size:12px;">${esc(s.type || '—')}</td>
+      <td style="font-size:12px;color:#64748b;">${lat}</td>
+      <td style="font-size:12px;color:#64748b;">${lon}</td>
+      <td>${tsCount}</td>
+      <td>${enaBadge}</td>
+      <td style="text-align:right;">
+        <div style="display:flex;gap:4px;justify-content:flex-end;">
+          <button class="icon-btn" onclick="toggleEnabled('${esc(s.site_id)}',${s.enabled ? 0 : 1})" title="${s.enabled ? 'Disable' : 'Enable'}">
+            ${s.enabled ? '⏸' : '▶'}
+          </button>
+          <button class="icon-btn" onclick="openEdit('${esc(s.site_id)}')" title="Edit">✏</button>
+          <button class="icon-btn danger" onclick="deleteSite('${esc(s.site_id)}')" title="Delete">✕</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function toggleEnabled(id, val) {
+  await fetch(`/api/sites/${encodeURIComponent(id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: val })
+  });
+  await loadSites();
+}
+
+async function deleteSite(id) {
+  if (!confirm(`Delete site ${id}? This cannot be undone.`)) return;
+  await fetch(`/api/sites/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await loadSites();
+}
+
+// ── Edit modal ────────────────────────────────────────────────────────────────
+function openEdit(id) {
+  const s = _allSites.find(x => x.site_id === id);
+  if (!s) return;
+  document.getElementById('editSiteId').value  = id;
+  document.getElementById('editName').value    = s.name || '';
+  document.getElementById('editLat').value     = s.latitude  != null ? s.latitude  : '';
+  document.getElementById('editLon').value     = s.longitude != null ? s.longitude : '';
+  document.getElementById('editType').value    = s.type || 'river';
+  const tsSection = document.getElementById('editTsSection');
+  if (s.source === 'cwms') {
+    tsSection.style.display = 'block';
+    document.getElementById('editTimeseries').value = (s.timeseries || []).join('\n');
+  } else {
+    tsSection.style.display = 'none';
+  }
+  const modal = document.getElementById('editModal');
+  modal.style.display = 'flex';
+}
+
+function closeEditModal() {
+  document.getElementById('editModal').style.display = 'none';
+}
+
+async function saveEdit() {
+  const id = document.getElementById('editSiteId').value;
+  const s  = _allSites.find(x => x.site_id === id);
+  const body = {
+    name: document.getElementById('editName').value,
+    lat:  parseFloat(document.getElementById('editLat').value) || null,
+    lon:  parseFloat(document.getElementById('editLon').value) || null,
+    type: document.getElementById('editType').value,
+  };
+  if (s && s.source === 'cwms') {
+    const raw = document.getElementById('editTimeseries').value;
+    body.timeseries = raw.split('\n').map(l => l.trim()).filter(Boolean);
+  }
+  await fetch(`/api/sites/${encodeURIComponent(id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  closeEditModal();
+  await loadSites();
+}
+
+// ── MapLibre Discovery ────────────────────────────────────────────────────────
+let _map        = null;
+let _mapInited  = false;
+let _drawMode   = false;
+let _drawStart  = null;
+let _mapPopup   = null;
+let _srcVisible = { usgs: true, cwms: true };
+
+const SRC_EXISTING  = 'existing-sites';
+const SRC_DISC_USGS = 'disc-usgs';
+const SRC_DISC_CWMS = 'disc-cwms';
+const SRC_BBOX      = 'bbox-box';
+
+function emptyGeo() { return { type: 'FeatureCollection', features: [] }; }
+
+function sitesToGeo(sites) {
+  return {
+    type: 'FeatureCollection',
+    features: sites.filter(s => s.latitude && s.longitude).map(s => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [s.longitude, s.latitude] },
+      properties: {
+        site_id: s.site_id, name: s.name, source: s.source,
+        enabled: s.enabled, kind: 'existing',
+        ts_count: s.timeseries ? s.timeseries.length : 0,
+      },
+    })),
+  };
+}
+
+function initMap() {
+  if (_mapInited) return;
+  _mapInited = true;
+
+  _map = new maplibregl.Map({
+    container: 'discoveryMap',
+    style: {
+      version: 8,
+      sources: {
+        carto: {
+          type: 'raster',
+          tiles: [
+            'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+            'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+            'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+          ],
+          tileSize: 256, attribution: '© CARTO © OpenStreetMap contributors',
+        },
+      },
+      layers: [{ id: 'basemap', type: 'raster', source: 'carto' }],
+    },
+    center: [-98.35, 39.5], zoom: 4,
+  });
+
+  _mapPopup = new maplibregl.Popup({ closeButton: true, maxWidth: '280px', offset: 10 });
+
+  _map.on('load', () => {
+    // ── BBox drawing layer ────────────────────────────────────────────────────
+    _map.addSource(SRC_BBOX, { type: 'geojson', data: emptyGeo() });
+    _map.addLayer({ id: 'bbox-fill',   type: 'fill', source: SRC_BBOX,
+      paint: { 'fill-color': '#38bdf8', 'fill-opacity': 0.08 } });
+    _map.addLayer({ id: 'bbox-line',   type: 'line', source: SRC_BBOX,
+      paint: { 'line-color': '#38bdf8', 'line-width': 2, 'line-dasharray': [4,2] } });
+
+    // ── Discovered USGS (hollow blue rings) ───────────────────────────────────
+    _map.addSource(SRC_DISC_USGS, { type: 'geojson', data: emptyGeo() });
+    _map.addLayer({ id: 'disc-usgs-ring', type: 'circle', source: SRC_DISC_USGS,
+      paint: {
+        'circle-radius': 7, 'circle-color': 'rgba(0,0,0,0)',
+        'circle-stroke-color': '#38bdf8', 'circle-stroke-width': 2.5,
+        'circle-opacity': 0.9,
+      }
+    });
+
+    // ── Discovered CWMS (hollow amber rings) ──────────────────────────────────
+    _map.addSource(SRC_DISC_CWMS, { type: 'geojson', data: emptyGeo() });
+    _map.addLayer({ id: 'disc-cwms-ring', type: 'circle', source: SRC_DISC_CWMS,
+      paint: {
+        'circle-radius': 7, 'circle-color': 'rgba(0,0,0,0)',
+        'circle-stroke-color': '#f59e0b', 'circle-stroke-width': 2.5,
+        'circle-opacity': 0.9,
+      }
+    });
+
+    // ── Existing sites — filled circles, USGS blue / CWMS amber ──────────────
+    _map.addSource(SRC_EXISTING, { type: 'geojson', data: sitesToGeo(_allSites) });
+    _map.addLayer({ id: 'existing-shadow', type: 'circle', source: SRC_EXISTING,
+      paint: { 'circle-radius': 9, 'circle-color': 'rgba(0,0,0,0.25)', 'circle-blur': 1 }
+    });
+    _map.addLayer({ id: 'existing-fill', type: 'circle', source: SRC_EXISTING,
+      paint: {
+        'circle-radius': 6,
+        'circle-color': ['match', ['get', 'source'], 'cwms', '#f59e0b', '#38bdf8'],
+        'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5,
+        'circle-opacity': ['case', ['==', ['get', 'enabled'], 1], 1, 0.35],
+      }
+    });
+
+    // ── Click handlers ────────────────────────────────────────────────────────
+    const clickableLayers = ['existing-fill', 'disc-usgs-ring', 'disc-cwms-ring'];
+    clickableLayers.forEach(layer => {
+      _map.on('mouseenter', layer, () => {
+        if (!_drawMode) _map.getCanvas().style.cursor = 'pointer';
+      });
+      _map.on('mouseleave', layer, () => {
+        if (!_drawMode) _map.getCanvas().style.cursor = '';
+      });
+      _map.on('click', layer, e => {
+        if (_drawMode) return;
+        const f = e.features[0];
+        showNodePopup(f, e.lngLat);
+      });
+    });
+
+    // ── Draw interaction (mousedown → drag → mouseup) ─────────────────────────
+    _map.on('mousedown', e => {
+      if (!_drawMode) return;
+      // Check not clicking an existing feature
+      const fs = _map.queryRenderedFeatures(e.point, { layers: clickableLayers });
+      if (fs.length) return; // let click handler fire instead
+      e.preventDefault();
+      _drawStart = e.lngLat;
+      updateBbox(_drawStart, _drawStart);
+    });
+    _map.on('mousemove', e => {
+      if (!_drawMode || !_drawStart) return;
+      updateBbox(_drawStart, e.lngLat);
+    });
+    _map.on('mouseup', e => {
+      if (!_drawMode || !_drawStart) return;
+      const start = _drawStart;
+      _drawStart = null;
+      exitDrawMode();
+      const minLon = Math.min(start.lng, e.lngLat.lng);
+      const maxLon = Math.max(start.lng, e.lngLat.lng);
+      const minLat = Math.min(start.lat, e.lngLat.lat);
+      const maxLat = Math.max(start.lat, e.lngLat.lat);
+      if (Math.abs(maxLon - minLon) > 0.005 && Math.abs(maxLat - minLat) > 0.005) {
+        discoverBbox(minLon, minLat, maxLon, maxLat);
+      }
+    });
+
+    // Populate panel on load and keep it in sync with viewport
+    renderDiscCards();
+    _map.on('moveend', renderDiscCards);
+  });
+}
+
+// ── Node popup — Add or Remove only ──────────────────────────────────────────
+function showNodePopup(feature, lngLat) {
+  const p        = feature.properties;
+  const id       = p.site_id || p.id;
+  const srcColor = p.source === 'cwms' ? '#f59e0b' : '#38bdf8';
+  const srcLabel = (p.source || 'usgs').toUpperCase();
+  const inDb     = !!_allSites.find(s => s.site_id === id);
+
+  let actionBtn = '';
+  if (inDb) {
+    actionBtn = `<button onclick="popupRemoveSite('${esc(id)}')"
+      style="width:100%;padding:6px 0;border-radius:6px;border:1px solid #7f1d1d;
+             background:none;color:#f87171;font-size:12px;cursor:pointer;">
+      ✕ Remove from Sites
+    </button>`;
+  } else {
+    const siteJson = JSON.stringify({
+      id, name: p.name, type: p.type || 'river',
+      source: p.source, lat: p.lat || lngLat.lat, lon: p.lon || lngLat.lng,
+    }).replace(/"/g, '&quot;');
+    actionBtn = `<button onclick="popupAddSite(${siteJson},this)"
+      style="width:100%;padding:6px 0;border-radius:6px;border:none;
+             background:#0369a1;color:#fff;font-size:12px;cursor:pointer;font-weight:500;">
+      + Add to Sites
+    </button>`;
+  }
+
+  _mapPopup.setLngLat(lngLat).setHTML(`
+    <div style="padding:14px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+        <span style="padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;
+                     background:${p.source==='cwms'?'rgba(245,158,11,0.15)':'rgba(56,189,248,0.15)'};
+                     color:${srcColor};">${srcLabel}</span>
+        <span style="font-size:11px;color:#64748b;">${inDb ? 'In your sites' : 'Not in DB'}</span>
+      </div>
+      <div style="font-size:13px;font-weight:600;color:#e2e8f0;line-height:1.3;">${esc(p.name || id)}</div>
+      <div style="font-family:monospace;font-size:11px;color:#64748b;margin-top:2px;">${esc(id)}</div>
+      <div style="margin-top:10px;">${actionBtn}</div>
+    </div>
+  `).addTo(_map);
+}
+
+async function popupAddSite(site, btn) {
+  btn.disabled = true; btn.textContent = 'Adding…';
+  await fetch('/api/sites', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: site.source || 'usgs', id: site.id, name: site.name, type: site.type, lat: site.lat, lon: site.lon })
+  });
+  _mapPopup.remove();
+  await loadSites();
+  refreshMapSites();
+  renderDiscCards();
+}
+
+async function popupRemoveSite(id) {
+  _mapPopup.remove();
+  await fetch(`/api/sites/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await loadSites();
+  refreshMapSites();
+  renderDiscCards();
+}
+
+function refreshMapSites() {
+  if (!_map || !_map.getSource(SRC_EXISTING)) return;
+  _map.getSource(SRC_EXISTING).setData(sitesToGeo(_allSites));
+}
+
+// ── Sites-in-view panel ───────────────────────────────────────────────────────
+// Shows every site visible in the current viewport: DB sites + discovered.
+// Called on map load, moveend, and after any add/remove.
+function renderDiscCards() {
+  const list = document.getElementById('discResultsList');
+  if (!list || !_map) return;
+
+  const b = _map.getBounds();
+  const inBounds = (lat, lon) =>
+    lat != null && lon != null &&
+    lat >= b.getSouth() && lat <= b.getNorth() &&
+    lon >= b.getWest()  && lon <= b.getEast();
+
+  // DB sites in viewport
+  const dbInView = _allSites.filter(s => inBounds(s.latitude, s.longitude));
+
+  // Discovered sites in viewport that are NOT already in DB
+  const dbIds = new Set(_allSites.map(s => s.site_id));
+  const discInView = [..._discUsgs, ..._discCwms].filter(s =>
+    inBounds(s.lat, s.lon) && !dbIds.has(s.id)
+  );
+
+  // Unified list: DB first (with Remove), then new discovered (with Add)
+  const cards = [
+    ...dbInView.map(s => ({
+      id: s.site_id, name: s.name, source: s.source,
+      lat: s.latitude, lon: s.longitude, type: s.type, inDb: true,
+    })),
+    ...discInView.map(s => ({
+      id: s.id, name: s.name, source: s.source || 'usgs',
+      lat: s.lat, lon: s.lon, type: s.type || 'river', inDb: false,
+    })),
+  ];
+
+  // Update count badge in panel header
+  const hdr = document.getElementById('discPanelCount');
+  if (hdr) hdr.textContent = cards.length ? `${cards.length}` : '';
+
+  if (!cards.length) {
+    list.innerHTML = '<div class="empty-state" style="font-size:12px;">No sites in current view</div>';
+    return;
+  }
+
+  list.innerHTML = cards.map(s => {
+    const sc  = s.source === 'cwms' ? '#f59e0b' : '#38bdf8';
+    const sbg = s.source === 'cwms' ? 'rgba(245,158,11,0.15)' : 'rgba(56,189,248,0.15)';
+    const siteArg = JSON.stringify({ id: s.id, name: s.name, type: s.type, source: s.source, lat: s.lat, lon: s.lon }).replace(/"/g, '&quot;');
+    const btn = s.inDb
+      ? `<button onclick="cardRemoveSite('${esc(s.id)}',this)"
+           style="padding:3px 10px;border-radius:5px;border:1px solid #7f1d1d;
+                  background:none;color:#f87171;font-size:11px;cursor:pointer;white-space:nowrap;">
+           Remove
+         </button>`
+      : `<button onclick="cardAddSite(${siteArg},this)"
+           style="padding:3px 10px;border-radius:5px;border:none;
+                  background:#0369a1;color:#fff;font-size:11px;cursor:pointer;white-space:nowrap;">
+           + Add
+         </button>`;
+    return `<div style="padding:8px 10px;border-radius:6px;border:1px solid #${s.inDb ? '1e3a2f' : '1e293b'};background:#${s.inDb ? '0d2018' : '1e293b'};">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;">
+        <span style="padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;
+                     background:${sbg};color:${sc};">${(s.source || 'usgs').toUpperCase()}</span>
+        ${btn}
+      </div>
+      <div style="font-size:12px;font-weight:600;color:#e2e8f0;line-height:1.3;">${esc(s.name || s.id)}</div>
+      <div style="font-family:monospace;font-size:10px;color:#64748b;margin-top:1px;">${esc(s.id)}</div>
+    </div>`;
+  }).join('');
+}
+
+async function cardAddSite(site, btn) {
+  btn.disabled = true; btn.textContent = '…';
+  await fetch('/api/sites', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: site.source || 'usgs', id: site.id, name: site.name, type: site.type, lat: site.lat, lon: site.lon })
+  });
+  await loadSites();
+  refreshMapSites();
+  renderDiscCards();
+}
+
+async function cardRemoveSite(id, btn) {
+  btn.disabled = true;
+  await fetch(`/api/sites/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await loadSites();
+  refreshMapSites();
+  renderDiscCards();
+}
+
+// ── Source visibility filter ──────────────────────────────────────────────────
+function toggleSourceFilter(src) {
+  _srcVisible[src] = !_srcVisible[src];
+  const btn = document.getElementById(`filter${src.charAt(0).toUpperCase()+src.slice(1)}Btn`);
+  btn.classList.toggle('active', _srcVisible[src]);
+  if (!_mapInited) return;
+  const vis = v => v ? 'visible' : 'none';
+  if (src === 'usgs') {
+    _map.setFilter('existing-fill', _srcVisible.usgs && _srcVisible.cwms ? null :
+      _srcVisible.usgs ? ['==', ['get', 'source'], 'usgs'] :
+      _srcVisible.cwms ? ['==', ['get', 'source'], 'cwms'] : ['==', '1','0']);
+    _map.setFilter('existing-shadow', _map.getFilter('existing-fill'));
+    _map.setLayoutProperty('disc-usgs-ring', 'visibility', vis(_srcVisible.usgs));
+  } else {
+    _map.setFilter('existing-fill', _srcVisible.usgs && _srcVisible.cwms ? null :
+      _srcVisible.usgs ? ['==', ['get', 'source'], 'usgs'] :
+      _srcVisible.cwms ? ['==', ['get', 'source'], 'cwms'] : ['==', '1','0']);
+    _map.setFilter('existing-shadow', _map.getFilter('existing-fill'));
+    _map.setLayoutProperty('disc-cwms-ring', 'visibility', vis(_srcVisible.cwms));
+  }
+}
+
+// ── Draw box ──────────────────────────────────────────────────────────────────
+function updateBbox(a, b) {
+  if (!_map.getSource(SRC_BBOX)) return;
+  _map.getSource(SRC_BBOX).setData({
+    type: 'FeatureCollection',
+    features: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[
+      [a.lng,a.lat],[b.lng,a.lat],[b.lng,b.lat],[a.lng,b.lat],[a.lng,a.lat]
+    ]] } }],
+  });
+}
+
+function toggleDrawMode() {
+  if (_drawMode) { exitDrawMode(); return; }
+  _drawMode = true; _drawStart = null;
+  _map.getCanvas().style.cursor = 'crosshair';
+  _map.dragPan.disable();
+  const btn = document.getElementById('drawModeBtn');
+  btn.classList.add('drawing'); btn.textContent = '✕ Cancel';
+  document.getElementById('drawHint').textContent = 'Drag to draw a box — releases search';
+}
+
+function exitDrawMode() {
+  _drawMode = false;
+  _map.getCanvas().style.cursor = '';
+  _map.dragPan.enable();
+  const btn = document.getElementById('drawModeBtn');
+  btn.classList.remove('drawing'); btn.textContent = '⬚ Draw Box';
+  document.getElementById('drawHint').textContent = '';
+}
+
+function jumpTo(minLon, minLat, maxLon, maxLat) {
+  if (!_mapInited) return;
+  _map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: 50, duration: 600 });
+}
+
+// ── Bbox discovery — USGS and CWMS fire independently, map updates as each lands
+async function discoverBbox(minLon, minLat, maxLon, maxLat) {
+  const hint = document.getElementById('drawHint');
+  const bbox = `${minLon.toFixed(5)},${minLat.toFixed(5)},${maxLon.toFixed(5)},${maxLat.toFixed(5)}`;
+  const existing = new Set(_allSites.map(s => s.site_id));
+
+  // Clear previous results
+  _discUsgs = [];
+  _discCwms = [];
+  renderDiscoveryRings();
+  renderDiscCards();
+
+  // Track per-source status for the hint line
+  let usgsState = 'pending';   // pending | ok | error
+  let cwmsState = 'pending';
+  let usgsCount = 0, cwmsCount = 0;
+  let usgsErr = null, cwmsErr = null;
+
+  function updateHint() {
+    const u = usgsState === 'pending' ? '<span class="spin">↻</span> USGS'
+            : usgsState === 'error'   ? `USGS: ${usgsErr}`
+            : `${usgsCount} USGS (${_discUsgs.filter(s => !existing.has(s.id)).length} new)`;
+    const c = cwmsState === 'pending' ? '<span class="spin">↻</span> CWMS'
+            : cwmsState === 'error'   ? `CWMS: ${cwmsErr}`
+            : `${cwmsCount} CWMS (${_discCwms.filter(s => !existing.has(s.id)).length} new)`;
+    hint.innerHTML = `${u} &nbsp;·&nbsp; ${c}`;
+  }
+
+  updateHint();
+
+  // ── USGS — fires independently ────────────────────────────────────────────
+  const usgsPromise = fetch(`/api/sites/discover/usgs?bbox=${encodeURIComponent(bbox)}`)
+    .then(r => r.json())
+    .then(data => {
+      _discUsgs = Array.isArray(data.sites) ? data.sites : [];
+      usgsCount = _discUsgs.length;
+      usgsState = data.warning && !usgsCount ? 'error' : 'ok';
+      usgsErr   = data.warning || null;
+      renderDiscoveryRings();
+      renderDiscCards();
+      updateHint();
+    })
+    .catch(err => {
+      usgsState = 'error';
+      usgsErr   = err.message;
+      updateHint();
+    });
+
+  // ── CWMS — fires independently ────────────────────────────────────────────
+  const cwmsPromise = fetch(`/api/sites/discover/cwms/bbox?bbox=${encodeURIComponent(bbox)}`)
+    .then(r => r.json())
+    .then(data => {
+      // Server now stamps source:'cwms', but guard in case it doesn't
+      _discCwms = Array.isArray(data.sites)
+        ? data.sites.map(s => ({ ...s, source: s.source || 'cwms' })) : [];
+      cwmsCount = _discCwms.length;
+      cwmsState = data.warning && !cwmsCount ? 'error' : 'ok';
+      cwmsErr   = data.warning || null;
+      renderDiscoveryRings();
+      renderDiscCards();
+      updateHint();
+    })
+    .catch(err => {
+      cwmsState = 'error';
+      cwmsErr   = err.message;
+      updateHint();
+    });
+
+  await Promise.allSettled([usgsPromise, cwmsPromise]);
+
+  // Final hint — if nothing found at all, clear after a moment
+  if (!_discUsgs.length && !_discCwms.length && usgsState !== 'pending' && cwmsState !== 'pending') {
+    hint.textContent = 'No sites found in that area.';
+    setTimeout(() => { hint.textContent = 'Drag a box — discovers USGS + CWMS sites in that area'; clearBbox(); }, 4000);
+  }
+}
+
+function clearBbox() {
+  if (_map && _map.getSource(SRC_BBOX)) _map.getSource(SRC_BBOX).setData(emptyGeo());
+}
+
+// Re-render discovery rings for all found sites from the last bbox search.
+// Source-toggle visibility is controlled separately via setLayoutProperty.
+// Call this any time _discUsgs/_discCwms change, or after _allSites updates.
+function renderDiscoveryRings() {
+  if (!_map || !_map.getSource(SRC_DISC_USGS)) return;
+
+  _map.getSource(SRC_DISC_USGS).setData({
+    type: 'FeatureCollection',
+    features: _discUsgs.filter(s => s.lat && s.lon).map(s => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+      properties: { id: s.id, site_id: s.id, name: s.name, source: 'usgs',
+                    type: s.type, kind: 'discovered', lat: s.lat, lon: s.lon },
+    })),
+  });
+
+  _map.getSource(SRC_DISC_CWMS).setData({
+    type: 'FeatureCollection',
+    features: _discCwms.filter(s => s.lat && s.lon).map(s => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+      properties: { id: s.id, site_id: s.id, name: s.name, source: 'cwms',
+                    type: s.type || 'dam', kind: 'discovered',
+                    office: s.office, lat: s.lat, lon: s.lon },
+    })),
+  });
+}
+
+
+// ── Search & Add ──────────────────────────────────────────────────────────────
+async function searchUsgsByIds() {
+  const raw = document.getElementById('usgsIdInput').value.trim();
+  if (!raw) return;
+  const ids = raw.split(/[\s,]+/).filter(Boolean).join(',');
+  const div = document.getElementById('usgsIdResults');
+  div.innerHTML = `<span style="color:#64748b;font-size:12px;"><span class="spin">↻</span> Searching…</span>`;
+  try {
+    const r    = await fetch(`/api/sites/discover/usgs?id=${encodeURIComponent(ids)}`);
+    const data = await r.json();
+    renderSearchResults(data.sites || [], div);
+  } catch (e) {
+    div.innerHTML = `<span style="color:#ef4444;font-size:12px;">Error: ${esc(e.message)}</span>`;
+  }
+}
+
+async function searchUsgsByName() {
+  const name = document.getElementById('usgsNameInput').value.trim();
+  if (!name) return;
+  const div  = document.getElementById('usgsNameResults');
+  div.innerHTML = `<span style="color:#64748b;font-size:12px;"><span class="spin">↻</span> Searching…</span>`;
+  try {
+    const r    = await fetch(`/api/sites/discover/usgs?name=${encodeURIComponent(name)}`);
+    const data = await r.json();
+    renderSearchResults(data.sites || [], div);
+  } catch (e) {
+    div.innerHTML = `<span style="color:#ef4444;font-size:12px;">Error: ${esc(e.message)}</span>`;
+  }
+}
+
+function renderSearchResults(sites, container) {
+  if (!sites.length) {
+    container.innerHTML = `<div class="empty-state" style="font-size:12px;padding:16px 0;">No sites found.</div>`;
+    return;
+  }
+  const existing = new Set(_allSites.map(s => s.site_id));
+  container.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px;margin-top:4px;">` +
+    sites.map(s => {
+      const added = existing.has(s.id);
+      return `<div class="discover-card">
+        <div class="dc-name">${esc(s.name)}</div>
+        <div class="dc-id">${esc(s.id)} · ${esc(s.type)} · ${s.lat?.toFixed(4)}, ${s.lon?.toFixed(4)}</div>
+        <div class="dc-actions">
+          ${added
+            ? `<span style="font-size:11px;color:#4ade80;">✓ Already in your sites</span>`
+            : `<button class="icon-btn" style="font-size:11px;" onclick="addUsgsSearch(${JSON.stringify(s).replace(/"/g,'&quot;')},this)">+ Add</button>`
+          }
+        </div>
+      </div>`;
+    }).join('') + `</div>`;
+}
+
+async function addUsgsSearch(site, btn) {
+  btn.disabled = true; btn.textContent = '…';
+  await fetch('/api/sites', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: 'usgs', id: site.id, name: site.name, type: site.type, lat: site.lat, lon: site.lon })
+  });
+  btn.textContent = '✓ Added'; btn.style.color = '#4ade80'; btn.style.borderColor = '#4ade80';
+  await loadSites();
+  refreshMapSites();
+}
+
+// ── CWMS by location ID (Search tab) ──────────────────────────────────────────
+async function loadCwmsLocTimeseries() {
+  const locId  = document.getElementById('cwmsLocInput').value.trim();
+  const office = document.getElementById('cwmsLocOffice').value.trim() || 'LRN';
+  const div    = document.getElementById('cwmsLocResults');
+  if (!locId) return;
+  div.innerHTML = `<span style="color:#64748b;font-size:12px;"><span class="spin">↻</span> Loading…</span>`;
+  try {
+    const r    = await fetch(`/api/sites/discover/cwms/timeseries?locationId=${encodeURIComponent(locId)}&office=${encodeURIComponent(office)}`);
+    const data = await r.json();
+    const tsIds = extractTsIds(data.data);
+    renderCwmsLocResults(locId, office, tsIds, div);
+  } catch (e) {
+    div.innerHTML = `<span style="color:#ef4444;font-size:12px;">Error: ${esc(e.message)}</span>`;
+  }
+}
+
+function renderCwmsLocResults(locId, office, tsIds, container) {
+  if (!tsIds.length) {
+    container.innerHTML = `<div class="empty-state" style="font-size:12px;padding:12px 0;">No timeseries found for this location.</div>`;
+    return;
+  }
+  const selectedSet = new Set();
+  container.innerHTML = `
+    <div style="margin-bottom:8px;font-size:12px;color:#64748b;">${tsIds.length} timeseries available. Click to select:</div>
+    <div id="cwmsLocTsPills" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;">
+      ${tsIds.map(id => `<span class="ts-pill" data-ts="${esc(id)}" onclick="toggleLocTs(this)">${esc(id)}</span>`).join('')}
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <input type="text" id="cwmsLocName" class="input" style="flex:1;" placeholder="Display name (optional)" />
+      <button class="btn-primary" onclick="addCwmsFromSearch('${esc(locId)}','${esc(office)}')">Add Site</button>
+    </div>`;
+}
+
+function toggleLocTs(el) {
+  el.classList.toggle('selected');
+}
+
+async function addCwmsFromSearch(locId, office) {
+  const nameInput = document.getElementById('cwmsLocName');
+  const name  = (nameInput && nameInput.value.trim()) || locId;
+  const pills = document.querySelectorAll('#cwmsLocTsPills .ts-pill.selected');
+  const tsIds = Array.from(pills).map(p => p.dataset.ts);
+  await fetch('/api/sites', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: 'cwms', locationId: locId, name, type: 'dam', timeseries: tsIds })
+  });
+  document.getElementById('cwmsLocResults').innerHTML = `<div style="color:#4ade80;font-size:12px;margin-top:8px;">✓ Site added with ${tsIds.length} timeseries.</div>`;
+  await loadSites();
+}
+
+// ── CWMS Catalog ──────────────────────────────────────────────────────────────
+function extractTsIds(data) {
+  if (!data) return [];
+  // CDA catalog TIMESERIES response
+  if (Array.isArray(data.entries)) {
+    return data.entries.map(e => e['timeseries-id'] || e.name || e.id).filter(Boolean);
+  }
+  if (Array.isArray(data)) return data.map(e => e['timeseries-id'] || e.name || e.id).filter(Boolean);
+  return [];
+}
+
+async function loadCwmsCatalog() {
+  const office = document.getElementById('cwmsCatalogOffice').value.trim() || 'LRN';
+  const filter = document.getElementById('cwmsCatalogFilter').value.trim();
+  const list   = document.getElementById('cwmsCatalogList');
+  list.innerHTML = `<div style="text-align:center;padding:12px;color:#64748b;font-size:12px;"><span class="spin">↻</span> Loading…</div>`;
+  try {
+    let url = `/api/sites/discover/cwms/locations?office=${encodeURIComponent(office)}`;
+    if (filter) url += `&like=${encodeURIComponent(filter)}`;
+    const r    = await fetch(url);
+    const data = await r.json();
+    const entries = data.data && data.data.entries ? data.data.entries : (Array.isArray(data.data) ? data.data : []);
+    _cwmsCatalogData = entries;
+
+    if (!entries.length) {
+      list.innerHTML = `<div class="empty-state" style="font-size:12px;">No locations found.</div>`;
+      return;
+    }
+
+    list.innerHTML = entries.map((e, i) => {
+      const id = e['location-id'] || e.name || e.id || `loc-${i}`;
+      return `<div onclick="selectCwmsCatalogLoc('${esc(id)}',${i},'${esc(office)}')"
+        style="padding:7px 10px;border-radius:6px;cursor:pointer;font-size:12px;
+               color:#94a3b8;border:1px solid transparent;transition:all 0.1s;"
+        id="cwmsloc-${i}"
+        onmouseover="this.style.background='#1e293b';this.style.borderColor='#334155';this.style.color='#e2e8f0';"
+        onmouseout="this.style.background='';this.style.borderColor='transparent';this.style.color='#94a3b8';">
+        ${esc(id)}
+      </div>`;
+    }).join('');
+  } catch (e) {
+    list.innerHTML = `<div class="empty-state" style="color:#ef4444;font-size:12px;">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function selectCwmsCatalogLoc(locId, idx, office) {
+  // Highlight selected
+  document.querySelectorAll('#cwmsCatalogList > div').forEach((el, i) => {
+    el.style.background   = i === idx ? 'rgba(14,165,233,0.1)' : '';
+    el.style.borderColor  = i === idx ? '#38bdf8' : 'transparent';
+    el.style.color        = i === idx ? '#38bdf8' : '#94a3b8';
+  });
+
+  _cwmsActiveLoc = { locId, idx, office };
+  _cwmsSelTs.clear();
+
+  const header  = document.getElementById('cwmsLocHeader');
+  const coords  = document.getElementById('cwmsLocCoords');
+  const tsLabel = document.getElementById('cwmsTsLabel');
+  const tsList  = document.getElementById('cwmsTsList');
+  const actions = document.getElementById('cwmsAddActions');
+
+  header.textContent  = locId;
+  header.style.display = 'block';
+
+  // Show lat/lon from catalog entry if available
+  const entry = _cwmsCatalogData[idx];
+  if (entry && entry.latitude != null) {
+    coords.textContent  = `${entry.latitude.toFixed(5)}, ${entry.longitude.toFixed(5)}`;
+    coords.style.display = 'block';
+  } else {
+    coords.style.display = 'none';
+  }
+
+  tsLabel.style.display = 'block';
+  tsList.innerHTML = `<div style="width:100%;text-align:center;padding:12px;color:#64748b;font-size:12px;"><span class="spin">↻</span> Loading timeseries…</div>`;
+  actions.style.display = 'none';
+
+  try {
+    const r    = await fetch(`/api/sites/discover/cwms/timeseries?locationId=${encodeURIComponent(locId)}&office=${encodeURIComponent(office)}`);
+    const data = await r.json();
+    const tsIds = extractTsIds(data.data);
+
+    if (!tsIds.length) {
+      tsList.innerHTML = `<div style="width:100%;font-size:12px;color:#64748b;">No timeseries found for this location.</div>`;
+      return;
+    }
+
+    tsList.innerHTML = tsIds.map(id =>
+      `<span class="ts-pill" data-ts="${esc(id)}" onclick="toggleCatalogTs(this)">${esc(id)}</span>`
+    ).join('');
+    actions.style.display = 'flex';
+    document.getElementById('cwmsSelCount').textContent = '0 selected';
+  } catch (e) {
+    tsList.innerHTML = `<div style="width:100%;font-size:12px;color:#ef4444;">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function toggleCatalogTs(el) {
+  el.classList.toggle('selected');
+  const count = document.querySelectorAll('#cwmsTsList .ts-pill.selected').length;
+  document.getElementById('cwmsSelCount').textContent = `${count} selected`;
+}
+
+async function addCwmsFromCatalog() {
+  if (!_cwmsActiveLoc) return;
+  const { locId, idx, office } = _cwmsActiveLoc;
+  const selected = document.querySelectorAll('#cwmsTsList .ts-pill.selected');
+  const tsIds    = Array.from(selected).map(p => p.dataset.ts);
+
+  const entry = _cwmsCatalogData[idx] || {};
+  const lat   = entry.latitude  != null ? entry.latitude  : null;
+  const lon   = entry.longitude != null ? entry.longitude : null;
+
+  await fetch('/api/sites', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: 'cwms', locationId: locId, name: locId, type: 'dam', lat, lon, timeseries: tsIds })
+  });
+
+  // Visual feedback
+  document.getElementById('cwmsLocHeader').textContent = `✓ ${locId} added`;
+  document.getElementById('cwmsLocHeader').style.color = '#4ade80';
+  document.getElementById('cwmsAddActions').style.display = 'none';
+  await loadSites();
+}
+
+// ── Import / Export ───────────────────────────────────────────────────────────
+function exportSites() {
+  window.location.href = '/api/sites/export';
+}
+
+function onDrop(e) {
+  e.preventDefault();
+  document.getElementById('dropZone').classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) readFile(file);
+}
+
+function onFileSelect(e) {
+  const file = e.target.files[0];
+  if (file) readFile(file);
+}
+
+function readFile(file) {
+  const reader = new FileReader();
+  reader.onload = ev => {
+    document.getElementById('importPaste').value = ev.target.result;
+  };
+  reader.readAsText(file);
+}
+
+function parseImportJson() {
+  const raw = document.getElementById('importPaste').value.trim();
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (e) {
+    document.getElementById('importStatus').textContent = 'Invalid JSON: ' + e.message;
+    document.getElementById('importStatus').style.color = '#ef4444';
+    return null;
+  }
+}
+
+async function previewImport() {
+  const sites = parseImportJson();
+  if (!sites) return;
+  const r    = await fetch('/api/sites/import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sites, preview: true })
+  });
+  const data = await r.json();
+  showImportResult(data, true);
+}
+
+async function runImport() {
+  const sites = parseImportJson();
+  if (!sites) return;
+  document.getElementById('importStatus').textContent = 'Importing…';
+  document.getElementById('importStatus').style.color = '#94a3b8';
+  const r    = await fetch('/api/sites/import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sites })
+  });
+  const data = await r.json();
+  showImportResult(data, false);
+  if (data.ok) await loadSites();
+}
+
+function showImportResult(data, isPreview) {
+  const status = document.getElementById('importStatus');
+  const prev   = document.getElementById('importPreview');
+  if (!data.ok) {
+    status.textContent = 'Error: ' + (data.error || 'unknown');
+    status.style.color = '#ef4444';
+    return;
+  }
+  const label = isPreview ? 'Preview: ' : '';
+  status.textContent  = `${label}${data.added} site${data.added !== 1 ? 's' : ''} ${isPreview ? 'would be' : ''} imported, ${data.skipped} skipped`;
+  status.style.color  = '#4ade80';
+  if (data.errors && data.errors.length) {
+    prev.innerHTML = `<div style="margin-top:8px;font-size:11px;color:#ef4444;">${data.errors.length} error(s):<br>${data.errors.map(e => esc(JSON.stringify(e.entry)) + ': ' + esc(e.error)).join('<br>')}</div>`;
+  } else {
+    prev.innerHTML = '';
+  }
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadSites();
+</script>

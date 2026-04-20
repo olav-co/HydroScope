@@ -6,10 +6,11 @@
 var allSeries = [];
 
 measurementSeries.forEach(function(s) {
-  var spanMs = s.earliest && s.latest ? new Date(s.latest + 'Z') - new Date(s.earliest + 'Z') : 0;
+  var spanMs  = s.earliest && s.latest ? new Date(s.latest + 'Z') - new Date(s.earliest + 'Z') : 0;
+  var isCwms  = s.site_source === 'cwms';
   allSeries.push({
-    source:        'USGS',
-    source_url:    'waterservices.usgs.gov',
+    source:        isCwms ? 'CWMS' : 'USGS',
+    source_url:    isCwms ? 'cwms-data.usace.army.mil' : 'waterservices.usgs.gov',
     group:         s.site_name,
     group_id:      s.site_id,
     parameter:     s.parameter_name,
@@ -319,9 +320,9 @@ function renderTable(rows) {
   empty.style.display = 'none';
 
   body.innerHTML = rows.map(function(r, i) {
-    var srcColor = r.source === 'USGS' ? '#38bdf8' : '#a78bfa';
-    var srcBg    = r.source === 'USGS' ? 'rgba(14,165,233,0.1)'  : 'rgba(167,139,250,0.1)';
-    var srcBorder= r.source === 'USGS' ? 'rgba(14,165,233,0.25)' : 'rgba(167,139,250,0.25)';
+    var srcColor  = r.source === 'USGS' ? '#38bdf8' : r.source === 'CWMS' ? '#f59e0b' : '#a78bfa';
+    var srcBg     = r.source === 'USGS' ? 'rgba(14,165,233,0.1)' : r.source === 'CWMS' ? 'rgba(245,158,11,0.1)' : 'rgba(167,139,250,0.1)';
+    var srcBorder = r.source === 'USGS' ? 'rgba(14,165,233,0.25)': r.source === 'CWMS' ? 'rgba(245,158,11,0.25)': 'rgba(167,139,250,0.25)';
     var ivColor  = r.interval === 'hourly' ? '#38bdf8' : r.interval === 'daily' ? '#34d399' : '#94a3b8';
     var ivBg     = r.interval === 'hourly' ? 'rgba(14,165,233,0.08)' : r.interval === 'daily' ? 'rgba(52,211,153,0.08)' : 'rgba(148,163,184,0.08)';
     var isActive = (_activeRowIdx === i);
@@ -381,8 +382,8 @@ async function openRecords(idx) {
 
   // Build query string
   var qs;
-  if (series.source === 'USGS') {
-    qs = 'source=usgs&group_id=' + encodeURIComponent(series.group_id) + '&param_code=' + encodeURIComponent(series.parameter_code);
+  if (series.source === 'USGS' || series.source === 'CWMS') {
+    qs = 'source=' + series.source.toLowerCase() + '&group_id=' + encodeURIComponent(series.group_id) + '&param_code=' + encodeURIComponent(series.parameter_code);
   } else {
     qs = 'source=weather&group_id=' + encodeURIComponent(series.group_id) + '&parameter=' + encodeURIComponent(series.parameter) + '&interval=' + encodeURIComponent(series.interval);
   }
@@ -401,7 +402,7 @@ async function openRecords(idx) {
 function exportSeries(fmt) {
   if (!_recSeries) return;
   var url;
-  if (_recSeries.source === 'USGS') {
+  if (_recSeries.source === 'USGS' || _recSeries.source === 'CWMS') {
     url = '/api/export/measurements?site_id=' + encodeURIComponent(_recSeries.group_id)
         + '&param_code=' + encodeURIComponent(_recSeries.parameter_code) + '&fmt=' + fmt;
   } else {
@@ -465,7 +466,7 @@ function renderRecords() {
   }).join('');
 }
 
-var PARAM_VALUE_COLORS = { 'USGS': '#38bdf8', 'Open-Meteo': '#34d399' };
+var PARAM_VALUE_COLORS = { 'USGS': '#38bdf8', 'CWMS': '#f59e0b', 'Open-Meteo': '#34d399' };
 
 function fmtTsFull(ts) {
   if (!ts) return '—';

@@ -50,7 +50,8 @@
       "usgs":     { "intervalMinutes": 15, "enabled": true },
       "weather":  { "intervalMinutes": 60, "enabled": true },
       "topology": { "intervalHours":   24, "enabled": true },
-      "waterways":{ "intervalMinutes":  4, "enabled": true }
+      "waterways":{ "intervalMinutes":  4, "enabled": true },
+      "cwms":     { "intervalMinutes": 15, "enabled": true }
     }
   },
   "usgs": {
@@ -76,5 +77,66 @@
     ],
     "parameters": ["00060", "00065", "00010", "00300", "00400"],
     "_parameters_note": "00060=discharge(ft³/s)  00065=gage height(ft)  00010=water temp(°C)  00300=dissolved oxygen(mg/L)  00400=pH"
+  },
+  "cwms": {
+    "_note": "CWMS/CDA timeseries data from the US Army Corps of Engineers public national CDA instance. Set office to your district code (e.g. LRN=Nashville, LRP=Pittsburgh, SWT=Tulsa, SPK=Sacramento). Not all districts are on the national instance — check cwms-data.usace.army.mil/cwms-data/catalog/TIMESERIES?office=YOUR_OFFICE first. Timeseries IDs follow the pattern: location.parameter.type.interval.duration.version",
+    "_nwp_note": "NWP (Portland District) is NOT on the national CDA instance as of 2026. If you are configuring for the Willamette Valley / Columbia River basin, replace these example sites with your district's actual entries once NWP migrates, or host a local CDA instance.",
+    "baseUrl": "https://cwms-data.usace.army.mil/cwms-data",
+    "office": "LRN",
+    "lookbackHours": 48,
+    "sites": [
+      {
+        "_note": "Headwater tributary reservoir — Caney Fork River, TN. Feeds into Cumberland mainstem below.",
+        "locationId": "CEHT1-CENTER_HILL",
+        "name": "Center Hill Dam",
+        "type": "dam",
+        "lat": 36.0985, "lon": -85.8192,
+        "timeseries": [
+          "CEHT1-CENTER_HILL.Elev-Pool.Inst.1Hour.0.dcp-rev",
+          "CEHT1-CENTER_HILL.Elev-Tail.Inst.1Hour.0.man-rev",
+          "CEHT1-CENTER_HILL.Flow-In.Ave.1Hour.1Hour.man-rev",
+          "CEHT1-CENTER_HILL.Flow.Ave.1Hour.1Hour.man-rev",
+          "CEHT1-CENTER_HILL.Stor.Inst.1Hour.0.man-rev",
+          "CEHT1-CENTER_HILL.%-Flood Control-Used.Inst.1Hour.0.CCP-Computed-Rev",
+          "CEHT1-CENTER_HILL.Precip-Inc.Total.1Hour.1Hour.dcp-rev"
+        ]
+      },
+      {
+        "_note": "Cumberland River mainstem dam — downstream of Old Hickory, upstream of Barkley. Has full water quality suite at tailwater.",
+        "locationId": "CHPT1-CHEATHAM",
+        "name": "Cheatham Dam",
+        "type": "dam",
+        "lat": 36.3218, "lon": -87.1639,
+        "timeseries": [
+          "CHPT1-CHEATHAM.Elev-Pool.Inst.1Hour.0.dcp-rev",
+          "ASHT1-CHEATHAM.Elev-Tail.Inst.1Hour.0.dcp-rev",
+          "ASHT1-CHEATHAM.Flow.Ave.1Hour.1Hour.man-rev",
+          "ASHT1-CHEATHAM.Flow-Turbine.Ave.1Hour.1Hour.man-rev",
+          "ASHT1-CHEATHAM.Flow-Spillway.Ave.1Hour.1Hour.man-rev",
+          "ASHT1-CHEATHAM.Energy.Total.1Hour.1Hour.man-rev",
+          "ASHT1-CHEATHAM.Temp-Water-Tail.Inst.30Minutes.0.dcp-rev",
+          "ASHT1-CHEATHAM.Conc-Do-Tail.Inst.30Minutes.0.dcp-rev",
+          "ASHT1-CHEATHAM.Cond-Tail.Inst.30Minutes.0.dcp-rev",
+          "ASHT1-CHEATHAM.pH-Tail.Inst.30Minutes.0.dcp-rev"
+        ]
+      },
+      {
+        "_note": "Cumberland River terminus dam — last Corps project before the Ohio River. Downstream flow node.",
+        "locationId": "BAHK2-BARKLEY",
+        "name": "Barkley Dam",
+        "type": "dam",
+        "lat": 36.8704, "lon": -88.1217,
+        "timeseries": [
+          "BAHK2-BARKLEY.Elev-Pool.Inst.1Hour.0.dcp-rev",
+          "BAHK2-BARKLEY.Elev-Tail.Inst.1Hour.0.man-rev",
+          "BAHK2-BARKLEY.Flow-In.Ave.1Hour.1Hour.man-rev",
+          "BAHK2-BARKLEY.Flow.Ave.1Hour.1Hour.man-rev",
+          "BAHK2-BARKLEY.Flow-Canal.Ave.1Hour.1Hour.tva-raw",
+          "BAHK2-BARKLEY.Stor.Inst.1Hour.0.man-rev",
+          "BAHK2-BARKLEY.%-FloodControl.Inst.1Hour.0.CCP-Computed-Rev",
+          "BAHK2-BARKLEY.Precip-Inc.Total.1Hour.1Hour.dcp-rev"
+        ]
+      }
+    ]
   }
 }

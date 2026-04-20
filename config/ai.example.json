@@ -1,0 +1,34 @@
+{
+  "_note": "Copy to ai.json and fill in your API keys. Only providers with a real key are offered in Settings.",
+  "activeProvider": "gemini",
+  "providers": {
+    "gemini": {
+      "apiKey": "YOUR_GEMINI_API_KEY_HERE",
+      "model": "gemini-2.0-flash"
+    },
+    "openai": {
+      "apiKey": "",
+      "model": "gpt-4o-mini"
+    },
+    "anthropic": {
+      "apiKey": "",
+      "model": "claude-3-5-haiku-20241022"
+    },
+    "_groq_example": {
+      "_comment": "Remove leading underscore to enable. Groq is OpenAI-compatible.",
+      "type": "openai",
+      "label": "Groq",
+      "apiKey": "",
+      "model": "llama-3.3-70b-versatile",
+      "baseUrl": "https://api.groq.com/openai/v1"
+    },
+    "_ollama_example": {
+      "_comment": "Remove leading underscore to enable. Ollama runs locally.",
+      "type": "openai",
+      "label": "Ollama (local)",
+      "apiKey": "ollama",
+      "model": "llama3.2",
+      "baseUrl": "http://localhost:11434/v1"
+    }
+  }
+}

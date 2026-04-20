@@ -96,4 +96,9 @@ router.get('/settings', (req, res) => {
   res.render('settings', { ...locals, activePage: 'settings' });
 });
 
+router.get('/sites', (req, res) => {
+  const { ...locals } = baseLocals(req);
+  res.render('sites', { ...locals, activePage: 'sites' });
+});
+
 module.exports = router;

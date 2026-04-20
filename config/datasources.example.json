@@ -1,0 +1,27 @@
+{
+  "_note": "Copy to datasources.json. Controls server, scheduler, and data source connection settings. Sites are managed via the /sites UI — not stored here.",
+  "server": {
+    "port": 3000,
+    "host": "0.0.0.0"
+  },
+  "scheduler": {
+    "enabled": true,
+    "services": {
+      "usgs":      { "intervalMinutes": 15, "enabled": true },
+      "weather":   { "intervalMinutes": 60, "enabled": true },
+      "topology":  { "intervalHours":   24, "enabled": true },
+      "waterways": { "intervalHours":   24, "enabled": true },
+      "cwms":      { "intervalMinutes": 15, "enabled": true }
+    }
+  },
+  "usgs": {
+    "_note": "Parameters fetched for all USGS sites. Codes: 00060=discharge 00065=gage height 00010=water temp 00300=DO 00400=pH",
+    "parameters": ["00060", "00065", "00010", "00300", "00400"]
+  },
+  "cwms": {
+    "_note": "US Army Corps CDA public API. Set office to your district code. Check cwms-data.usace.army.mil/cwms-data/catalog/TIMESERIES?office=YOUR_OFFICE to verify it is on the national instance.",
+    "baseUrl": "https://cwms-data.usace.army.mil/cwms-data",
+    "office": "LRN",
+    "lookbackHours": 48
+  }
+}

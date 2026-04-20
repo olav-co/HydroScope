@@ -1,0 +1,52 @@
+[
+  { "_note": "This file seeds sites into the DB on first boot. After that, use the /sites UI to manage sites. This file is ignored once the seed has been applied. Delete app_meta key 'sites_seed_applied' from the DB to re-apply." },
+
+  { "source": "usgs", "id": "14162500", "name": "Willamette River at Springfield",        "type": "river",     "lat": 44.0429, "lon": -123.0762 },
+  { "source": "usgs", "id": "14174000", "name": "Willamette River at Albany",             "type": "river",     "lat": 44.6345, "lon": -123.1089 },
+  { "source": "usgs", "id": "14191000", "name": "Willamette River at Salem",              "type": "river",     "lat": 44.9248, "lon": -123.0437 },
+  { "source": "usgs", "id": "14211720", "name": "Willamette River at Portland",           "type": "river",     "lat": 45.5175, "lon": -122.6784 },
+  { "source": "usgs", "id": "14211010", "name": "Clackamas River at Oregon City",         "type": "river",     "lat": 45.3568, "lon": -122.6068 },
+  { "source": "usgs", "id": "14206950", "name": "Tualatin River at Farmington",           "type": "river",     "lat": 45.4804, "lon": -122.9026 },
+  { "source": "usgs", "id": "14142500", "name": "Sandy River near Marmot",               "type": "river",     "lat": 45.4026, "lon": -122.1432 },
+  { "source": "usgs", "id": "14138800", "name": "Bull Run River at Bull Run",             "type": "river",     "lat": 45.4748, "lon": -122.1515 },
+  { "source": "usgs", "id": "14246900", "name": "Columbia R at Bonneville Dam",           "type": "dam",       "lat": 45.6443, "lon": -121.9404 },
+  { "source": "usgs", "id": "14178000", "name": "N Santiam R at Detroit (Detroit Dam)",   "type": "dam",       "lat": 44.7237, "lon": -122.1529 },
+  { "source": "usgs", "id": "14179000", "name": "Detroit Lake",                           "type": "reservoir", "lat": 44.7263, "lon": -122.2347 },
+  { "source": "usgs", "id": "14181500", "name": "N Santiam River at Mehama",              "type": "river",     "lat": 44.8168, "lon": -122.5834 },
+  { "source": "usgs", "id": "14150800", "name": "Lookout Point Reservoir",                "type": "reservoir", "lat": 43.9126, "lon": -122.7579 },
+  { "source": "usgs", "id": "14150000", "name": "Middle Fork Willamette nr Dexter (dam)", "type": "dam",       "lat": 43.9115, "lon": -122.8282 },
+  { "source": "usgs", "id": "14152000", "name": "Middle Fork Willamette at Jasper",       "type": "river",     "lat": 43.9965, "lon": -122.9565 },
+
+  { "source": "cwms", "locationId": "CEHT1-CENTER_HILL", "name": "Center Hill Dam", "type": "dam",
+    "lat": 36.0985, "lon": -85.8192,
+    "timeseries": [
+      "CEHT1-CENTER_HILL.Elev-Pool.Inst.1Hour.0.dcp-rev",
+      "CEHT1-CENTER_HILL.Elev-Tail.Inst.1Hour.0.man-rev",
+      "CEHT1-CENTER_HILL.Flow-In.Ave.1Hour.1Hour.man-rev",
+      "CEHT1-CENTER_HILL.Flow.Ave.1Hour.1Hour.man-rev",
+      "CEHT1-CENTER_HILL.Stor.Inst.1Hour.0.man-rev",
+      "CEHT1-CENTER_HILL.%-Flood Control-Used.Inst.1Hour.0.CCP-Computed-Rev",
+      "CEHT1-CENTER_HILL.Precip-Inc.Total.1Hour.1Hour.dcp-rev"
+    ]
+  },
+  { "source": "cwms", "locationId": "CHPT1-CHEATHAM", "name": "Cheatham Dam", "type": "dam",
+    "lat": 36.3218, "lon": -87.1639,
+    "timeseries": [
+      "CHPT1-CHEATHAM.Elev-Pool.Inst.1Hour.0.dcp-rev",
+      "ASHT1-CHEATHAM.Elev-Tail.Inst.1Hour.0.dcp-rev",
+      "ASHT1-CHEATHAM.Flow.Ave.1Hour.1Hour.man-rev",
+      "ASHT1-CHEATHAM.Temp-Water-Tail.Inst.30Minutes.0.dcp-rev",
+      "ASHT1-CHEATHAM.Conc-Do-Tail.Inst.30Minutes.0.dcp-rev"
+    ]
+  },
+  { "source": "cwms", "locationId": "BAHK2-BARKLEY", "name": "Barkley Dam", "type": "dam",
+    "lat": 36.8704, "lon": -88.1217,
+    "timeseries": [
+      "BAHK2-BARKLEY.Elev-Pool.Inst.1Hour.0.dcp-rev",
+      "BAHK2-BARKLEY.Elev-Tail.Inst.1Hour.0.man-rev",
+      "BAHK2-BARKLEY.Flow-In.Ave.1Hour.1Hour.man-rev",
+      "BAHK2-BARKLEY.Flow.Ave.1Hour.1Hour.man-rev",
+      "BAHK2-BARKLEY.Stor.Inst.1Hour.0.man-rev"
+    ]
+  }
+]

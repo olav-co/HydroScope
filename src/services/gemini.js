@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const db = require('../db/database');
 const { buildWeatherContext } = require('./weather');
 const { getProvider } = require('./ai/index');
+const { CWMS_PARAMETER_NAMES } = require('./cwms');
 
 /**
  * Retry wrapper for transient AI API errors (rate-limits, 503s, timeouts).
@@ -76,27 +77,68 @@ function hashQuery(str) {
 function buildDataContext(recentRows, sites) {
   if (!recentRows.length) return 'No recent monitoring data available.';
 
+  // Build a lookup of site source (usgs|cwms) from the sites table
+  const siteSourceMap = {};
+  for (const s of (sites || [])) siteSourceMap[s.site_id] = s.source || 'usgs';
+
   const bySite = {};
   for (const row of recentRows) {
-    if (!bySite[row.site_id]) bySite[row.site_id] = { name: row.site_name, params: {} };
+    if (!bySite[row.site_id]) bySite[row.site_id] = { name: row.site_name, source: row.source || siteSourceMap[row.site_id] || 'usgs', params: {} };
     const key = row.parameter_code;
     if (!bySite[row.site_id].params[key]) bySite[row.site_id].params[key] = [];
     bySite[row.site_id].params[key].push(row);
   }
 
-  let ctx = '--- CURRENT MONITORING DATA (Portland OR Region) ---\n';
-  for (const [siteId, data] of Object.entries(bySite)) {
-    ctx += `\nSite: ${data.name} (USGS ${siteId})\n`;
-    for (const [param, rows] of Object.entries(data.params)) {
-      rows.sort((a, b) => new Date(b.recorded_at) - new Date(a.recorded_at));
-      const latest = rows[0];
-      const oldest = rows[rows.length - 1];
-      const trend = rows.length > 1
-        ? (latest.value > oldest.value ? '↑ rising' : latest.value < oldest.value ? '↓ falling' : '→ stable')
-        : '';
-      ctx += `  ${latest.parameter_name}: ${latest.value} ${latest.unit}  ${trend}  (as of ${latest.recorded_at.slice(0,16)} UTC)\n`;
+  // Split into USGS and CWMS sections for clarity
+  const usgsSites = Object.entries(bySite).filter(([, d]) => d.source !== 'cwms');
+  const cwmsSites = Object.entries(bySite).filter(([, d]) => d.source === 'cwms');
+
+  let ctx = '--- CURRENT MONITORING DATA ---\n';
+
+  if (usgsSites.length) {
+    ctx += '\n[USGS Stream Gauges]\n';
+    for (const [siteId, data] of usgsSites) {
+      ctx += `\nSite: ${data.name} (USGS ${siteId})\n`;
+      for (const [param, rows] of Object.entries(data.params)) {
+        rows.sort((a, b) => new Date(b.recorded_at) - new Date(a.recorded_at));
+        const latest = rows[0];
+        const oldest = rows[rows.length - 1];
+        const trend = rows.length > 1
+          ? (latest.value > oldest.value ? '↑ rising' : latest.value < oldest.value ? '↓ falling' : '→ stable')
+          : '';
+        ctx += `  ${latest.parameter_name}: ${latest.value} ${latest.unit}  ${trend}  (as of ${latest.recorded_at.slice(0,16)} UTC)\n`;
+        if (rows.length > 1) {
+          const vals = rows.map(r => r.value);
+          const rMin = Math.min(...vals), rMax = Math.max(...vals);
+          const rMean = vals.reduce((a, b) => a + b, 0) / vals.length;
+          ctx += `    ↳ ${rows.length} readings (${oldest.recorded_at.slice(0,16)}–${latest.recorded_at.slice(0,16)} UTC): min=${rMin.toFixed(2)} max=${rMax.toFixed(2)} mean=${rMean.toFixed(2)} range=${(rMax - rMin).toFixed(2)} ${latest.unit}\n`;
+        }
+      }
     }
   }
+
+  if (cwmsSites.length) {
+    ctx += '\n[CWMS Dam Operations — US Army Corps of Engineers]\n';
+    for (const [siteId, data] of cwmsSites) {
+      ctx += `\nSite: ${data.name} (CWMS ${siteId})\n`;
+      for (const [param, rows] of Object.entries(data.params)) {
+        rows.sort((a, b) => new Date(b.recorded_at) - new Date(a.recorded_at));
+        const latest = rows[0];
+        const oldest = rows[rows.length - 1];
+        const trend = rows.length > 1
+          ? (latest.value > oldest.value ? '↑ rising' : latest.value < oldest.value ? '↓ falling' : '→ stable')
+          : '';
+        ctx += `  ${latest.parameter_name}: ${latest.value} ${latest.unit}  ${trend}  (as of ${latest.recorded_at.slice(0,16)} UTC)\n`;
+        if (rows.length > 1) {
+          const vals = rows.map(r => r.value);
+          const rMin = Math.min(...vals), rMax = Math.max(...vals);
+          const rMean = vals.reduce((a, b) => a + b, 0) / vals.length;
+          ctx += `    ↳ ${rows.length} readings (${oldest.recorded_at.slice(0,16)}–${latest.recorded_at.slice(0,16)} UTC): min=${rMin.toFixed(2)} max=${rMax.toFixed(2)} mean=${rMean.toFixed(2)} range=${(rMax - rMin).toFixed(2)} ${latest.unit}\n`;
+        }
+      }
+    }
+  }
+
   ctx += '\n---\n';
 
   // Append weather context from Open-Meteo if available
@@ -282,12 +324,31 @@ Settings (/settings):
   What it shows: System configuration — AI provider, model selection, and data fetch schedule.
   How to use: Select which AI provider to use (Gemini, OpenAI) and which model. Configure how often USGS stream data is fetched. Changes take effect immediately on save without restarting the server.
 
-PARAMETERS:
+DATA SOURCES:
+HydroScope integrates two independent data sources — both are fully active and complement each other:
+
+USGS Stream Gauges (source=usgs):
 - Discharge (cfs): Volume of water per second. Primary flood indicator.
 - Gage Height (ft): Water surface elevation (stage). Portland flood stage ≈ 25 ft.
 - Water Temperature (°C): Fish habitat and recreation safety indicator.
 - Dissolved Oxygen (mg/L): Below 5 mg/L stresses salmon. Tualatin is known for summer DO crashes.
 - pH: Normal 6.5–8.5. Extremes indicate pollution.
+- Updated every 15 minutes from USGS National Water Information System.
+
+CWMS Dam Operations — US Army Corps of Engineers (source=cwms):
+- Pool Elevation (ft): Reservoir water surface level above sea level.
+- Tailwater Elevation (ft): Water surface immediately downstream of the dam.
+- Inflow (cfs): Flow entering the reservoir from the upstream watershed.
+- Outflow (cfs): Total water released from the dam (turbine + spillway combined).
+- Turbine Flow (cfs): Hydropower generation discharge through turbines.
+- Spillway Flow (cfs): Emergency/flood-control spill over or through spillways.
+- Storage (ac-ft): Total reservoir volume stored. Conservation and flood pool breakdowns available.
+- Flood Pool Used % (%): Fraction of flood control storage currently occupied.
+- Power Generation (MWh): Hydroelectric energy produced (where available).
+- Tailwater Water Quality: Temperature (°F), Dissolved Oxygen (mg/L), Conductance (µS/cm), pH — measured at dam outlet.
+- Precipitation (in or mm): Precipitation at the dam site.
+- Data from the public Corps CDA API (cwms-data.usace.army.mil), updated hourly to every 30 min.
+- CWMS parameters use descriptive codes (Elev-Pool, Flow-In, Stor, etc.) not USGS numeric codes.
 
 SITES (upstream to downstream):
 - Bull Run at Bull Run (14138800): Portland's drinking water source. Managed, very clean.
@@ -332,13 +393,17 @@ const CHAT_MODE_CONFIGS = {
   },
   analyst: {
     label: 'Analyst',
-    system: `You are a data analyst for a hydrology dashboard. Use the provided live measurements. Reference actual numbers and trends. Be specific — never generic. No preamble. If data for what was asked is missing, say so directly.`,
+    system: `You are a data analyst for a hydrology dashboard. Use the provided live measurements. Reference actual numbers and trends. Be specific — never generic. No preamble. If data for what was asked is missing, say so directly.
+When a value is genuinely anomalous for the site and season — outside the range you would expect from your knowledge of these specific Pacific Northwest watersheds — note it concisely. If conditions are unremarkable, do not manufacture context.`,
     pullData: true,
     useWiki: false,
   },
   research: {
     label: 'Research',
-    system: `You are a hydrology research assistant. Lead with the live data answer. You may also draw on broader domain knowledge (seasonal norms, hydrology principles, regional ecology). When you use knowledge beyond the provided data, mark it inline with a brief source note. No preamble.`,
+    system: `You are a hydrology research assistant with deep knowledge of Pacific Northwest watersheds and the specific USGS monitoring sites in this network: Sandy River (glacier-fed, fast response), Willamette mainstem and tributaries, Clackamas (clean, fast), Tualatin (slow, lowland, summer DO/temp issues), Columbia below Bonneville (hydro-operation dominated), and Bull Run (managed, Portland water supply).
+You know their historical flood records, seasonal flow regimes, typical discharge ranges by month, long-term drought periods, notable high-water events, and the regional climate drivers that affect them: atmospheric rivers, El Niño/La Niña cycles, Cascade snowpack and melt timing, rain-on-snow events, summer low-flow patterns.
+Lead with what the live data shows. When the current conditions match or diverge from a meaningful historical pattern — a discharge that is high or low relative to seasonal norms, a temperature that signals an early snowmelt or late-season warmth, a precip pattern consistent with a known event type — draw on that knowledge to contextualize it. Be specific: cite approximate magnitudes, typical ranges, event types, or comparable seasons when you do.
+Do not reach for historical context when conditions are ordinary. No preamble.`,
     pullData: true,
     useWiki: false,
   },
@@ -365,9 +430,19 @@ const BLOCK_PATTERNS = [
 
 // Signals that the query is about live monitoring data
 const DATA_SIGNALS = [
+  // USGS stream gauge parameters
   'discharge','cfs','gage','gauge','stage','level','flow','streamflow',
   'dissolved oxygen','turbidity','ph ',
+  // USGS site names
   'willamette','sandy','clackamas','tualatin','columbia','bull run','bonneville','marmot','springfield','albany','salem','farmington',
+  // CWMS dam operations parameters
+  'pool elevation','forebay','tailwater','inflow','outflow','storage','reservoir storage',
+  'turbine flow','spillway','flood pool','conservation pool','acre-feet','acre feet',
+  'power generation','mwh','dam release','gate opening','spill',
+  'conductance','pool level','reservoir level',
+  // CWMS site names (example config)
+  'center hill','cheatham','barkley','detroit dam','lookout point','cougar','green peter','foster','fall creek','dorena',
+  // General data query terms
   'reading','readings','right now','today','currently','trending','rising','falling','flood','drought',
   'statistics','stddev','standard deviation','outlier','anomal','percentile','correlation',
   // Metric / calculation terms — always analyst-mode territory
@@ -376,6 +451,30 @@ const DATA_SIGNALS = [
   'domain','range','spread','skew',
 ];
 
+
+// Signals that the query is asking for historical comparison or norm context —
+// these should go to research mode, not pure analyst, so aiPlan decides
+const HISTORICAL_SIGNALS = [
+  'normal','unusual','typical','atypical','historic','record','compare','season','seasonal',
+  'pattern','before','ever','usually','expect','average year','time of year',
+  'el ni','la ni','atmospheric river','snowmelt','snowpack','drought year',
+  'high for','low for','above average','below average','above normal','below normal',
+];
+
+/**
+ * Parse an explicit time window from a query string.
+ * Returns hours as a number, or null if none found.
+ */
+function extractQueryHours(lower) {
+  var m;
+  if ((m = lower.match(/(?:last|past)\s+(\d+)\s+hour/)))  return parseInt(m[1]);
+  if ((m = lower.match(/(?:last|past)\s+(\d+)\s+day/)))   return parseInt(m[1]) * 24;
+  if ((m = lower.match(/(?:last|past)\s+(\d+)\s+week/)))  return parseInt(m[1]) * 168;
+  if (/(?:last|past)\s+(?:24\s*h|a\s*day|one\s*day)/.test(lower)) return 24;
+  if (/(?:last|past)\s+(?:week|7\s*day)/.test(lower))    return 168;
+  if (/(?:last|past)\s+(?:month|30\s*day)/.test(lower))  return 720;
+  return null;
+}
 
 /**
  * Fast local pre-classifier. Returns a plan if the case is clear, null if ambiguous.
@@ -388,12 +487,18 @@ function localPlan(query, history, pageContext) {
     return { mode: 'general', blocked: true, needs_clarification: null, needs_context: [], data_sources: [], site_ids: null, hours: 48 };
   }
 
-  var hasPageCtx   = pageContext && pageContext.current_page;
-  var hasSiteCtx   = pageContext && pageContext.site_id;
-  var hasParamCtx  = pageContext && pageContext.param_code;
-  var isFollowUp   = history.length > 0;
-  var wordCount    = query.trim().split(/\s+/).length;
-  var hasDataSignal = DATA_SIGNALS.some(function(t) { return lower.includes(t); });
+  var hasPageCtx        = pageContext && pageContext.current_page;
+  var hasSiteCtx        = pageContext && pageContext.site_id;
+  var hasParamCtx       = pageContext && pageContext.param_code;
+  var isFollowUp        = history.length > 0;
+  var wordCount         = query.trim().split(/\s+/).length;
+  var hasDataSignal     = DATA_SIGNALS.some(function(t) { return lower.includes(t); });
+  var hasHistoricalSignal = HISTORICAL_SIGNALS.some(function(t) { return lower.includes(t); });
+  var queryHours        = extractQueryHours(lower);  // explicit time window in query, e.g. "last 12 hours"
+
+  // Queries that mix live data with historical/norm comparison need research mode —
+  // let aiPlan decide so it can choose research + current_readings instead of pure analyst
+  if (hasDataSignal && hasHistoricalSignal) return null;
 
   // Clear wiki: short UI question on a known page with no data signals
   if (hasPageCtx && wordCount <= 10 && !hasDataSignal) {
@@ -405,17 +510,23 @@ function localPlan(query, history, pageContext) {
   // Clear analyst: has site+param context and a data signal
   if (hasSiteCtx && hasParamCtx && hasDataSignal) {
     return { mode: 'analyst', blocked: false, needs_clarification: null, needs_context: [],
-      data_sources: ['time_series', 'weather'], site_ids: [pageContext.site_id], hours: parseInt(pageContext.visible_hours) || 168 };
+      data_sources: ['time_series', 'weather'], site_ids: [pageContext.site_id],
+      hours: queryHours || parseInt(pageContext.visible_hours) || 168 };
   }
 
   // Clear analyst: has site context and a data signal (no param)
   if (hasSiteCtx && hasDataSignal) {
     return { mode: 'analyst', blocked: false, needs_clarification: null, needs_context: [],
-      data_sources: ['current_readings', 'weather'], site_ids: [pageContext.site_id], hours: 48 };
+      data_sources: ['current_readings', 'weather'], site_ids: [pageContext.site_id],
+      hours: queryHours || 48 };
   }
 
-  // Clear analyst: data signal, no site context — needs all sites
+  // Clear analyst: data signal, no site context
+  // If an explicit time window was requested, let aiPlan handle it — it can identify the site
+  // from the query text and request time_series with the right site+param+hours.
+  // For current-state questions (no time window), short-circuit to current_readings for all sites.
   if (hasDataSignal) {
+    if (queryHours) return null; // fall through to aiPlan for windowed/historical queries
     return { mode: 'analyst', blocked: false, needs_clarification: null, needs_context: [],
       data_sources: ['current_readings', 'weather'], site_ids: null, hours: 48 };
   }
@@ -445,9 +556,20 @@ async function aiPlan(query, history, pageContext, profile) {
     if (pageContext.visible_hours) ctxParts.push('window=' + pageContext.visible_hours + 'h');
   }
 
+  var PARAM_CODES = [
+    '--- USGS parameter codes ---',
+    '00060=discharge(cfs), 00065=gage height(ft), 00010=water temperature(°C), 00300=dissolved oxygen(mg/L), 00400=pH',
+    '--- CWMS parameter codes (Corps dams) ---',
+    Object.entries(CWMS_PARAMETER_NAMES)
+      .slice(0, 15)
+      .map(([k, v]) => k + '=' + v)
+      .join(', '),
+  ].join(' ');
+
   var prompt = [
     'You are the query planner for HydroScope, a real-time hydrology dashboard for Oregon watersheds.',
     'Available USGS sites: ' + siteList,
+    'Available USGS parameter codes: ' + PARAM_CODES,
     'Frontend context already provided: ' + (ctxParts.join(', ') || 'none'),
     'Conversation history turns: ' + history.length,
     'User role: ' + (profile.role || 'general'),
@@ -462,20 +584,27 @@ async function aiPlan(query, history, pageContext, profile) {
     '  "needs_context": [],',
     '  "data_sources": [],',
     '  "site_ids": null,',
+    '  "param_code": null,',
     '  "hours": 48',
     '}',
     '',
     'Decision rules:',
     '- mode "wiki"     → questions about the app, UI, pages, features, what colors/icons mean, how to use things',
-    '- mode "analyst"  → questions about live data, current conditions, statistics, specific sites or readings',
-    '- mode "research" → domain knowledge, hydrology science, ecology, historical context, why things happen',
+    '- mode "analyst"  → questions about live data, current conditions, statistics, specific sites or readings — pure numbers, no historical comparison needed',
+    '- mode "research" → live data questions that also ask for historical context: is this normal, is this a record, what does this pattern usually mean, how does this compare to a typical year/season, questions about climate drivers (El Niño, atmospheric rivers, snowmelt), why something is happening, what to expect next',
     '- mode "general"  → greetings, small talk, follow-ups too short to classify otherwise',
     '- blocked         → true ONLY for clearly unrelated requests (poems, code help, movie recs)',
     '- needs_clarification → short question string if genuinely too vague; null if page context implies intent; always null for follow-ups',
     '- needs_context   → ONLY list fields not already in "Frontend context provided" above. Options: "selected_site","selected_param","visible_hours","current_page"',
-    '- data_sources    → include only what is directly useful: "wiki" for app-knowledge queries; "current_readings" for live site summaries; "time_series" only if specific site+param are in frontend context; "weather" if precipitation/temperature is relevant; "annotations" if user asks about events or releases',
-    '- site_ids        → null (all sites) unless query names specific sites',
-    '- hours           → 48 (recent), 168 (weekly trend), 336+ (monthly)',
+    '- data_sources    → what the system needs to fetch to answer this query:',
+    '    "current_readings" = latest snapshot across sites (use for current conditions, network-wide questions)',
+    '    "time_series"      = full timestamped history with stats for ONE site+param (use when query asks for range, min, max, trend, stats, or a specific time window at an identifiable site)',
+    '    "wiki"             = app guide (pages, features, UI explanations)',
+    '    "weather"          = precipitation/temperature forecast context',
+    '    "annotations"      = logged events/releases at sites',
+    '- site_ids   → resolve from query text using the site list above; null means all sites; be specific when the query names a site',
+    '- param_code → USGS code for the parameter the query is about (use list above); null only if truly unspecified (system defaults to discharge)',
+    '- hours      → match the time window the user asked for; 48 if not specified, 168 (weekly), 720 (monthly)',
   ].join('\n');
 
   try {
@@ -487,6 +616,7 @@ async function aiPlan(query, history, pageContext, profile) {
     plan.needs_context = plan.needs_context || [];
     plan.data_sources  = plan.data_sources  || [];
     plan.hours         = plan.hours         || 48;
+    plan.param_code    = plan.param_code    || null;
     return plan;
   } catch (_) {
     return { mode: 'general', blocked: false, needs_clarification: null, needs_context: [], data_sources: [], site_ids: null, hours: 48 };
@@ -526,11 +656,18 @@ async function fulfillPlan(plan, pageContext) {
       }
 
     } else if (source === 'time_series') {
-      if (pageContext && pageContext.site_id && pageContext.param_code) {
-        var hours = parseInt(pageContext.visible_hours) || plan.hours || 168;
-        var tsRows = db.getTimeSeriesForSite(pageContext.site_id, pageContext.param_code, hours);
+      // Resolve site: prefer page context (user is looking at it), fall back to planner-identified site
+      var tsSiteId    = (pageContext && pageContext.site_id)    || (plan.site_ids && plan.site_ids[0]) || null;
+      // Resolve param: prefer page context, then planner-identified param, then default to discharge
+      var tsParamCode = (pageContext && pageContext.param_code) || plan.param_code || '00060';
+      var tsHours     = parseInt((pageContext && pageContext.visible_hours)) || plan.hours || 168;
+      if (tsSiteId) {
+        var tsSite     = allSites.find(function(s) { return s.site_id === tsSiteId; });
+        var tsSiteName = (pageContext && pageContext.site_name) || (tsSite && tsSite.name) || tsSiteId;
+        var tsParamName = (pageContext && pageContext.param_name) || null;
+        var tsRows = db.getTimeSeriesForSite(tsSiteId, tsParamCode, tsHours);
         if (tsRows.length) {
-          blocks.push(buildTimeSeriesContext(tsRows, pageContext.site_id, pageContext.site_name, pageContext.param_code, pageContext.param_name));
+          blocks.push(buildTimeSeriesContext(tsRows, tsSiteId, tsSiteName, tsParamCode, tsParamName));
         }
       }
 
@@ -860,7 +997,8 @@ async function generateNetworkAnalysis(profile, nodes, edges, hours) {
   }
   topo += '\n--- CURRENT READINGS (last ' + hours + ' hours) ---\n';
   nodes.forEach(function(n) {
-    topo += '\nSite: ' + n.site_name + ' (USGS ' + n.site_id + ')\n';
+    var sourceLabel = n.source === 'cwms' ? 'CWMS' : 'USGS';
+    topo += '\nSite: ' + n.site_name + ' (' + sourceLabel + ' ' + n.site_id + ')\n';
     if (!n.readings.length) {
       topo += '  No data available for selected parameters.\n';
     } else {

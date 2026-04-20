@@ -204,6 +204,7 @@ const SERVICE_INFO = {
   weather:   { label: 'Weather (Open-Meteo)',    desc: 'Atmospheric conditions at monitoring sites',   icon: '☁' },
   topology:  { label: 'Flow Network Topology',   desc: 'NLDI upstream/downstream site connections',    icon: '⟶' },
   waterways: { label: 'Waterway Geometry',       desc: 'GeoJSON paths for flow network visualization', icon: '⌇' },
+  cwms:      { label: 'CWMS Dam Operations',     desc: 'US Army Corps pool elevation, flow, storage & water quality', icon: '⬡' },
 };
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
@@ -425,6 +426,28 @@ function buildServiceStatus(name, st, isRunning) {
         <div class="progress-fill" style="width:${pct}%;"></div>
       </div>
       <div style="font-size:10px;color:#334155;margin-top:2px;">${pct}% geometry cached</div>`;
+  }
+
+  if (name === 'cwms') {
+    const fetches = st.cwmsFetches || [];
+    const meta    = st.cwmsMeta   || {};
+    const last    = fetches[0];
+    if (!last) return '<div style="font-size:11px;color:#334155;">No CWMS fetches logged yet</div>';
+    const ok = last.status === 'success';
+    const pills = Array.from({length: 5}, (_, i) => {
+      const f = fetches[i];
+      if (!f) return `<div class="fetch-pill empty"></div>`;
+      return `<div class="fetch-pill ${f.status === 'success' ? 'ok' : 'error'}" title="${f.status} · ${timeAgo(f.executed_at)}"></div>`;
+    }).join('');
+    return `
+      <div style="font-size:11px;color:#475569;">
+        Last: <b style="color:#94a3b8">${timeAgo(last.executed_at)}</b>
+        &nbsp;·&nbsp; <b style="color:${ok ? '#34d399' : '#f87171'}">${last.status}</b>
+        &nbsp;·&nbsp; ${last.records_stored} records
+        ${meta.total_records != null ? ` &nbsp;·&nbsp; ${meta.total_records.toLocaleString()} total` : ''}
+        ${last.error_message ? `<br><span style="color:#f87171">${last.error_message}</span>` : ''}
+      </div>
+      <div class="fetch-pills" style="margin-top:4px;" title="5 most recent runs">${pills}</div>`;
   }
 
   return '';

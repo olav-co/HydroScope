@@ -2,20 +2,19 @@ const cron = require('node-cron');
 const { fetchCurrentReadings, discoverNetworkTopology } = require('./usgs');
 const { fetchWeatherData } = require('./weather');
 const { processNextPair } = require('./waterways');
+const { fetchCurrentReadingsCWMS } = require('./cwms');
 const db = require('../db/database');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-let config;
+const { getDatasourcesConfig, reloadDatasourcesConfig } = require('./config');
+
 function loadConfig() {
-  if (!config) config = require('../../config/config.json');
-  return config;
+  return getDatasourcesConfig();
 }
 
 function reloadConfig() {
-  config = null;
-  const p = require.resolve('../../config/config.json');
-  if (require.cache[p]) delete require.cache[p];
+  reloadDatasourcesConfig();
 }
 
 // Defaults and valid intervals per service
@@ -48,6 +47,14 @@ const SERVICE_META = {
     validIntervals: [6, 12, 24, 48, 168],
     intervalKey: 'intervalHours',
   },
+  cwms: {
+    // CWMS publishes hourly; some water quality sensors report every 30 min.
+    // Default 15 min so new values are caught promptly without hammering the API.
+    unit: 'minutes',
+    defaultInterval: 15,
+    validIntervals: [15, 30, 60, 120, 360],
+    intervalKey: 'intervalMinutes',
+  },
 };
 
 function getServiceConfig(name) {
@@ -77,7 +84,7 @@ function getAllServiceConfigs() {
 
 // ── Running state ─────────────────────────────────────────────────────────────
 
-const _running = { usgs: false, weather: false, topology: false, waterways: false };
+const _running = { usgs: false, weather: false, topology: false, waterways: false, cwms: false };
 
 function getRunningState() {
   return { ..._running };
@@ -103,10 +110,13 @@ function hoursToCron(h) {
 async function runFetch() {
   if (_running.usgs) return { skipped: true };
   _running.usgs = true;
-  const cfg = loadConfig();
-  const sites  = cfg.usgs.sites;
-  const params = cfg.usgs.parameters;
-  const siteIds = sites.map(s => s.id);
+  const cfg     = loadConfig();
+  const params  = (cfg.usgs && cfg.usgs.parameters) || ['00060', '00065', '00010', '00300', '00400'];
+  const siteIds = db.getActiveSites('usgs').map(s => s.site_id);
+  if (!siteIds.length) {
+    _running.usgs = false;
+    return { ok: true, skipped: true, reason: 'No active USGS sites in DB.' };
+  }
   console.log(`[Scheduler] Fetching USGS data for ${siteIds.length} sites…`);
   try {
     const rows    = await fetchCurrentReadings(siteIds, params);
@@ -173,9 +183,46 @@ async function runWaterwayTick() {
   }
 }
 
+async function runCwmsFetch() {
+  if (_running.cwms) return { skipped: true };
+  _running.cwms = true;
+  const cfg = loadConfig();
+
+  // Build site list from DB: active CWMS sites + their timeseries from site_timeseries table.
+  // Shape expected by fetchCurrentReadingsCWMS: { locationId, timeseries: [...] }
+  const dbSites = db.getAllSitesWithTimeseries().filter(s => s.source === 'cwms' && s.enabled);
+  if (!dbSites.length) {
+    _running.cwms = false;
+    return { ok: true, skipped: true, reason: 'No active CWMS sites in DB.' };
+  }
+  // Map DB shape → fetchCurrentReadingsCWMS expected shape
+  const sites = dbSites.map(s => ({ locationId: s.site_id, timeseries: s.timeseries || [] }))
+                        .filter(s => s.timeseries.length > 0);
+
+  if (!sites.length) {
+    _running.cwms = false;
+    return { ok: true, skipped: true, reason: 'Active CWMS sites have no timeseries configured.' };
+  }
+
+  console.log(`[Scheduler] Fetching CWMS data for ${sites.length} site(s)…`);
+  try {
+    const rows    = await fetchCurrentReadingsCWMS(sites, cfg.cwms || {});
+    const stored  = db.insertMeasurements(rows);
+    db.logFetch({ source: 'cwms', status: 'success', sites_attempted: sites.length, records_stored: stored });
+    console.log(`[Scheduler] Stored ${stored} new CWMS records.`);
+    return { ok: true, records_stored: stored, sites: sites.length };
+  } catch (err) {
+    console.error('[Scheduler] CWMS fetch error:', err.message);
+    db.logFetch({ source: 'cwms', status: 'error', sites_attempted: sites.length, records_stored: 0, error_message: err.message });
+    return { ok: false, error: err.message };
+  } finally {
+    _running.cwms = false;
+  }
+}
+
 // ── Individual task lifecycle ─────────────────────────────────────────────────
 
-const _tasks = { usgs: null, weather: null, topology: null, waterways: null };
+const _tasks = { usgs: null, weather: null, topology: null, waterways: null, cwms: null };
 
 function stopTask(name) {
   if (_tasks[name]) { _tasks[name].stop(); _tasks[name] = null; }
@@ -207,6 +254,10 @@ function startTask(name) {
       expr = minutesToCron(svc.interval);
       fn   = () => runWaterwayTick().catch(e => console.error('[Scheduler] waterways error:', e.message));
       break;
+    case 'cwms':
+      expr = minutesToCron(svc.interval);
+      fn   = () => runCwmsFetch().catch(e => console.error('[Scheduler] cwms error:', e.message));
+      break;
     default:
       return;
   }
@@ -233,20 +284,16 @@ function startScheduler() {
     return;
   }
 
-  // Seed monitoring sites from config
-  const sites = cfg.usgs.sites;
-  for (const site of sites) {
-    db.upsertSite({
-      site_id: site.id, name: site.name, type: site.type || 'river',
-      latitude: site.lat, longitude: site.lon, description: site.description || null,
-    });
-  }
-  console.log(`[Scheduler] Seeded ${sites.length} monitoring sites.`);
+  const activeSites = db.getAllSitesWithTimeseries();
+  const usgsCount   = activeSites.filter(s => s.source === 'usgs' && s.enabled).length;
+  const cwmsCount   = activeSites.filter(s => s.source === 'cwms' && s.enabled).length;
+  console.log(`[Scheduler] ${usgsCount} active USGS site(s), ${cwmsCount} active CWMS site(s) from DB.`);
 
   // Immediate runs on startup
   runFetch();
   runWeatherFetch();
   runTopologyDiscovery();
+  if (cwmsCount > 0) runCwmsFetch();
 
   // Schedule all tasks
   for (const name of Object.keys(SERVICE_META)) startTask(name);
@@ -258,6 +305,6 @@ function stopScheduler() {
 
 module.exports = {
   startScheduler, stopScheduler, reloadConfig,
-  runFetch, runWeatherFetch, runTopologyDiscovery, runWaterwayTick,
+  runFetch, runWeatherFetch, runTopologyDiscovery, runWaterwayTick, runCwmsFetch,
   restartService, getRunningState, getAllServiceConfigs, SERVICE_META,
 };

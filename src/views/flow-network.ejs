@@ -222,28 +222,63 @@
       <div class="flex flex-col gap-4">
         <div>
           <div class="flex items-center justify-between mb-2">
-            <label class="label mb-0">Sites <span class="text-slate-600 font-normal">(select any)</span></label>
+            <label class="label mb-0">Sites <span class="text-slate-600 font-normal">(select any · cross-selectable)</span></label>
             <span id="site-count" class="text-xs text-slate-600">0 selected</span>
           </div>
-          <div id="site-chips" class="flex flex-wrap gap-2">
-            <% sites.forEach(function(s, i) {
-               var colors = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15','#e879f9','#22d3ee','#4ade80','#f97316','#818cf8','#fbbf24'];
-               var c = colors[i % colors.length]; %>
-            <button class="fn-chip" data-id="<%= s.site_id %>" data-name="<%= s.name %>" data-color="<%= c %>" onclick="toggleSite(this)">
-              <span class="cdot"></span>
-              <%= s.name %>
-            </button>
-            <% }) %>
+          <%
+            var usgsSitesFN = sites.filter(function(s){ return s.source !== 'cwms'; });
+            var cwmsSitesFN = sites.filter(function(s){ return s.source === 'cwms'; });
+            var colors = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15','#e879f9','#22d3ee','#4ade80','#f97316','#818cf8','#fbbf24'];
+          %>
+          <div id="site-chips" class="flex flex-col gap-3">
+            <% if (usgsSitesFN.length) { %>
+            <div>
+              <div class="text-xs font-semibold mb-1.5" style="color:#38bdf8;letter-spacing:.06em;text-transform:uppercase;">
+                <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(14,165,233,0.12);border:1px solid rgba(14,165,233,0.25);margin-right:5px;">USGS</span>Stream Gauges
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <% usgsSitesFN.forEach(function(s, i) { var c = colors[i % colors.length]; %>
+                <button class="fn-chip" data-id="<%= s.site_id %>" data-name="<%= s.name %>" data-color="<%= c %>" data-source="usgs" onclick="toggleSite(this)">
+                  <span class="cdot"></span>
+                  <%= s.name %>
+                </button>
+                <% }); %>
+              </div>
+            </div>
+            <% } %>
+            <% if (cwmsSitesFN.length) { %>
+            <div>
+              <div class="text-xs font-semibold mb-1.5" style="color:#f59e0b;letter-spacing:.06em;text-transform:uppercase;">
+                <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);margin-right:5px;">CWMS</span>Dam Operations
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <% cwmsSitesFN.forEach(function(s, i) { var c = ['#f59e0b','#fb923c','#fbbf24','#e879f9'][i % 4]; %>
+                <button class="fn-chip" data-id="<%= s.site_id %>" data-name="<%= s.name %>" data-color="<%= c %>" data-source="cwms" onclick="toggleSite(this)">
+                  <span class="cdot"></span>
+                  ⬡ <%= s.name %>
+                </button>
+                <% }); %>
+              </div>
+            </div>
+            <% } %>
           </div>
         </div>
         <div>
-          <label class="label mb-2">Parameters <span class="text-slate-600 font-normal">(select any)</span></label>
+          <label class="label mb-2">Parameters <span class="text-slate-600 font-normal">(select any · shown on nodes)</span></label>
           <div class="flex flex-wrap gap-2" id="param-chips">
+            <div class="w-full text-xs font-medium mb-1" style="color:#38bdf8;opacity:0.7;">USGS</div>
             <button class="param-chip active" data-code="00060" data-name="Discharge"    data-unit="ft³/s" onclick="toggleParam(this)">Discharge (ft³/s)</button>
             <button class="param-chip active" data-code="00065" data-name="Gage Height"  data-unit="ft"    onclick="toggleParam(this)">Gage Height (ft)</button>
             <button class="param-chip"        data-code="00010" data-name="Water Temp"   data-unit="°C"    onclick="toggleParam(this)">Temperature (°C)</button>
             <button class="param-chip"        data-code="00300" data-name="DO"           data-unit="mg/L"  onclick="toggleParam(this)">Dissolved O₂ (mg/L)</button>
             <button class="param-chip"        data-code="00400" data-name="pH"           data-unit=""      onclick="toggleParam(this)">pH</button>
+            <div class="w-full text-xs font-medium mt-2 mb-1" style="color:#f59e0b;opacity:0.7;">CWMS</div>
+            <button class="param-chip active" data-code="Elev-Pool"  data-name="Pool Elevation" data-unit="ft"    onclick="toggleParam(this)">Pool Elev (ft)</button>
+            <button class="param-chip active" data-code="Flow"       data-name="Outflow"         data-unit="cfs"   onclick="toggleParam(this)">Outflow (cfs)</button>
+            <button class="param-chip"        data-code="Flow-In"    data-name="Inflow"           data-unit="cfs"   onclick="toggleParam(this)">Inflow (cfs)</button>
+            <button class="param-chip"        data-code="Elev-Tail"  data-name="Tailwater Elev"  data-unit="ft"    onclick="toggleParam(this)">Tailwater (ft)</button>
+            <button class="param-chip"        data-code="Stor"       data-name="Storage"          data-unit="ac-ft" onclick="toggleParam(this)">Storage (ac-ft)</button>
+            <button class="param-chip"        data-code="Conc-Do-Tail" data-name="DO Tailwater"   data-unit="mg/L"  onclick="toggleParam(this)">DO Tail (mg/L)</button>
           </div>
         </div>
       </div>

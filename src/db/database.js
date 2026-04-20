@@ -17,11 +17,18 @@ function initDatabase() {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
+  // ── Phase 1: column migrations ── run BEFORE schema.sql so that any indexes
+  // in schema.sql that reference new columns don't fail on existing databases.
+  try { db.exec(`ALTER TABLE site_connections ADD COLUMN source TEXT DEFAULT 'manual'`); } catch (_) {}
+  try { db.exec(`ALTER TABLE sites ADD COLUMN source TEXT NOT NULL DEFAULT 'usgs'`); } catch (_) {}
+  try { db.exec(`ALTER TABLE sites ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`); } catch (_) {}
+  try { db.exec(`ALTER TABLE measurements ADD COLUMN source TEXT NOT NULL DEFAULT 'usgs'`); } catch (_) {}
+  try { db.exec(`ALTER TABLE fetch_log ADD COLUMN source TEXT NOT NULL DEFAULT 'usgs'`); } catch (_) {}
+
+  // ── Phase 2: apply schema (CREATE TABLE/INDEX IF NOT EXISTS — safe on existing DB)
   const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
   db.exec(schema);
 
-  // Migrations (safe no-ops if columns already exist)
-  try { db.exec(`ALTER TABLE site_connections ADD COLUMN source TEXT DEFAULT 'manual'`); } catch (_) {}
 
   // One-time migration: clear all waterway_paths cached with the old untrimmed
   // NLDI algorithm (v1 returned full downstream path to ocean).
@@ -40,18 +47,21 @@ function initDatabase() {
 
 // ── Sites ────────────────────────────────────────────────────────────────────
 
-function upsertSite({ site_id, name, type, latitude, longitude, description }) {
+function upsertSite({ site_id, name, type, source, latitude, longitude, description }) {
   const db = getDb();
+  // NOTE: `enabled` is intentionally excluded from the ON CONFLICT update —
+  // we never want an automated re-seed to re-enable a site the user disabled.
   db.prepare(`
-    INSERT INTO sites (site_id, name, type, latitude, longitude, description)
-    VALUES (@site_id, @name, @type, @latitude, @longitude, @description)
+    INSERT INTO sites (site_id, name, type, source, latitude, longitude, description, enabled)
+    VALUES (@site_id, @name, @type, @source, @latitude, @longitude, @description, 1)
     ON CONFLICT(site_id) DO UPDATE SET
-      name = excluded.name,
-      type = excluded.type,
-      latitude = excluded.latitude,
-      longitude = excluded.longitude,
+      name        = excluded.name,
+      type        = excluded.type,
+      source      = excluded.source,
+      latitude    = excluded.latitude,
+      longitude   = excluded.longitude,
       description = excluded.description
-  `).run({ site_id, name, type, latitude, longitude, description: description || null });
+  `).run({ site_id, name, type: type || 'river', source: source || 'usgs', latitude: latitude || null, longitude: longitude || null, description: description || null });
 }
 
 function getAllSites() {
@@ -62,20 +72,78 @@ function getSiteById(siteId) {
   return getDb().prepare('SELECT * FROM sites WHERE site_id = ?').get(siteId);
 }
 
+// Returns only enabled sites, optionally filtered by source.
+// Used by the scheduler — users who disable a site should not have it fetched.
+function getActiveSites(source = null) {
+  if (source) {
+    return getDb().prepare('SELECT * FROM sites WHERE enabled = 1 AND source = ? ORDER BY name').all(source);
+  }
+  return getDb().prepare('SELECT * FROM sites WHERE enabled = 1 ORDER BY name').all();
+}
+
+function setSiteEnabled(siteId, enabled) {
+  getDb().prepare('UPDATE sites SET enabled = ? WHERE site_id = ?').run(enabled ? 1 : 0, siteId);
+}
+
+function deleteSite(siteId) {
+  getDb().prepare('DELETE FROM sites WHERE site_id = ?').run(siteId);
+}
+
+// ── Site Timeseries (CWMS CDA fetch scheduling) ───────────────────────────────
+
+function getSiteTimeseries(siteId) {
+  return getDb().prepare('SELECT ts_id FROM site_timeseries WHERE site_id = ? ORDER BY id').all(siteId).map(r => r.ts_id);
+}
+
+function replaceSiteTimeseries(siteId, tsIds) {
+  const db = getDb();
+  const del = db.prepare('DELETE FROM site_timeseries WHERE site_id = ?');
+  const ins = db.prepare('INSERT OR IGNORE INTO site_timeseries (site_id, ts_id) VALUES (?, ?)');
+  db.transaction(() => {
+    del.run(siteId);
+    for (const ts of (tsIds || [])) ins.run(siteId, ts);
+  })();
+}
+
+// Returns all sites joined with their CWMS timeseries as a nested array.
+function getAllSitesWithTimeseries() {
+  const db = getDb();
+  const sites  = db.prepare('SELECT * FROM sites ORDER BY source, name').all();
+  const tsRows = db.prepare('SELECT site_id, ts_id FROM site_timeseries ORDER BY id').all();
+  const tsMap  = {};
+  for (const r of tsRows) {
+    if (!tsMap[r.site_id]) tsMap[r.site_id] = [];
+    tsMap[r.site_id].push(r.ts_id);
+  }
+  return sites.map(s => ({ ...s, timeseries: tsMap[s.site_id] || [] }));
+}
+
+// ── Seed tracking ─────────────────────────────────────────────────────────────
+
+function getSeedApplied() {
+  const row = getDb().prepare("SELECT value FROM app_meta WHERE key = 'sites_seed_applied'").get();
+  return row ? row.value === '1' : false;
+}
+
+function markSeedApplied() {
+  getDb().prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('sites_seed_applied', '1')").run();
+}
+
 // ── Measurements ─────────────────────────────────────────────────────────────
 
 function insertMeasurements(rows) {
   const db = getDb();
   const stmt = db.prepare(`
     INSERT OR IGNORE INTO measurements
-      (site_id, parameter_code, parameter_name, value, unit, recorded_at)
+      (site_id, parameter_code, parameter_name, value, unit, source, recorded_at)
     VALUES
-      (@site_id, @parameter_code, @parameter_name, @value, @unit, @recorded_at)
+      (@site_id, @parameter_code, @parameter_name, @value, @unit, @source, @recorded_at)
   `);
   const insertMany = db.transaction((rows) => {
     let count = 0;
     for (const row of rows) {
-      const info = stmt.run(row);
+      // Default source to 'usgs' if not specified (backwards compat)
+      const info = stmt.run({ source: 'usgs', ...row });
       count += info.changes;
     }
     return count;
@@ -91,7 +159,7 @@ function getLatestReadings(siteIds = null) {
   const params = siteIds && siteIds.length ? siteIds : [];
 
   return db.prepare(`
-    SELECT m.site_id, m.parameter_code, m.parameter_name, m.value, m.unit, m.recorded_at, s.name AS site_name
+    SELECT m.site_id, m.parameter_code, m.parameter_name, m.value, m.unit, m.source, m.recorded_at, s.name AS site_name
     FROM measurements m
     JOIN sites s ON s.site_id = m.site_id
     WHERE m.recorded_at = (
@@ -118,7 +186,7 @@ function getRecentForAI(siteIds, hours = 72) {
   const placeholders = siteIds.map(() => '?').join(',');
   return db.prepare(`
     SELECT m.site_id, s.name AS site_name, m.parameter_code, m.parameter_name,
-           m.value, m.unit, m.recorded_at
+           m.value, m.unit, m.source, m.recorded_at
     FROM measurements m
     JOIN sites s ON s.site_id = m.site_id
     WHERE m.site_id IN (${placeholders})
@@ -192,9 +260,18 @@ function getWeatherForChart(locationId, parameter, hours = 336) {
   `).all(locationId, parameter);
 }
 
-function getMeasurementRecords(siteId, parameterCode, limit = 5000) {
+function getMeasurementRecords(siteId, parameterCode, limit = 5000, source = null) {
+  if (source) {
+    return getDb().prepare(`
+      SELECT value, unit, recorded_at, fetched_at, source
+      FROM measurements
+      WHERE site_id = ? AND parameter_code = ? AND source = ?
+      ORDER BY recorded_at DESC
+      LIMIT ?
+    `).all(siteId, parameterCode, source, limit);
+  }
   return getDb().prepare(`
-    SELECT value, unit, recorded_at, fetched_at
+    SELECT value, unit, recorded_at, fetched_at, source
     FROM measurements
     WHERE site_id = ? AND parameter_code = ?
     ORDER BY recorded_at DESC
@@ -217,6 +294,7 @@ function getMeasurementSeries() {
     SELECT
       m.site_id,
       s.name                                    AS site_name,
+      s.source                                  AS site_source,
       m.parameter_code,
       m.parameter_name,
       m.unit,
@@ -230,7 +308,7 @@ function getMeasurementSeries() {
     FROM measurements m
     JOIN sites s ON s.site_id = m.site_id
     GROUP BY m.site_id, m.parameter_code
-    ORDER BY s.name, m.parameter_code
+    ORDER BY s.source, s.name, m.parameter_code
   `).all();
 }
 
@@ -286,19 +364,37 @@ function deleteSiteConnection(id) {
 }
 
 /**
- * Replace ALL site connections with a fresh NLDI-discovered set.
- * Wipes the table completely before inserting so stale manual connections
- * never ghost over real topology results.
+ * Replace NLDI-sourced connections with a fresh set.
+ * Preserves manually-added and CWMS-sourced connections so CWMS→USGS
+ * topology is not wiped on each topology discovery run.
  */
 function syncNLDIConnections(connections) {
   const db = getDb();
-  const del = db.prepare(`DELETE FROM site_connections`);
+  const del = db.prepare(`DELETE FROM site_connections WHERE source = 'nldi' OR source IS NULL`);
   const ins = db.prepare(`
     INSERT OR IGNORE INTO site_connections (from_site_id, to_site_id, label, notes, source)
-    VALUES (@from_site_id, @to_site_id, 'flows into', 'Auto-discovered via USGS drainage area + HUC watershed analysis', 'nldi')
+    VALUES (@from_site_id, @to_site_id, 'flows into', 'Auto-discovered via USGS NLDI drainage network', 'nldi')
   `);
   db.transaction((conns) => {
     del.run();
+    for (const c of conns) ins.run(c);
+  })(connections);
+}
+
+/**
+ * Upsert connections for CWMS sites (pool → downstream gauge relationships).
+ * Called on startup after CWMS sites are seeded.
+ * Uses source='cwms' so syncNLDIConnections does not wipe them.
+ */
+function syncCWMSConnections(connections) {
+  const db = getDb();
+  // Remove stale CWMS connections first
+  db.prepare(`DELETE FROM site_connections WHERE source = 'cwms'`).run();
+  const ins = db.prepare(`
+    INSERT OR IGNORE INTO site_connections (from_site_id, to_site_id, label, notes, source)
+    VALUES (@from_site_id, @to_site_id, 'releases into', 'Corps dam → downstream gauge', 'cwms')
+  `);
+  db.transaction((conns) => {
     for (const c of conns) ins.run(c);
   })(connections);
 }
@@ -490,21 +586,21 @@ function getRecentInsights(limit = 10) {
 
 // ── Fetch Log ────────────────────────────────────────────────────────────────
 
-function logFetch({ status, sites_attempted, records_stored, error_message }) {
+function logFetch({ source, status, sites_attempted, records_stored, error_message }) {
   getDb().prepare(`
-    INSERT INTO fetch_log (status, sites_attempted, records_stored, error_message)
-    VALUES (@status, @sites_attempted, @records_stored, @error_message)
-  `).run({ status, sites_attempted, records_stored, error_message: error_message || null });
+    INSERT INTO fetch_log (source, status, sites_attempted, records_stored, error_message)
+    VALUES (@source, @status, @sites_attempted, @records_stored, @error_message)
+  `).run({ source: source || 'usgs', status, sites_attempted, records_stored, error_message: error_message || null });
 }
 
-function getLastFetch() {
-  return getDb().prepare('SELECT * FROM fetch_log ORDER BY executed_at DESC LIMIT 1').get();
+function getLastFetch(source = 'usgs') {
+  return getDb().prepare('SELECT * FROM fetch_log WHERE source = ? ORDER BY executed_at DESC LIMIT 1').get(source);
 }
 
-function getFetchHistory(limit = 10) {
+function getFetchHistory(limit = 10, source = 'usgs') {
   return getDb().prepare(
-    'SELECT status, sites_attempted, records_stored, error_message, executed_at FROM fetch_log ORDER BY executed_at DESC LIMIT ?'
-  ).all(limit);
+    'SELECT source, status, sites_attempted, records_stored, error_message, executed_at FROM fetch_log WHERE source = ? ORDER BY executed_at DESC LIMIT ?'
+  ).all(source, limit);
 }
 
 /**
@@ -515,8 +611,21 @@ function getSystemStatus() {
 
   // USGS: last 5 fetches
   const usgsFetches = db.prepare(
-    'SELECT status, sites_attempted, records_stored, error_message, executed_at FROM fetch_log ORDER BY executed_at DESC LIMIT 5'
+    `SELECT source, status, sites_attempted, records_stored, error_message, executed_at
+     FROM fetch_log WHERE source = 'usgs' ORDER BY executed_at DESC LIMIT 5`
   ).all();
+
+  // CWMS: last 5 fetches
+  const cwmsFetches = db.prepare(
+    `SELECT source, status, sites_attempted, records_stored, error_message, executed_at
+     FROM fetch_log WHERE source = 'cwms' ORDER BY executed_at DESC LIMIT 5`
+  ).all();
+
+  // CWMS measurement count
+  const cwmsMeta = db.prepare(
+    `SELECT COUNT(*) AS total_records, MAX(fetched_at) AS last_fetch
+     FROM measurements WHERE source = 'cwms'`
+  ).get();
 
   // Weather: latest fetch time + record counts
   const weatherMeta = db.prepare(`
@@ -555,18 +664,20 @@ function getSystemStatus() {
   const totalPairs = db.prepare('SELECT COUNT(*) AS count FROM site_connections').get();
   waterways.total_pairs = totalPairs ? totalPairs.count : 0;
 
-  return { usgsFetches, weatherMeta, topology, manualConns, waterways };
+  return { usgsFetches, cwmsFetches, cwmsMeta, weatherMeta, topology, manualConns, waterways };
 }
 
 module.exports = {
   initDatabase, getDb,
-  upsertSite, getAllSites, getSiteById,
+  upsertSite, getAllSites, getSiteById, getActiveSites, setSiteEnabled, deleteSite,
+  getSiteTimeseries, replaceSiteTimeseries, getAllSitesWithTimeseries,
+  getSeedApplied, markSeedApplied,
   insertMeasurements, getLatestReadings, getTimeSeriesForSite,
   getRecentForAI, getCompareData,
   insertWeatherReadings, getRecentWeather, getWeatherForecast, getWeatherForChart,
   getMeasurementRecords, getWeatherRecords,
   getMeasurementSeries, getWeatherSeries,
-  getSiteConnections, createSiteConnection, deleteSiteConnection, syncNLDIConnections, getLastNLDISync,
+  getSiteConnections, createSiteConnection, deleteSiteConnection, syncNLDIConnections, syncCWMSConnections, getLastNLDISync,
   getWaterwayPaths, upsertWaterwayPath, getPendingWaterwayPairs, getAllWaterwayConnectionPairs,
   getAnnotations, createAnnotation, updateAnnotation, deleteAnnotation,
   getWQPermitLimits, upsertWQPermitLimit, deleteWQPermitLimit,

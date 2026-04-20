@@ -17,7 +17,24 @@
         <div style="flex:1;min-width:200px;">
           <label class="label">Site</label>
           <select id="forecastSite" class="input" onchange="onSiteChange()">
-            <% for (const s of sites) { %><option value="<%= s.site_id %>"><%= s.name %></option><% } %>
+            <%
+              var usgsFCSites = sites.filter(function(s){ return s.source !== 'cwms'; });
+              var cwmsFCSites = sites.filter(function(s){ return s.source === 'cwms'; });
+            %>
+            <% if (usgsFCSites.length) { %>
+            <optgroup label="USGS Stream Gauges">
+              <% usgsFCSites.forEach(function(s) { %>
+                <option value="<%= s.site_id %>" data-source="usgs" data-name="<%= s.name %>"><%= s.name %></option>
+              <% }); %>
+            </optgroup>
+            <% } %>
+            <% if (cwmsFCSites.length) { %>
+            <optgroup label="CWMS Dam Operations">
+              <% cwmsFCSites.forEach(function(s) { %>
+                <option value="<%= s.site_id %>" data-source="cwms" data-name="<%= s.name %>">⬡ <%= s.name %></option>
+              <% }); %>
+            </optgroup>
+            <% } %>
           </select>
         </div>
         <div style="flex:1;min-width:130px;">
@@ -38,7 +55,7 @@
 
       <!-- Trend chart -->
       <div class="card">
-        <h2 class="text-sm font-semibold text-slate-300 mb-3">7-Day Discharge Trend</h2>
+        <h2 id="trendTitle" class="text-sm font-semibold text-slate-300 mb-3">7-Day Discharge Trend</h2>
         <div id="trendEmpty" class="text-xs text-slate-600 py-8 text-center">Select a site to load trend.</div>
         <div style="height:240px;"><canvas id="trendChart"></canvas></div>
       </div>
@@ -133,10 +150,21 @@
 </main>
 
 <script>
+var SITES_FC = <%- JSON.stringify(sites) %>;
 var trendChart = null;
 var fcPrecipChart = null;
 var _forecastSiteId = null;
 var _forecastSiteName = '';
+var _forecastSiteSource = 'usgs';
+
+// CWMS primary params tried in order (first one with data wins)
+var CWMS_TREND_PARAMS = [
+  { code: 'Elev-Pool', label: 'Pool Elevation', unit: 'ft' },
+  { code: 'Flow-Out',  label: 'Outflow',        unit: 'cfs' },
+  { code: 'Flow',      label: 'Outflow',         unit: 'cfs' },
+  { code: 'Flow-In',   label: 'Inflow',          unit: 'cfs' },
+  { code: 'Elev-Tail', label: 'Tailwater Elev',  unit: 'ft' },
+];
 
 var OUTLOOK_ICONS   = { rising: '↑', falling: '↓', stable: '→', variable: '⇅' };
 var OUTLOOK_COLORS  = { rising: '#fb923c', falling: '#38bdf8', stable: '#34d399', variable: '#a78bfa' };
@@ -148,29 +176,61 @@ var CONFIDENCE_STYLES = {
 
 function onSiteChange() {
   var sel = document.getElementById('forecastSite');
-  _forecastSiteId   = sel.value;
-  _forecastSiteName = sel.selectedOptions[0].textContent;
+  var opt = sel.selectedOptions[0];
+  _forecastSiteId     = sel.value;
+  _forecastSiteName   = (opt.getAttribute('data-name') || opt.textContent).replace(/^⬡\s*/,'');
+  _forecastSiteSource = opt.getAttribute('data-source') || 'usgs';
   loadTrend();
   loadForecast();
 }
 
 async function loadTrend() {
   if (!_forecastSiteId) return;
-  var resp = await fetch('/api/data/timeseries?site=' + _forecastSiteId + '&param=00060&hours=168');
-  var json = await resp.json();
-  var rows = json.data || [];
+
+  var isCwms = _forecastSiteSource === 'cwms';
+  var lineColor = isCwms ? '#f59e0b' : '#0ea5e9';
+  var fillColor = isCwms ? 'rgba(245,158,11,0.06)' : 'rgba(14,165,233,0.06)';
+
+  var rows = [], paramLabel = '', paramUnit = '';
+
+  if (isCwms) {
+    // Try CWMS params in priority order until we find data
+    for (var i = 0; i < CWMS_TREND_PARAMS.length; i++) {
+      var p = CWMS_TREND_PARAMS[i];
+      try {
+        var r = await fetch('/api/data/timeseries?site=' + _forecastSiteId + '&param=' + encodeURIComponent(p.code) + '&hours=168');
+        var j = await r.json();
+        if (j.data && j.data.length) {
+          rows = j.data;
+          paramLabel = p.label;
+          paramUnit  = p.unit;
+          break;
+        }
+      } catch(_) {}
+    }
+    document.getElementById('trendTitle').textContent = '7-Day ' + (paramLabel || 'Trend');
+  } else {
+    var resp = await fetch('/api/data/timeseries?site=' + _forecastSiteId + '&param=00060&hours=168');
+    var json = await resp.json();
+    rows = json.data || [];
+    paramLabel = 'Discharge';
+    paramUnit  = 'ft³/s';
+    document.getElementById('trendTitle').textContent = '7-Day Discharge Trend';
+  }
+
   document.getElementById('trendEmpty').style.display = rows.length ? 'none' : 'block';
   if (!rows.length) return;
 
   var labels = rows.map(function(r) { return new Date(r.recorded_at + 'Z').toLocaleDateString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }); });
   var values = rows.map(function(r) { return r.value; });
+  var dsLabel = paramLabel + (paramUnit ? ' (' + paramUnit + ')' : '');
 
   if (trendChart) trendChart.destroy();
   trendChart = new Chart(document.getElementById('trendChart'), {
     type: 'line',
     data: {
       labels: labels,
-      datasets: [{ label: 'Discharge (ft³/s)', data: values, borderColor: '#0ea5e9', backgroundColor: 'rgba(14,165,233,0.06)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 }]
+      datasets: [{ label: dsLabel, data: values, borderColor: lineColor, backgroundColor: fillColor, fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
@@ -198,7 +258,7 @@ async function loadForecast() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         page: 'forecast',
-        context: { site_id: _forecastSiteId, site_name: _forecastSiteName, days_ahead: daysAhead }
+        context: { site_id: _forecastSiteId, site_name: _forecastSiteName, site_source: _forecastSiteSource, days_ahead: daysAhead }
       })
     });
     var json = await resp.json();
@@ -331,8 +391,10 @@ window.addEventListener('DOMContentLoaded', function() {
   var sel = document.getElementById('forecastSite');
   var urlSite = new URLSearchParams(location.search).get('site');
   if (urlSite) sel.value = urlSite;
-  _forecastSiteId   = sel.value;
-  _forecastSiteName = sel.selectedOptions[0].textContent;
+  var opt = sel.selectedOptions[0];
+  _forecastSiteId     = sel.value;
+  _forecastSiteName   = (opt.getAttribute('data-name') || opt.textContent).replace(/^⬡\s*/,'');
+  _forecastSiteSource = opt.getAttribute('data-source') || 'usgs';
   loadTrend();
   loadForecast();
   loadPrecip();
