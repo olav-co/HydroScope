@@ -199,12 +199,40 @@
         <button class="region-btn" onclick="jumpTo(-74.1,40.5,-73.7,40.9)">NYC</button>
       </div>
 
+      <!-- Row 2: text search — debounced auto-submit, works alongside source pills + bbox -->
+      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;flex-wrap:wrap;">
+        <div style="position:relative;display:flex;align-items:center;flex:1;min-width:200px;max-width:420px;">
+          <span id="discSearchIcon" style="position:absolute;left:9px;color:#475569;pointer-events:none;font-size:14px;line-height:1;transition:color .2s;">⌕</span>
+          <input id="discSearchInput" type="text"
+            placeholder="Search name or site ID… (auto-searches)"
+            style="width:100%;padding:5px 10px 5px 30px;background:#0f172a;
+                   border:1px solid #334155;border-radius:6px;color:#e2e8f0;
+                   font-size:12px;outline:none;box-sizing:border-box;transition:border-color .2s;"
+            onkeydown="if(event.key==='Enter'){_cancelDiscTimer();discoverByText();}"
+            oninput="_onDiscSearchInput(this.value)">
+        </div>
+        <button id="discClearSearchBtn" onclick="clearDiscSearch()"
+          style="display:none;padding:5px 10px;background:none;border:1px solid #334155;
+                 border-radius:6px;color:#94a3b8;font-size:12px;cursor:pointer;white-space:nowrap;">
+          ✕
+        </button>
+        <span id="discSearchHint" style="font-size:11px;color:#64748b;min-width:120px;"></span>
+      </div>
+
       <!-- Map + Results panel side-by-side -->
       <div style="flex:1;display:flex;gap:8px;min-height:0;">
 
         <!-- Map -->
         <div style="flex:1;min-height:0;position:relative;">
           <div id="discoveryMap" style="width:100%;height:100%;border-radius:8px;overflow:hidden;"></div>
+          <!-- Floating "Add All" button anchored to bbox corner -->
+          <button id="bboxAddAllBtn" onclick="bboxAddAll()"
+            style="display:none;position:absolute;z-index:10;padding:5px 12px;
+                   background:#0369a1;color:#fff;border:none;border-radius:6px;
+                   font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;
+                   box-shadow:0 2px 8px rgba(0,0,0,0.4);">
+            + Add All
+          </button>
           <!-- Legend -->
           <div style="position:absolute;bottom:28px;left:10px;background:rgba(15,23,42,0.88);
                       border:1px solid #1e293b;border-radius:8px;padding:8px 12px;font-size:11px;
@@ -235,7 +263,9 @@
                     padding:10px 8px;background:#0f172a;">
           <div style="display:flex;align-items:center;justify-content:space-between;padding:0 4px;flex-shrink:0;">
             <span style="font-size:11px;font-weight:500;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">Sites in View</span>
-            <span id="discPanelCount" style="font-size:11px;color:#475569;"></span>
+            <div style="display:flex;align-items:center;gap:5px;">
+              <span id="discPanelCount" style="font-size:11px;color:#475569;"></span>
+            </div>
           </div>
           <div id="discResultsList" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;">
             <div class="empty-state" style="font-size:12px;">Draw a box on the map</div>
@@ -422,8 +452,12 @@ let _allSites  = [];
 let _cwmsActiveLoc  = null;
 let _cwmsSelTs      = new Set();
 let _cwmsCatalogData = [];
-let _discUsgs  = [];   // raw discovered USGS sites (last bbox search)
-let _discCwms  = [];   // raw discovered CWMS sites (last bbox search)
+let _discUsgs        = [];    // raw discovered USGS sites (last bbox OR text search)
+let _discCwms        = [];    // raw discovered CWMS sites (last bbox OR text search)
+let _discSearchActive = false; // true when _discUsgs/_discCwms came from text search
+let _discActiveBbox   = null;  // {minLon,minLat,maxLon,maxLat} when a box was drawn
+let _discSearchTimer  = null;  // debounce timer handle
+let _discSearching    = false; // true while a text search fetch is in flight
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
@@ -705,6 +739,8 @@ function initMap() {
     // Populate panel on load and keep it in sync with viewport
     renderDiscCards();
     _map.on('moveend', renderDiscCards);
+    _map.on('move',    updateBboxOverlay);
+    _map.on('moveend', updateBboxOverlay);
   });
 }
 
@@ -773,6 +809,45 @@ async function popupRemoveSite(id) {
 function refreshMapSites() {
   if (!_map || !_map.getSource(SRC_EXISTING)) return;
   _map.getSource(SRC_EXISTING).setData(sitesToGeo(_allSites));
+  applySearchMapFilter();
+}
+
+// When a text search is active, dim/hide existing-site dots that don't match.
+function applySearchMapFilter() {
+  if (!_map || !_map.getLayer('existing-fill')) return;
+  const q = _discSearchActive
+    ? (document.getElementById('discSearchInput')?.value.trim().toLowerCase() || '')
+    : '';
+  if (!q) {
+    // restore source-visibility filter (respects USGS/CWMS pills)
+    const f = _srcVisible.usgs && _srcVisible.cwms ? null
+            : _srcVisible.usgs ? ['==', ['get', 'source'], 'usgs']
+            : _srcVisible.cwms ? ['==', ['get', 'source'], 'cwms']
+            : ['==', '1', '0'];
+    _map.setFilter('existing-fill',   f);
+    _map.setFilter('existing-shadow', f);
+    return;
+  }
+  // Keep a site visible if its name or site_id contains the query (case-insensitive).
+  // MapLibre expressions don't support case-insensitive contains natively, so we match
+  // against the pre-lowercased fields stored in the GeoJSON properties.
+  const nameMatch = ['boolean',
+    ['>', ['index-of', q, ['downcase', ['coalesce', ['get', 'name'], '']]], -1],
+    false
+  ];
+  const idMatch = ['boolean',
+    ['>', ['index-of', q, ['downcase', ['coalesce', ['get', 'site_id'], '']]], -1],
+    false
+  ];
+  const matchFilter = ['any', nameMatch, idMatch];
+  // Combine with source-visibility pill
+  const srcFilter = _srcVisible.usgs && _srcVisible.cwms ? null
+                  : _srcVisible.usgs ? ['==', ['get', 'source'], 'usgs']
+                  : _srcVisible.cwms ? ['==', ['get', 'source'], 'cwms']
+                  : ['==', '1', '0'];
+  const combined = srcFilter ? ['all', srcFilter, matchFilter] : matchFilter;
+  _map.setFilter('existing-fill',   combined);
+  _map.setFilter('existing-shadow', combined);
 }
 
 // ── Sites-in-view panel ───────────────────────────────────────────────────────
@@ -809,7 +884,7 @@ function renderDiscCards() {
     })),
   ];
 
-  // Update count badge in panel header
+  // Update count badge
   const hdr = document.getElementById('discPanelCount');
   if (hdr) hdr.textContent = cards.length ? `${cards.length}` : '';
 
@@ -871,18 +946,15 @@ function toggleSourceFilter(src) {
   btn.classList.toggle('active', _srcVisible[src]);
   if (!_mapInited) return;
   const vis = v => v ? 'visible' : 'none';
-  if (src === 'usgs') {
-    _map.setFilter('existing-fill', _srcVisible.usgs && _srcVisible.cwms ? null :
-      _srcVisible.usgs ? ['==', ['get', 'source'], 'usgs'] :
-      _srcVisible.cwms ? ['==', ['get', 'source'], 'cwms'] : ['==', '1','0']);
-    _map.setFilter('existing-shadow', _map.getFilter('existing-fill'));
-    _map.setLayoutProperty('disc-usgs-ring', 'visibility', vis(_srcVisible.usgs));
-  } else {
-    _map.setFilter('existing-fill', _srcVisible.usgs && _srcVisible.cwms ? null :
-      _srcVisible.usgs ? ['==', ['get', 'source'], 'usgs'] :
-      _srcVisible.cwms ? ['==', ['get', 'source'], 'cwms'] : ['==', '1','0']);
-    _map.setFilter('existing-shadow', _map.getFilter('existing-fill'));
-    _map.setLayoutProperty('disc-cwms-ring', 'visibility', vis(_srcVisible.cwms));
+  _map.setLayoutProperty('disc-usgs-ring', 'visibility', vis(_srcVisible.usgs));
+  _map.setLayoutProperty('disc-cwms-ring', 'visibility', vis(_srcVisible.cwms));
+  applySearchMapFilter();
+  // Re-run active query so source toggle actually changes what's fetched
+  if (_discSearchActive) {
+    discoverByText();
+  } else if (_discActiveBbox) {
+    const { minLon, minLat, maxLon, maxLat } = _discActiveBbox;
+    discoverBbox(minLon, minLat, maxLon, maxLat);
   }
 }
 
@@ -927,6 +999,17 @@ async function discoverBbox(minLon, minLat, maxLon, maxLat) {
   const bbox = `${minLon.toFixed(5)},${minLat.toFixed(5)},${maxLon.toFixed(5)},${maxLat.toFixed(5)}`;
   const existing = new Set(_allSites.map(s => s.site_id));
 
+  // Record the drawn bbox so text search can optionally filter to it
+  _discActiveBbox = { minLon, minLat, maxLon, maxLat };
+
+  // If a text search is already active, re-run it filtered to this bbox
+  // rather than replacing the results with a different discovery mode.
+  const activeQuery = document.getElementById('discSearchInput');
+  if (_discSearchActive && activeQuery && activeQuery.value.trim()) {
+    discoverByText();
+    return;
+  }
+
   // Clear previous results
   _discUsgs = [];
   _discCwms = [];
@@ -962,6 +1045,7 @@ async function discoverBbox(minLon, minLat, maxLon, maxLat) {
       renderDiscoveryRings();
       renderDiscCards();
       updateHint();
+      updateBboxOverlay();
     })
     .catch(err => {
       usgsState = 'error';
@@ -982,6 +1066,7 @@ async function discoverBbox(minLon, minLat, maxLon, maxLat) {
       renderDiscoveryRings();
       renderDiscCards();
       updateHint();
+      updateBboxOverlay();
     })
     .catch(err => {
       cwmsState = 'error';
@@ -990,6 +1075,7 @@ async function discoverBbox(minLon, minLat, maxLon, maxLat) {
     });
 
   await Promise.allSettled([usgsPromise, cwmsPromise]);
+  updateBboxOverlay();
 
   // Final hint — if nothing found at all, clear after a moment
   if (!_discUsgs.length && !_discCwms.length && usgsState !== 'pending' && cwmsState !== 'pending') {
@@ -999,7 +1085,244 @@ async function discoverBbox(minLon, minLat, maxLon, maxLat) {
 }
 
 function clearBbox() {
+  _discActiveBbox = null;
   if (_map && _map.getSource(SRC_BBOX)) _map.getSource(SRC_BBOX).setData(emptyGeo());
+  updateBboxOverlay();
+}
+
+// Position (or hide) the floating "Add All" button at the bottom-right of the bbox.
+function updateBboxOverlay() {
+  const btn = document.getElementById('bboxAddAllBtn');
+  if (!btn || !_map || !_discActiveBbox) { if (btn) btn.style.display = 'none'; return; }
+
+  const dbIds    = new Set(_allSites.map(s => s.site_id));
+  const newCount = [..._discUsgs, ..._discCwms].filter(s => !dbIds.has(s.id)).length;
+  if (newCount === 0) { btn.style.display = 'none'; return; }
+
+  // Project bbox bottom-right corner to map pixel coords
+  const { maxLon, minLat } = _discActiveBbox;
+  const pt  = _map.project([maxLon, minLat]);
+  const map = document.getElementById('discoveryMap');
+  const mw  = map.offsetWidth, mh = map.offsetHeight;
+
+  // Clamp so button stays visible; anchor it above-left of the projected point
+  const bx = Math.min(Math.max(pt.x, 80), mw - 8);
+  const by = Math.min(Math.max(pt.y - 36, 8), mh - 36);
+
+  btn.style.left    = `${bx}px`;
+  btn.style.top     = `${by}px`;
+  btn.style.transform = 'translateX(-100%)';
+  btn.style.display = '';
+  btn.textContent   = `+ Add All (${newCount})`;
+}
+
+async function bboxAddAll() {
+  const btn = document.getElementById('bboxAddAllBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+
+  const dbIds = new Set(_allSites.map(s => s.site_id));
+  const toAdd = [..._discUsgs, ..._discCwms].filter(s => !dbIds.has(s.id));
+  for (const s of toAdd) {
+    await fetch('/api/sites', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: s.source || 'usgs', id: s.id, name: s.name,
+                             type: s.type || 'river', lat: s.lat, lon: s.lon }),
+    });
+  }
+  await loadSites();
+  refreshMapSites();
+  renderDiscoveryRings();
+  renderDiscCards();
+  updateBboxOverlay();
+  if (btn) btn.disabled = false;
+}
+
+// ── Text search in Map Discovery ──────────────────────────────────────────────
+
+function _cancelDiscTimer() {
+  if (_discSearchTimer) { clearTimeout(_discSearchTimer); _discSearchTimer = null; }
+  _setDiscInputState('idle');
+}
+
+function _setDiscInputState(state) {
+  // state: 'idle' | 'waiting' | 'searching'
+  const icon  = document.getElementById('discSearchIcon');
+  const input = document.getElementById('discSearchInput');
+  const hint  = document.getElementById('discSearchHint');
+  if (!icon || !input) return;
+  if (state === 'waiting') {
+    icon.textContent = '…';
+    icon.style.color = '#94a3b8';
+    input.style.borderColor = '#6366f1';
+    if (hint && !_discSearchActive) hint.textContent = 'waiting…';
+  } else if (state === 'searching') {
+    icon.innerHTML = '<span class="spin" style="display:inline-block;">↻</span>';
+    icon.style.color = '#818cf8';
+    input.style.borderColor = '#818cf8';
+    if (hint) hint.innerHTML = '<span class="spin">↻</span> searching…';
+  } else {
+    icon.textContent = '⌕';
+    icon.style.color = '#475569';
+    input.style.borderColor = '';
+  }
+}
+
+function _onDiscSearchInput(val) {
+  _cancelDiscTimer();
+  if (!val.trim()) { clearDiscSearch(); return; }
+  _setDiscInputState('waiting');
+  _discSearchTimer = setTimeout(() => {
+    _discSearchTimer = null;
+    _setDiscInputState('searching');
+    discoverByText();
+  }, 600);
+}
+
+async function discoverByText() {
+  const input = document.getElementById('discSearchInput');
+  const query = input ? input.value.trim() : '';
+  if (!query) { clearDiscSearch(); return; }
+
+  _setDiscInputState('searching');
+  _discSearching = true;
+
+  const hint     = document.getElementById('discSearchHint');
+  const clearBtn = document.getElementById('discClearSearchBtn');
+  if (clearBtn) clearBtn.style.display = '';
+
+  _discSearchActive = true;
+  _discUsgs = [];
+  _discCwms = [];
+  applySearchMapFilter();
+  renderDiscoveryRings();
+  renderDiscCards();
+
+  // Detect USGS numeric site IDs vs station-name search
+  // IDs: one or more numeric tokens separated by commas/spaces
+  const isIds = /^[\d][\d\s,]*$/.test(query);
+  const usgsParam = isIds
+    ? `id=${encodeURIComponent(query.replace(/[\s,]+/g, ',').replace(/^,|,$/g, ''))}`
+    : `name=${encodeURIComponent(query)}`;
+
+  // Respect source-filter toggle pills
+  const doUsgs = _srcVisible.usgs;
+  const doCwms = _srcVisible.cwms && !isIds; // skip CWMS for pure numeric USGS ID queries
+
+  let usgsState = doUsgs ? 'pending' : 'skip';
+  let cwmsState = doCwms ? 'pending' : 'skip';
+  let usgsCount = 0, cwmsCount = 0;
+  let usgsWarn  = '', cwmsWarn = '';
+
+  const existing = new Set(_allSites.map(s => s.site_id));
+
+  function updateHint() {
+    const parts = [];
+    if (doUsgs) {
+      if (usgsState === 'pending') parts.push('<span class="spin">↻</span> USGS');
+      else if (usgsState === 'error') parts.push(`<span style="color:#f87171" title="${usgsWarn}">USGS err</span>`);
+      else parts.push(`<b>${usgsCount}</b> USGS`);
+    }
+    if (doCwms) {
+      if (cwmsState === 'pending') parts.push('<span class="spin">↻</span> CWMS');
+      else if (cwmsState === 'error') parts.push(`<span style="color:#f87171" title="${cwmsWarn}">CWMS err</span>`);
+      else parts.push(`<b>${cwmsCount}</b> CWMS`);
+    }
+    hint.innerHTML = parts.join(' &nbsp;·&nbsp; ');
+  }
+  updateHint();
+
+  // Helper: if a bbox is drawn, filter results to within it
+  function bboxFilter(sites) {
+    if (!_discActiveBbox) return sites;
+    const { minLon, minLat, maxLon, maxLat } = _discActiveBbox;
+    return sites.filter(s =>
+      s.lat >= minLat && s.lat <= maxLat &&
+      s.lon >= minLon && s.lon <= maxLon
+    );
+  }
+
+  const usgsPromise = !doUsgs ? Promise.resolve() :
+    fetch(`/api/sites/discover/usgs?${usgsParam}`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.ok && data.warning) { usgsWarn = data.warning; console.warn('[USGS search]', data.warning); }
+        _discUsgs = bboxFilter(Array.isArray(data.sites) ? data.sites : []);
+        usgsCount = _discUsgs.length;
+        usgsState = 'ok';
+        renderDiscoveryRings();
+        renderDiscCards();
+        updateHint();
+        _fitDiscResults();
+      })
+      .catch(e => { usgsWarn = e.message; usgsState = 'error'; updateHint(); });
+
+  const cwmsPromise = !doCwms ? Promise.resolve() :
+    fetch(`/api/sites/discover/cwms/search?name=${encodeURIComponent(query)}`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.ok && data.warning) { cwmsWarn = data.warning; console.warn('[CWMS search]', data.warning); }
+        _discCwms = bboxFilter(Array.isArray(data.sites) ? data.sites : []);
+        cwmsCount = _discCwms.length;
+        cwmsState = 'ok';
+        renderDiscoveryRings();
+        renderDiscCards();
+        updateHint();
+        _fitDiscResults();
+      })
+      .catch(e => { cwmsWarn = e.message; cwmsState = 'error'; updateHint(); });
+
+  await Promise.allSettled([usgsPromise, cwmsPromise]);
+  updateBboxOverlay();
+
+  _discSearching = false;
+  _setDiscInputState('idle');
+
+  if (!_discUsgs.length && !_discCwms.length) {
+    const errParts = [];
+    if (usgsState === 'error') errParts.push(`USGS: ${usgsWarn}`);
+    if (cwmsState === 'error') errParts.push(`CWMS: ${cwmsWarn}`);
+    hint.textContent = errParts.length ? errParts.join(' | ') : 'No sites found.';
+  } else {
+    const newCount = [..._discUsgs, ..._discCwms].filter(s => !existing.has(s.id)).length;
+    const total    = _discUsgs.length + _discCwms.length;
+    hint.innerHTML = `${total} found &nbsp;·&nbsp; <span style="color:#34d399;">${newCount} new</span>`;
+  }
+}
+
+function clearDiscSearch() {
+  _cancelDiscTimer();
+  const input    = document.getElementById('discSearchInput');
+  const hint     = document.getElementById('discSearchHint');
+  const clearBtn = document.getElementById('discClearSearchBtn');
+  if (input)    input.value = '';
+  if (hint)     hint.textContent = '';
+  if (clearBtn) clearBtn.style.display = 'none';
+  _discSearchActive = false;
+  _discSearching = false;
+  _discUsgs = [];
+  _discCwms = [];
+  applySearchMapFilter();
+  renderDiscoveryRings();
+  renderDiscCards();
+  updateBboxOverlay();
+  // If a bbox is still drawn, re-run its discovery without the text filter
+  if (_discActiveBbox) {
+    const { minLon, minLat, maxLon, maxLat } = _discActiveBbox;
+    discoverBbox(minLon, minLat, maxLon, maxLat);
+  }
+}
+
+// Fit the map to encompass all current discovery results
+function _fitDiscResults() {
+  if (!_mapInited) return;
+  const all = [..._discUsgs, ..._discCwms].filter(s => s.lat && s.lon);
+  if (all.length < 2) return;  // single result — let the viewport-card click navigate
+  const lons = all.map(s => s.lon);
+  const lats = all.map(s => s.lat);
+  _map.fitBounds(
+    [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
+    { padding: 60, maxZoom: 12, duration: 500 }
+  );
 }
 
 // Re-render discovery rings for all found sites from the last bbox search.

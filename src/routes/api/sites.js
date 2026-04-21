@@ -298,10 +298,31 @@ router.get('/discover/usgs', async (req, res) => {
       return res.json({ ok: true, sites, count: sites.length });
     }
     if (name) {
-      const url   = `${USGS_BASE}&stationNm=${encodeURIComponent(name)}`;
-      const text  = await fetchText(url, 20000);
-      const sites = parseUsgsRdb(text).map(usgsRowToSite).filter(s => s.lat && s.lon);
-      return res.json({ ok: true, sites, count: sites.length });
+      // Query each state group with no server-side name filter, then filter in our backend.
+      // Avoids all USGS wildcard/encoding quirks — simple case-insensitive includes on our side.
+      const STATE_GROUPS = [
+        'al,ak,az,ar,ca', 'co,ct,de,fl,ga', 'hi,id,il,in,ia',
+        'ks,ky,la,me,md',  'ma,mi,mn,ms,mo', 'mt,ne,nv,nh,nj',
+        'nm,ny,nc,nd,oh',  'ok,or,pa,ri,sc', 'sd,tn,tx,ut,vt',
+        'va,wa,wv,wi,wy,dc,pr,vi',
+      ];
+      const usgsBase = 'https://waterservices.usgs.gov/nwis/site/?format=rdb&siteStatus=active';
+      const results  = await Promise.allSettled(STATE_GROUPS.map(states =>
+        fetchText(`${usgsBase}&stateCd=${states}`, 20000)
+          .then(text => parseUsgsRdb(text).map(usgsRowToSite).filter(s => s.lat && s.lon))
+      ));
+      const q        = name.toLowerCase();
+      const seen     = new Set();
+      const allSites = [];
+      for (const r of results) {
+        if (r.status !== 'fulfilled') continue;
+        for (const s of r.value) {
+          if (seen.has(s.id)) continue;
+          seen.add(s.id);
+          if (s.name.toLowerCase().includes(q) || s.id.includes(q)) allSites.push(s);
+        }
+      }
+      return res.json({ ok: true, sites: allSites, count: allSites.length });
     }
 
     if (!bbox) return res.status(400).json({ error: 'Provide bbox, id, or name' });
@@ -453,6 +474,90 @@ router.get('/discover/cwms/timeseries', async (req, res) => {
     console.error('[Sites API] CWMS timeseries error:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── GET /api/sites/discover/cwms/search ───────────────────────────────────────
+// Full-text search across all CWMS offices (no bbox required).
+// Query params:
+//   name   = search term (matched with SQL LIKE wildcards on both ends)
+//   office = optional Corps district code to restrict scope
+router.get('/discover/cwms/search', async (req, res) => {
+  try {
+    const dsCfg  = getDatasourcesConfig();
+    const cwms   = dsCfg.cwms || {};
+    const base   = cwms.baseUrl || 'https://cwms-data.usace.army.mil/cwms-data';
+    const { name, office } = req.query;
+    if (!name) return res.status(400).json({ error: 'name is required' });
+
+    // Fetch all CWMS locations (optionally restricted to one office), then filter in our
+    // backend — avoids CDA wildcard encoding issues and matches on both id and public-name.
+    let url = `${base}/catalog/LOCATIONS?page-size=5000`;
+    if (office) url += `&office=${encodeURIComponent(office)}`;
+
+    const data = await fetchJson(url);
+    const q    = name.toLowerCase();
+    const seen = new Set();
+    const sites = (data.entries || [])
+      .filter(e => {
+        const id    = (e['location-id'] || e.name || '').toLowerCase();
+        const pname = (e['public-name'] || e['long-name'] || '').toLowerCase();
+        return id.includes(q) || pname.includes(q);
+      })
+      .filter(e => e.latitude != null && e.longitude != null)
+      .map(e => ({
+        id:     e['location-id'] || e.name,
+        name:   e['public-name'] || e['long-name'] || e['location-id'] || e.name,
+        office: e.office,
+        type:   (e['location-kind'] || 'dam').toLowerCase(),
+        lat:    e.latitude,
+        lon:    e.longitude,
+        source: 'cwms',
+      }))
+      .filter(s => s.id && !seen.has(s.id) && seen.add(s.id));
+
+    res.json({ ok: true, sites, count: sites.length });
+  } catch (err) {
+    console.error('[Sites API] CWMS search error:', err.message);
+    res.json({ ok: false, sites: [], count: 0, warning: err.message });
+  }
+});
+
+// ── GET /api/sites/discover/test ─────────────────────────────────────────────
+// Browser-accessible diagnostic: ?name=det  tries multiple USGS URL formats.
+router.get('/discover/test', async (req, res) => {
+  const name = req.query.name || 'det';
+  const out  = { name, variants: [] };
+
+  async function tryUsgs(label, url) {
+    const r = { label, url };
+    try {
+      const text = await fetchText(url, 15000);
+      const sites = parseUsgsRdb(text).map(usgsRowToSite).filter(s => s.lat && s.lon);
+      r.status = 200; r.count = sites.length;
+      r.preview = text.slice(0, 300).replace(/\n/g, '\\n');
+      r.sample  = sites.slice(0, 3).map(s => s.name);
+    } catch (e) {
+      r.status = 'error'; r.error = e.message.slice(0, 200);
+    }
+    out.variants.push(r);
+  }
+
+  const enc  = encodeURIComponent(name);
+  const base = 'https://waterservices.usgs.gov/nwis/site/?format=rdb&siteStatus=all';
+
+  // Variant A: stateCd=mi, no wildcards
+  await tryUsgs('stateCd=mi no-wildcard',       `${base}&stateCd=mi&stationNm=${enc}`);
+  // Variant B: stateCd=mi, %25 encoded wildcards
+  await tryUsgs('stateCd=mi %25 wildcards',     `${base}&stateCd=mi&stationNm=%25${enc}%25`);
+  // Variant C: bBox over Michigan, no wildcards
+  await tryUsgs('bBox=MI no-wildcard',          `${base}&bBox=-90,41,-82,48&stationNm=${enc}`);
+  // Variant D: bBox over Michigan, %25 wildcards
+  await tryUsgs('bBox=MI %25 wildcards',        `${base}&bBox=-90,41,-82,48&stationNm=%25${enc}%25`);
+  // Variant E: all states, no wildcards
+  const ALL = 'al,ak,az,ar,ca,co,ct,de,fl,ga,hi,id,il,in,ia,ks,ky,la,me,md,ma,mi,mn,ms,mo,mt,ne,nv,nh,nj,nm,ny,nc,nd,oh,ok,or,pa,ri,sc,sd,tn,tx,ut,vt,va,wa,wv,wi,wy,dc';
+  await tryUsgs('allStates no-wildcard',        `${base}&stateCd=${ALL}&stationNm=${enc}`);
+
+  res.json(out);
 });
 
 module.exports = router;
