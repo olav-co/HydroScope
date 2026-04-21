@@ -205,7 +205,8 @@ const SERVICE_INFO = {
   weather:   { label: 'Weather (Open-Meteo)',    desc: 'Atmospheric conditions at monitoring sites',   icon: '☁' },
   topology:  { label: 'Flow Network Topology',   desc: 'NLDI upstream/downstream site connections',    icon: '⟶' },
   waterways: { label: 'Waterway Geometry',       desc: 'GeoJSON paths for flow network visualization', icon: '⌇' },
-  cwms:      { label: 'CWMS Dam Operations',     desc: 'US Army Corps pool elevation, flow, storage & water quality', icon: '⬡' },
+  cwms:        { label: 'CWMS Dam Operations',     desc: 'US Army Corps pool elevation, flow, storage & water quality', icon: '⬡' },
+  basinSync: { label: 'Basin Geometry',           desc: 'Resolve HUC8 watershed for sites not yet assigned a basin',    icon: '◈' },
 };
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
@@ -452,6 +453,24 @@ function buildServiceStatus(name, st, isRunning) {
         ${last.error_message ? `<br><span style="color:#f87171">${last.error_message}</span>` : ''}
       </div>
       <div class="fetch-pills" style="margin-top:4px;" title="5 most recent runs">${pills}</div>`;
+  }
+
+  if (name === 'basinSync') {
+    const huc = st.hucStats || {};
+    const total   = huc.total   || 0;
+    const withHuc = huc.with_huc || 0;
+    const missing = huc.missing  || 0;
+    if (!total) return '<div style="font-size:11px;color:#334155;">No sites in DB yet</div>';
+    const pct = total > 0 ? Math.round((withHuc / total) * 100) : 0;
+    return `
+      <div style="font-size:11px;color:#475569;">
+        ${withHuc}/${total} sites have HUC8 &nbsp;·&nbsp;
+        <span style="color:${missing > 0 ? '#fbbf24' : '#34d399'};">${missing} missing</span>
+      </div>
+      <div class="progress-bar" style="margin-top:5px;max-width:240px;">
+        <div class="progress-fill" style="width:${pct}%;background:${missing > 0 ? '#34d399' : '#0ea5e9'};"></div>
+      </div>
+      <div style="font-size:10px;color:#334155;margin-top:2px;">${pct}% complete</div>`;
   }
 
   return '';

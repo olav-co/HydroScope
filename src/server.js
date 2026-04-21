@@ -14,6 +14,7 @@ const wqRouter          = require('./routes/api/wq');
 const connectionsRouter = require('./routes/api/connections');
 const settingsRouter    = require('./routes/api/settings');
 const sitesRouter       = require('./routes/api/sites');
+const { router: basinsRouter } = require('./routes/api/basins');
 
 const app = express();
 
@@ -37,6 +38,7 @@ app.use('/api/wq',           wqRouter);
 app.use('/api/connections',  connectionsRouter);
 app.use('/api/settings',     settingsRouter);
 app.use('/api/sites',        sitesRouter);
+app.use('/api/basins',       basinsRouter);
 
 // ── 404 / Error handlers ─────────────────────────────────────────────────────
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));

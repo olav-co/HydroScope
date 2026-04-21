@@ -219,6 +219,34 @@
         <span id="discSearchHint" style="font-size:11px;color:#64748b;min-width:120px;"></span>
       </div>
 
+      <!-- Row 3: basin combobox -->
+      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;flex-wrap:wrap;">
+        <span style="font-size:11px;color:#64748b;white-space:nowrap;">Basin:</span>
+        <div style="position:relative;min-width:220px;max-width:400px;flex:1;">
+          <input id="basinInput" type="text" autocomplete="off"
+            placeholder="Search watersheds…"
+            oninput="_onBasinInput(this.value)"
+            onfocus="_openBasinDropdown()"
+            onkeydown="_basinKeydown(event)"
+            style="width:100%;padding:5px 32px 5px 10px;background:#0f172a;border:1px solid #334155;
+                   border-radius:6px;color:#e2e8f0;font-size:12px;box-sizing:border-box;
+                   outline:none;transition:border-color .15s;" />
+          <span style="position:absolute;right:9px;top:50%;transform:translateY(-50%);
+                       color:#475569;font-size:11px;pointer-events:none;">▾</span>
+          <div id="basinDropdown"
+            style="display:none;position:absolute;top:calc(100% + 3px);left:0;right:0;z-index:200;
+                   background:#0f172a;border:1px solid #334155;border-radius:7px;
+                   max-height:220px;overflow-y:auto;box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+          </div>
+        </div>
+        <button id="basinClearBtn" onclick="clearBasin()"
+          style="display:none;padding:5px 10px;background:none;border:1px solid #334155;
+                 border-radius:6px;color:#94a3b8;font-size:12px;cursor:pointer;white-space:nowrap;">
+          ✕
+        </button>
+        <span id="basinHint" style="font-size:11px;color:#64748b;"></span>
+      </div>
+
       <!-- Map + Results panel side-by-side -->
       <div style="flex:1;display:flex;gap:8px;min-height:0;">
 
@@ -238,6 +266,10 @@
                       border:1px solid #1e293b;border-radius:8px;padding:8px 12px;font-size:11px;
                       display:flex;flex-direction:column;gap:5px;pointer-events:none;">
             <div style="font-weight:600;color:#94a3b8;margin-bottom:2px;">Legend</div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <svg width="14" height="8"><line x1="0" y1="4" x2="14" y2="4" stroke="#34d399" stroke-width="2"/></svg>
+              <span style="color:#cbd5e1;">HUC8 Basin</span>
+            </div>
             <div style="display:flex;align-items:center;gap:6px;">
               <svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#38bdf8"/></svg>
               <span style="color:#cbd5e1;">USGS — in DB</span>
@@ -458,6 +490,7 @@ let _discSearchActive = false; // true when _discUsgs/_discCwms came from text s
 let _discActiveBbox   = null;  // {minLon,minLat,maxLon,maxLat} when a box was drawn
 let _discSearchTimer  = null;  // debounce timer handle
 let _discSearching    = false; // true while a text search fetch is in flight
+let _discActiveBasin  = null;  // huc8_code string when basin mode is active
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
@@ -606,6 +639,7 @@ const SRC_EXISTING  = 'existing-sites';
 const SRC_DISC_USGS = 'disc-usgs';
 const SRC_DISC_CWMS = 'disc-cwms';
 const SRC_BBOX      = 'bbox-box';
+const SRC_BASIN     = 'basin-poly';
 
 function emptyGeo() { return { type: 'FeatureCollection', features: [] }; }
 
@@ -651,6 +685,13 @@ function initMap() {
   _mapPopup = new maplibregl.Popup({ closeButton: true, maxWidth: '280px', offset: 10 });
 
   _map.on('load', () => {
+    // ── Basin polygon overlay ─────────────────────────────────────────────────
+    _map.addSource(SRC_BASIN, { type: 'geojson', data: emptyGeo() });
+    _map.addLayer({ id: 'basin-fill', type: 'fill', source: SRC_BASIN,
+      paint: { 'fill-color': '#34d399', 'fill-opacity': 0.07 } });
+    _map.addLayer({ id: 'basin-line', type: 'line', source: SRC_BASIN,
+      paint: { 'line-color': '#34d399', 'line-width': 2 } });
+
     // ── BBox drawing layer ────────────────────────────────────────────────────
     _map.addSource(SRC_BBOX, { type: 'geojson', data: emptyGeo() });
     _map.addLayer({ id: 'bbox-fill',   type: 'fill', source: SRC_BBOX,
@@ -952,6 +993,8 @@ function toggleSourceFilter(src) {
   // Re-run active query so source toggle actually changes what's fetched
   if (_discSearchActive) {
     discoverByText();
+  } else if (_discActiveBasin) {
+    discoverBasin(_discActiveBasin);
   } else if (_discActiveBbox) {
     const { minLon, minLat, maxLon, maxLat } = _discActiveBbox;
     discoverBbox(minLon, minLat, maxLon, maxLat);
@@ -998,6 +1041,9 @@ async function discoverBbox(minLon, minLat, maxLon, maxLat) {
   const hint = document.getElementById('drawHint');
   const bbox = `${minLon.toFixed(5)},${minLat.toFixed(5)},${maxLon.toFixed(5)},${maxLat.toFixed(5)}`;
   const existing = new Set(_allSites.map(s => s.site_id));
+
+  // Clear basin mode when a box is drawn
+  if (_discActiveBasin) clearBasin();
 
   // Record the drawn bbox so text search can optionally filter to it
   _discActiveBbox = { minLon, minLat, maxLon, maxLat };
@@ -1090,30 +1136,40 @@ function clearBbox() {
   updateBboxOverlay();
 }
 
-// Position (or hide) the floating "Add All" button at the bottom-right of the bbox.
+// Position (or hide) the floating "Add All" button anchored to the active area corner.
 function updateBboxOverlay() {
   const btn = document.getElementById('bboxAddAllBtn');
-  if (!btn || !_map || !_discActiveBbox) { if (btn) btn.style.display = 'none'; return; }
+  if (!btn || !_map) { if (btn) btn.style.display = 'none'; return; }
 
   const dbIds    = new Set(_allSites.map(s => s.site_id));
   const newCount = [..._discUsgs, ..._discCwms].filter(s => !dbIds.has(s.id)).length;
-  if (newCount === 0) { btn.style.display = 'none'; return; }
+  if (newCount === 0 || (!_discActiveBbox && !_discActiveBasin)) {
+    btn.style.display = 'none'; return;
+  }
 
-  // Project bbox bottom-right corner to map pixel coords
-  const { maxLon, minLat } = _discActiveBbox;
+  // Pick anchor: bbox bottom-right, or basin polygon bounding-box bottom-right
+  let maxLon, minLat;
+  if (_discActiveBbox) {
+    ({ maxLon, minLat } = _discActiveBbox);
+  } else {
+    // Use the visible map bounds corner — basin polygon may be large or off-screen
+    const b = _map.getBounds();
+    maxLon = b.getEast();
+    minLat = b.getSouth();
+  }
+
   const pt  = _map.project([maxLon, minLat]);
   const map = document.getElementById('discoveryMap');
   const mw  = map.offsetWidth, mh = map.offsetHeight;
 
-  // Clamp so button stays visible; anchor it above-left of the projected point
   const bx = Math.min(Math.max(pt.x, 80), mw - 8);
   const by = Math.min(Math.max(pt.y - 36, 8), mh - 36);
 
-  btn.style.left    = `${bx}px`;
-  btn.style.top     = `${by}px`;
+  btn.style.left      = `${bx}px`;
+  btn.style.top       = `${by}px`;
   btn.style.transform = 'translateX(-100%)';
-  btn.style.display = '';
-  btn.textContent   = `+ Add All (${newCount})`;
+  btn.style.display   = '';
+  btn.textContent     = `+ Add All (${newCount})`;
 }
 
 async function bboxAddAll() {
@@ -1305,8 +1361,10 @@ function clearDiscSearch() {
   renderDiscoveryRings();
   renderDiscCards();
   updateBboxOverlay();
-  // If a bbox is still drawn, re-run its discovery without the text filter
-  if (_discActiveBbox) {
+  // Re-run the active spatial query without the text filter
+  if (_discActiveBasin) {
+    discoverBasin(_discActiveBasin);
+  } else if (_discActiveBbox) {
     const { minLon, minLat, maxLon, maxLat } = _discActiveBbox;
     discoverBbox(minLon, minLat, maxLon, maxLat);
   }
@@ -1353,6 +1411,236 @@ function renderDiscoveryRings() {
   });
 }
 
+
+// ── Basin (HUC8) discovery ────────────────────────────────────────────────────
+
+let _basinOptions  = [];   // [{ huc8_code, display }]
+let _basinLocked   = false; // true while a basin is actively selected
+let _basinHiIdx    = -1;    // keyboard-highlighted row index
+
+async function loadBasinDropdown() {
+  try {
+    const r = await fetch('/api/basins');
+    const basins = await r.json();
+    if (!Array.isArray(basins)) return;
+    _basinOptions = basins.map(b => ({
+      huc8_code: b.huc8_code,
+      display: b.huc8_name ? `${b.huc8_name} (${b.huc8_code})` : b.huc8_code,
+    }));
+  } catch (_) {}
+}
+
+function _basinFiltered(q) {
+  if (!q) return _basinOptions;
+  const lq = q.toLowerCase();
+  return _basinOptions.filter(b => b.display.toLowerCase().includes(lq));
+}
+
+function _renderBasinDropdown(q) {
+  const dd = document.getElementById('basinDropdown');
+  if (!dd) return;
+  const items = _basinFiltered(q);
+  _basinHiIdx = -1;
+  if (!items.length) {
+    dd.innerHTML = `<div style="padding:9px 12px;font-size:12px;color:#475569;">
+      ${q ? 'No matching basins' : 'No basins yet — add sites and run Basin Geometry sync'}
+    </div>`;
+    return;
+  }
+  dd.innerHTML = items.slice(0, 60).map((b, i) =>
+    `<div class="_basin-opt" data-code="${esc(b.huc8_code)}" data-display="${esc(b.display)}"
+      onclick="_pickBasin('${esc(b.huc8_code)}','${esc(b.display)}')"
+      onmouseenter="_basinHover(${i})"
+      style="padding:7px 12px;font-size:12px;color:#94a3b8;cursor:pointer;transition:background .08s;">
+      ${esc(b.display)}
+    </div>`
+  ).join('');
+}
+
+function _basinHover(i) {
+  _basinHiIdx = i;
+  document.querySelectorAll('._basin-opt').forEach((el, j) => {
+    el.style.background = j === i ? '#1e293b' : '';
+    el.style.color      = j === i ? '#e2e8f0' : '#94a3b8';
+  });
+}
+
+function _openBasinDropdown() {
+  if (_basinLocked) return;
+  const input = document.getElementById('basinInput');
+  const q = input ? input.value.trim() : '';
+  _renderBasinDropdown(q);
+  const dd = document.getElementById('basinDropdown');
+  if (dd) dd.style.display = '';
+}
+
+function _closeBasinDropdown() {
+  const dd = document.getElementById('basinDropdown');
+  if (dd) dd.style.display = 'none';
+  _basinHiIdx = -1;
+}
+
+function _onBasinInput(val) {
+  if (_basinLocked) return;
+  _renderBasinDropdown(val.trim());
+  const dd = document.getElementById('basinDropdown');
+  if (dd) dd.style.display = '';
+  const input = document.getElementById('basinInput');
+  if (input) input.style.borderColor = '#334155';
+}
+
+function _basinKeydown(e) {
+  const dd = document.getElementById('basinDropdown');
+  if (!dd || dd.style.display === 'none') return;
+  const opts = dd.querySelectorAll('._basin-opt');
+  if (!opts.length) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    _basinHover(Math.min(_basinHiIdx + 1, opts.length - 1));
+    opts[_basinHiIdx]?.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    _basinHover(Math.max(_basinHiIdx - 1, 0));
+    opts[_basinHiIdx]?.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const target = _basinHiIdx >= 0 ? opts[_basinHiIdx] : opts[0];
+    if (target) _pickBasin(target.dataset.code, target.dataset.display);
+  } else if (e.key === 'Escape') {
+    _closeBasinDropdown();
+  }
+}
+
+function _pickBasin(huc8Code, display) {
+  _closeBasinDropdown();
+  _basinLocked = true;
+  const input = document.getElementById('basinInput');
+  if (input) { input.value = display; input.style.borderColor = '#34d399'; }
+  document.getElementById('basinClearBtn').style.display = '';
+  onBasinSelect(huc8Code);
+}
+
+function onBasinSelect(val) {
+  if (!val) { clearBasin(); return; }
+  clearDiscSearch();
+  discoverBasin(val);
+}
+
+function clearBasin() {
+  _discActiveBasin = null;
+  _basinLocked = false;
+  const input = document.getElementById('basinInput');
+  if (input) { input.value = ''; input.style.borderColor = ''; }
+  _closeBasinDropdown();
+  const clearBtn = document.getElementById('basinClearBtn');
+  if (clearBtn) clearBtn.style.display = 'none';
+  const hint = document.getElementById('basinHint');
+  if (hint) hint.textContent = '';
+  if (_map && _map.getSource(SRC_BASIN)) _map.getSource(SRC_BASIN).setData(emptyGeo());
+  _discUsgs = [];
+  _discCwms = [];
+  renderDiscoveryRings();
+  renderDiscCards();
+  updateBboxOverlay();
+}
+
+function _computeBbox(feature) {
+  const coords = feature.geometry.type === 'MultiPolygon'
+    ? feature.geometry.coordinates.flat(2)
+    : feature.geometry.coordinates.flat(1);
+  const lons = coords.map(c => c[0]);
+  const lats = coords.map(c => c[1]);
+  return [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)];
+}
+
+async function discoverBasin(huc8Code) {
+  if (!huc8Code) { clearBasin(); return; }
+
+  const hint     = document.getElementById('basinHint');
+  const clearBtn = document.getElementById('basinClearBtn');
+  if (hint) hint.innerHTML = '<span class="spin">↻</span> loading basin…';
+  if (clearBtn) clearBtn.style.display = '';
+
+  _discActiveBasin = huc8Code;
+  _discActiveBbox  = null;
+  if (_map && _map.getSource(SRC_BBOX)) _map.getSource(SRC_BBOX).setData(emptyGeo());
+  updateBboxOverlay();
+
+  _discUsgs = [];
+  _discCwms = [];
+  renderDiscoveryRings();
+  renderDiscCards();
+
+  try {
+    const polyRes  = await fetch(`/api/basins/${encodeURIComponent(huc8Code)}/polygon`);
+    const polyData = await polyRes.json();
+    if (!polyData.ok || !polyData.feature) {
+      if (hint) hint.textContent = 'Basin polygon not found.';
+      return;
+    }
+
+    const feature   = polyData.feature;
+    const basinName = feature.properties?.name || huc8Code;
+
+    if (_map && _map.getSource(SRC_BASIN)) {
+      _map.getSource(SRC_BASIN).setData({ type: 'FeatureCollection', features: [feature] });
+      const bbox = feature.bbox || _computeBbox(feature);
+      _map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 40, duration: 600 });
+    }
+
+    if (hint) hint.innerHTML = '<span class="spin">↻</span> discovering sites…';
+
+    const bbox    = feature.bbox || _computeBbox(feature);
+    const bboxStr = `${bbox[0].toFixed(5)},${bbox[1].toFixed(5)},${bbox[2].toFixed(5)},${bbox[3].toFixed(5)}`;
+    const existing = new Set(_allSites.map(s => s.site_id));
+    let usgsCount = 0, cwmsCount = 0;
+    let usgsState = _srcVisible.usgs ? 'pending' : 'skip';
+    let cwmsState = _srcVisible.cwms ? 'pending' : 'skip';
+
+    function updateBasinHint() {
+      if (usgsState === 'pending' || cwmsState === 'pending') {
+        const parts = [];
+        if (_srcVisible.usgs && usgsState === 'pending') parts.push('<span class="spin">↻</span> USGS');
+        if (_srcVisible.cwms && cwmsState === 'pending') parts.push('<span class="spin">↻</span> CWMS');
+        if (hint) hint.innerHTML = parts.join(' &nbsp;·&nbsp; ');
+        return;
+      }
+      const total    = usgsCount + cwmsCount;
+      const newCount = [..._discUsgs, ..._discCwms].filter(s => !existing.has(s.id)).length;
+      if (hint) hint.innerHTML = `${total} found &nbsp;·&nbsp; <span style="color:#34d399;">${newCount} new</span> &nbsp;·&nbsp; <b style="color:#34d399;">${esc(basinName)}</b>`;
+    }
+
+    const usgsPromise = !_srcVisible.usgs ? Promise.resolve() :
+      fetch(`/api/sites/discover/usgs?huc=${encodeURIComponent(huc8Code)}`)
+        .then(r => r.json())
+        .then(data => {
+          _discUsgs = Array.isArray(data.sites) ? data.sites : [];
+          usgsCount = _discUsgs.length;
+          usgsState = 'ok';
+          renderDiscoveryRings(); renderDiscCards(); updateBasinHint();
+        })
+        .catch(() => { usgsState = 'error'; updateBasinHint(); });
+
+    const cwmsPromise = !_srcVisible.cwms ? Promise.resolve() :
+      fetch(`/api/sites/discover/cwms/bbox?bbox=${encodeURIComponent(bboxStr)}`)
+        .then(r => r.json())
+        .then(data => {
+          _discCwms = Array.isArray(data.sites)
+            ? data.sites.map(s => ({ ...s, source: s.source || 'cwms' })) : [];
+          cwmsCount = _discCwms.length;
+          cwmsState = 'ok';
+          renderDiscoveryRings(); renderDiscCards(); updateBasinHint();
+        })
+        .catch(() => { cwmsState = 'error'; updateBasinHint(); });
+
+    updateBasinHint();
+    await Promise.allSettled([usgsPromise, cwmsPromise]);
+    updateBboxOverlay();
+    updateBasinHint();
+  } catch (err) {
+    if (hint) hint.textContent = `Error: ${err.message}`;
+  }
+}
 
 // ── Search & Add ──────────────────────────────────────────────────────────────
 async function searchUsgsByIds() {
@@ -1678,5 +1966,11 @@ function esc(s) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+document.addEventListener('click', e => {
+  const wrapper = document.getElementById('basinInput')?.closest('div');
+  if (wrapper && !wrapper.contains(e.target)) _closeBasinDropdown();
+});
+
 loadSites();
+loadBasinDropdown();
 </script>

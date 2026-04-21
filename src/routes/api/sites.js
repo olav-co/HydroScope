@@ -98,8 +98,10 @@ function usgsRowToSite(row) {
     id:         row.site_no,
     name:       row.station_nm || row.site_no,
     type:       guessUsgsType(row.site_tp_cd),
-    lat:        parseFloat(row.dec_lat_va) || null,
+    lat:        parseFloat(row.dec_lat_va)  || null,
     lon:        parseFloat(row.dec_long_va) || null,
+    huc8_code:  row.huc_cd   || null,   // 8-digit HUC from USGS RDB
+    huc8_name:  null,                   // name resolved separately via WBD
   };
 }
 
@@ -127,9 +129,10 @@ router.get('/', (req, res) => {
 
 // ── POST /api/sites ───────────────────────────────────────────────────────────
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   try {
-    const { source, id, locationId, name, type, lat, lon, timeseries, enabled } = req.body;
+    const { source, id, locationId, name, type, lat, lon, timeseries, enabled,
+            huc8_code, huc8_name } = req.body;
     const siteId = id || locationId;
     if (!source || !siteId) return res.status(400).json({ error: 'source and id are required' });
 
@@ -140,13 +143,22 @@ router.post('/', (req, res) => {
       type:      type || 'river',
       latitude:  lat  != null ? lat  : null,
       longitude: lon  != null ? lon  : null,
+      huc8_code: huc8_code || null,
+      huc8_name: huc8_name || null,
     });
 
-    if (Array.isArray(timeseries)) {
-      db.replaceSiteTimeseries(siteId, timeseries);
-    }
-
+    if (Array.isArray(timeseries)) db.replaceSiteTimeseries(siteId, timeseries);
     if (enabled === false) db.setSiteEnabled(siteId, false);
+
+    // Auto-lookup HUC8 in the background if not supplied and coords are known
+    if (!huc8_code && lat != null && lon != null) {
+      try {
+        const { lookupHuc8ByPoint } = require('./basins');
+        lookupHuc8ByPoint(lat, lon).then(huc => {
+          if (huc) db.updateSiteHuc(siteId, huc.huc8_code, huc.huc8_name);
+        }).catch(() => {});
+      } catch (_) {}
+    }
 
     const site = db.getAllSitesWithTimeseries().find(s => s.site_id === siteId);
     res.json({ ok: true, site });
@@ -289,7 +301,15 @@ async function usgsQuery(wLon, sLat, eLon, nLat) {
 
 router.get('/discover/usgs', async (req, res) => {
   try {
-    const { bbox, id, name } = req.query;
+    const { bbox, id, name, huc } = req.query;
+
+    if (huc) {
+      // HUC is a native USGS major filter — single clean request, no chunking needed.
+      const url   = `https://waterservices.usgs.gov/nwis/site/?format=rdb&siteStatus=all&huc=${encodeURIComponent(huc)}`;
+      const text  = await fetchText(url, 30000);
+      const sites = parseUsgsRdb(text).map(usgsRowToSite).filter(s => s.lat && s.lon);
+      return res.json({ ok: true, sites, count: sites.length });
+    }
 
     if (id) {
       const url   = `https://waterservices.usgs.gov/nwis/site/?format=rdb&siteStatus=all&sites=${encodeURIComponent(id)}`;

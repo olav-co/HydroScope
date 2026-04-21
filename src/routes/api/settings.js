@@ -5,7 +5,7 @@ const router  = express.Router();
 
 const {
   stopScheduler, startScheduler, reloadConfig,
-  runFetch, runWeatherFetch, runTopologyDiscovery, runWaterwayTick, runCwmsFetch,
+  runFetch, runWeatherFetch, runTopologyDiscovery, runWaterwayTick, runCwmsFetch, runBasinSync,
   restartService, getRunningState, getAllServiceConfigs, SERVICE_META,
 } = require('../../services/scheduler');
 const { resetProvider } = require('../../services/ai/index');
@@ -212,11 +212,12 @@ router.post('/run/:service', async (req, res) => {
   const { service } = req.params;
 
   const runners = {
-    usgs:      runFetch,
-    weather:   runWeatherFetch,
-    topology:  runTopologyDiscovery,
-    waterways: runWaterwayTick,
-    cwms:      runCwmsFetch,
+    usgs:        runFetch,
+    weather:     runWeatherFetch,
+    topology:    runTopologyDiscovery,
+    waterways:   runWaterwayTick,
+    cwms:        runCwmsFetch,
+    basinSync: runBasinSync,
   };
 
   const fn = runners[service];

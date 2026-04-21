@@ -55,6 +55,13 @@ const SERVICE_META = {
     validIntervals: [15, 30, 60, 120, 360],
     intervalKey: 'intervalMinutes',
   },
+  basinSync: {
+    // Basin geometry is stable — daily sweep catches newly added sites.
+    unit: 'hours',
+    defaultInterval: 24,
+    validIntervals: [12, 24, 48, 168],
+    intervalKey: 'intervalHours',
+  },
 };
 
 function getServiceConfig(name) {
@@ -84,7 +91,7 @@ function getAllServiceConfigs() {
 
 // ── Running state ─────────────────────────────────────────────────────────────
 
-const _running = { usgs: false, weather: false, topology: false, waterways: false, cwms: false };
+const _running = { usgs: false, weather: false, topology: false, waterways: false, cwms: false, basinSync: false };
 
 function getRunningState() {
   return { ..._running };
@@ -249,9 +256,48 @@ async function runCwmsFetch() {
   }
 }
 
+async function runBasinSync() {
+  if (_running.basinSync) return { skipped: true };
+  _running.basinSync = true;
+  const sites = db.getSitesMissingHuc();
+  if (!sites.length) {
+    _running.basinSync = false;
+    return { ok: true, skipped: true, reason: 'All sites already have HUC8 data.' };
+  }
+  console.log(`[Scheduler] Basin sync: resolving HUC8 for ${sites.length} site(s)…`);
+  let done = 0, failed = 0;
+  try {
+    const { lookupHuc8ByPoint } = require('../routes/api/basins');
+    for (const site of sites) {
+      if (!_running.basinSync) break;
+      try {
+        const huc = await lookupHuc8ByPoint(site.latitude, site.longitude);
+        if (huc) {
+          db.updateSiteHuc(site.site_id, huc.huc8_code, huc.huc8_name);
+          done++;
+        } else {
+          console.warn(`[Scheduler] Basin sync: no HUC8 found for ${site.site_id} (${site.latitude}, ${site.longitude})`);
+          failed++;
+        }
+      } catch (e) {
+        console.warn(`[Scheduler] Basin sync failed for ${site.site_id}:`, e.message);
+        failed++;
+      }
+      await new Promise(r => setTimeout(r, 150));
+    }
+    console.log(`[Scheduler] Basin sync complete — ${done} updated, ${failed} failed.`);
+    return { ok: true, updated: done, failed };
+  } catch (err) {
+    console.error('[Scheduler] Basin sync error:', err.message);
+    return { ok: false, error: err.message };
+  } finally {
+    _running.basinSync = false;
+  }
+}
+
 // ── Individual task lifecycle ─────────────────────────────────────────────────
 
-const _tasks = { usgs: null, weather: null, topology: null, waterways: null, cwms: null };
+const _tasks = { usgs: null, weather: null, topology: null, waterways: null, cwms: null, basinSync: null };
 
 function stopTask(name) {
   if (_tasks[name]) { _tasks[name].stop(); _tasks[name] = null; }
@@ -286,6 +332,10 @@ function startTask(name) {
     case 'cwms':
       expr = minutesToCron(svc.interval);
       fn   = () => runCwmsFetch().catch(e => console.error('[Scheduler] cwms error:', e.message));
+      break;
+    case 'basinSync':
+      expr = hoursToCron(svc.interval);
+      fn   = () => runBasinSync().catch(e => console.error('[Scheduler] Basin sync error:', e.message));
       break;
     default:
       return;
@@ -323,6 +373,8 @@ function startScheduler() {
   runWeatherFetch();
   runTopologyDiscovery();
   if (cwmsCount > 0) runCwmsFetch();
+  // Resolve basin geometry for any sites not yet assigned a HUC8
+  if (db.getSitesMissingHuc().length > 0) runBasinSync();
 
   // Schedule all tasks
   for (const name of Object.keys(SERVICE_META)) startTask(name);
@@ -334,7 +386,7 @@ function stopScheduler() {
 
 module.exports = {
   startScheduler, stopScheduler, reloadConfig,
-  runFetch, runWeatherFetch, runTopologyDiscovery, runWaterwayTick, runCwmsFetch,
+  runFetch, runWeatherFetch, runTopologyDiscovery, runWaterwayTick, runCwmsFetch, runBasinSync,
   restartService, getRunningState, getAllServiceConfigs, SERVICE_META,
   drainWaterwayPairs,
 };

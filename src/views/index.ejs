@@ -75,6 +75,28 @@
         <button class="dash-filter" data-param="ph"        onclick="toggleParamFilter('ph',this)"        title="Sites with pH data">pH</button>
       </div>
 
+      <!-- Basin filter -->
+      <div style="position:relative;min-width:200px;max-width:300px;flex:1;">
+        <input id="dashBasinInput" type="text" autocomplete="off"
+          placeholder="Filter by basin…"
+          oninput="_dashBasinInput(this.value)"
+          onfocus="_dashOpenBasin()"
+          onkeydown="_dashBasinKeydown(event)"
+          style="width:100%;padding:4px 28px 4px 10px;background:#1e293b;border:1px solid #334155;
+                 border-radius:20px;color:#e2e8f0;font-size:12px;box-sizing:border-box;
+                 outline:none;transition:border-color .15s;"
+          onblur="if(!_basinFilter)this.style.borderColor='#334155'"/>
+        <span style="position:absolute;right:9px;top:50%;transform:translateY(-50%);color:#475569;font-size:11px;pointer-events:none;">▾</span>
+        <div id="dashBasinDropdown"
+          style="display:none;position:absolute;top:calc(100% + 3px);left:0;right:0;z-index:200;
+                 background:#0f172a;border:1px solid #334155;border-radius:7px;
+                 max-height:200px;overflow-y:auto;box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+        </div>
+      </div>
+      <button id="dashBasinClear" onclick="_dashClearBasin()"
+        style="display:none;padding:3px 9px;background:none;border:1px solid #334155;
+               border-radius:20px;color:#94a3b8;font-size:12px;cursor:pointer;">✕ Basin</button>
+
       <!-- Sort -->
       <div class="flex items-center gap-2 ml-auto">
         <span class="text-xs text-slate-500">Sort</span>
@@ -118,6 +140,7 @@
         data-name="<%= site.name %>"
         data-type="<%= (site.type || '').toLowerCase() %>"
         data-source="<%= isCwms ? 'cwms' : 'usgs' %>"
+        data-huc8="<%= site.huc8_code || '' %>"
         data-has-data="<%= hasData %>"
         data-discharge="<%= (discharge && discharge.value) || (outflow && outflow.value) || -1 %>"
         data-temp="<%= (temp && temp.value) || (cwmsTemp && cwmsTemp.value) || -1 %>"
@@ -483,7 +506,8 @@ var ALERT_LEVEL_STYLES = {
 // ── Filter & Sort ─────────────────────────────────────────
 var _currentFilter = 'all';
 var _sourceFilter  = 'all';
-var _activeParams  = {};   // param key -> true when toggled on
+var _activeParams  = {};
+var _basinFilter   = '';
 
 function setSrcFilter(src) {
   _sourceFilter = src;
@@ -518,8 +542,13 @@ function applyFiltersAndSort() {
   cards.forEach(function(card) {
     var show = true;
 
-    // 0. Source filter
-    if (_sourceFilter !== 'all') {
+    // 0. Basin filter
+    if (_basinFilter) {
+      if (card.getAttribute('data-huc8') !== _basinFilter) show = false;
+    }
+
+    // 0b. Source filter
+    if (show && _sourceFilter !== 'all') {
       if (card.getAttribute('data-source') !== _sourceFilter) show = false;
     }
 
@@ -574,6 +603,96 @@ function applyFiltersAndSort() {
   visibleCards.forEach(function(card) { grid.insertBefore(card, empty); });
   empty.style.display = visible === 0 ? 'block' : 'none';
 }
+
+// ── Basin combobox ────────────────────────────────────────────────────────────
+var _dashBasinOpts = [];
+var _dashBasinHiIdx = -1;
+
+(async function _loadDashBasins() {
+  try {
+    var r = await fetch('/api/basins');
+    var basins = await r.json();
+    if (!Array.isArray(basins)) return;
+    _dashBasinOpts = basins.map(function(b) {
+      return { code: b.huc8_code, display: b.huc8_name ? b.huc8_name + ' (' + b.huc8_code + ')' : b.huc8_code };
+    });
+  } catch (_) {}
+})();
+
+function _dashBasinFiltered(q) {
+  if (!q) return _dashBasinOpts;
+  var lq = q.toLowerCase();
+  return _dashBasinOpts.filter(function(b) { return b.display.toLowerCase().indexOf(lq) !== -1; });
+}
+
+function _dashRenderBasin(q) {
+  var dd = document.getElementById('dashBasinDropdown');
+  if (!dd) return;
+  var items = _dashBasinFiltered(q || '');
+  _dashBasinHiIdx = -1;
+  if (!items.length) {
+    dd.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#475569;">' + (q ? 'No matching basins' : 'No basins — run Basin Geometry sync') + '</div>';
+    return;
+  }
+  dd.innerHTML = items.slice(0, 50).map(function(b, i) {
+    return '<div class="_db-opt" data-code="' + b.code + '" onclick="_dashPickBasin(\'' + b.code + '\',\'' + b.display.replace(/'/g,"&#39;") + '\')" onmouseenter="_dashBasinHover(' + i + ')" style="padding:7px 12px;font-size:12px;color:#94a3b8;cursor:pointer;">' + b.display + '</div>';
+  }).join('');
+}
+
+function _dashBasinHover(i) {
+  _dashBasinHiIdx = i;
+  document.querySelectorAll('._db-opt').forEach(function(el, j) {
+    el.style.background = j === i ? '#1e293b' : '';
+    el.style.color = j === i ? '#e2e8f0' : '#94a3b8';
+  });
+}
+
+function _dashOpenBasin() {
+  var dd = document.getElementById('dashBasinDropdown');
+  if (!dd) return;
+  var inp = document.getElementById('dashBasinInput');
+  _dashRenderBasin(inp ? inp.value : '');
+  dd.style.display = 'block';
+}
+
+function _dashBasinInput(val) {
+  _dashRenderBasin(val);
+  document.getElementById('dashBasinDropdown').style.display = 'block';
+}
+
+function _dashBasinKeydown(e) {
+  var dd = document.getElementById('dashBasinDropdown');
+  if (!dd || dd.style.display === 'none') return;
+  var opts = dd.querySelectorAll('._db-opt');
+  if (!opts.length) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); _dashBasinHover(Math.min(_dashBasinHiIdx + 1, opts.length - 1)); opts[_dashBasinHiIdx] && opts[_dashBasinHiIdx].scrollIntoView({ block: 'nearest' }); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); _dashBasinHover(Math.max(_dashBasinHiIdx - 1, 0)); opts[_dashBasinHiIdx] && opts[_dashBasinHiIdx].scrollIntoView({ block: 'nearest' }); }
+  else if (e.key === 'Enter') { e.preventDefault(); var t = _dashBasinHiIdx >= 0 ? opts[_dashBasinHiIdx] : opts[0]; if (t) _dashPickBasin(t.dataset.code, t.textContent.trim()); }
+  else if (e.key === 'Escape') { document.getElementById('dashBasinDropdown').style.display = 'none'; }
+}
+
+function _dashPickBasin(code, display) {
+  document.getElementById('dashBasinDropdown').style.display = 'none';
+  var inp = document.getElementById('dashBasinInput');
+  if (inp) { inp.value = display; inp.style.borderColor = '#34d399'; }
+  document.getElementById('dashBasinClear').style.display = '';
+  _basinFilter = code;
+  applyFiltersAndSort();
+}
+
+function _dashClearBasin() {
+  _basinFilter = '';
+  var inp = document.getElementById('dashBasinInput');
+  if (inp) { inp.value = ''; inp.style.borderColor = ''; }
+  document.getElementById('dashBasinClear').style.display = 'none';
+  applyFiltersAndSort();
+}
+
+document.addEventListener('click', function(e) {
+  var inp = document.getElementById('dashBasinInput');
+  var dd  = document.getElementById('dashBasinDropdown');
+  if (inp && dd && !inp.contains(e.target) && !dd.contains(e.target)) dd.style.display = 'none';
+});
 
 async function loadEnrichment() {
   var bar = document.getElementById('ai-status-bar');

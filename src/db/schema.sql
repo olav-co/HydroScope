@@ -16,6 +16,15 @@ CREATE TABLE IF NOT EXISTS sites (
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_sites_source_enabled ON sites(source, enabled);
+CREATE INDEX IF NOT EXISTS idx_sites_huc8 ON sites(huc8_code);
+
+-- HUC8 basin polygons cache (populated on demand from USGS WBD)
+CREATE TABLE IF NOT EXISTS basins (
+  huc8_code    TEXT     PRIMARY KEY,
+  huc8_name    TEXT     NOT NULL,
+  polygon_json TEXT,                         -- GeoJSON Feature string
+  fetched_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Per-site CWMS timeseries IDs (CDA fetch scheduling)
 CREATE TABLE IF NOT EXISTS site_timeseries (

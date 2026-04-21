@@ -223,6 +223,30 @@
     <!-- Controls -->
     <div class="card">
       <div class="flex flex-col gap-4">
+
+        <!-- Basin multi-selector -->
+        <div>
+          <div class="flex items-center gap-2 mb-2 flex-wrap">
+            <label class="label mb-0" style="flex-shrink:0;">Basins</label>
+            <div id="fn-basin-tags" class="flex flex-wrap gap-1.5"></div>
+          </div>
+          <div style="position:relative;">
+            <input id="fnBasinInput" type="text" autocomplete="off"
+              placeholder="Add a watershed…"
+              oninput="_fnBasinInput(this.value)"
+              onfocus="_fnOpenBasin()"
+              onkeydown="_fnBasinKeydown(event)"
+              style="width:100%;padding:5px 28px 5px 10px;background:#0f172a;border:1px solid #334155;
+                     border-radius:6px;color:#e2e8f0;font-size:12px;box-sizing:border-box;outline:none;"/>
+            <span style="position:absolute;right:9px;top:50%;transform:translateY(-50%);color:#475569;font-size:11px;pointer-events:none;">▾</span>
+            <div id="fnBasinDropdown"
+              style="display:none;position:absolute;top:calc(100% + 3px);left:0;right:0;z-index:200;
+                     background:#0f172a;border:1px solid #334155;border-radius:7px;
+                     max-height:220px;overflow-y:auto;box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+            </div>
+          </div>
+        </div>
+
         <div>
           <div class="flex items-center justify-between mb-2">
             <label class="label mb-0">Sites <span class="text-slate-600 font-normal">(select any · cross-selectable)</span></label>
@@ -233,15 +257,21 @@
             var cwmsSitesFN = sites.filter(function(s){ return s.source === 'cwms'; });
             var colors = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15','#e879f9','#22d3ee','#4ade80','#f97316','#818cf8','#fbbf24'];
           %>
-          <div id="site-chips" class="flex flex-col gap-3">
+
+          <!-- placeholder shown until a basin is selected -->
+          <div id="fn-basin-hint" style="padding:10px 0;font-size:12px;color:#475569;">
+            Select a basin above to see available sites.
+          </div>
+
+          <div id="site-chips" class="flex flex-col gap-3" style="display:none;">
             <% if (usgsSitesFN.length) { %>
-            <div>
+            <div id="fn-usgs-group">
               <div class="text-xs font-semibold mb-1.5" style="color:#38bdf8;letter-spacing:.06em;text-transform:uppercase;">
                 <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(14,165,233,0.12);border:1px solid rgba(14,165,233,0.25);margin-right:5px;">USGS</span>Stream Gauges
               </div>
-              <div class="flex flex-wrap gap-2">
+              <div class="flex flex-wrap gap-2" id="fn-usgs-chips">
                 <% usgsSitesFN.forEach(function(s, i) { var c = colors[i % colors.length]; %>
-                <button class="fn-chip" data-id="<%= s.site_id %>" data-name="<%= s.name %>" data-color="<%= c %>" data-source="usgs" onclick="toggleSite(this)">
+                <button class="fn-chip" data-id="<%= s.site_id %>" data-name="<%= s.name %>" data-color="<%= c %>" data-source="usgs" data-huc8="<%= s.huc8_code || '' %>" onclick="toggleSite(this)">
                   <span class="cdot"></span>
                   <%= s.name %>
                 </button>
@@ -250,13 +280,13 @@
             </div>
             <% } %>
             <% if (cwmsSitesFN.length) { %>
-            <div>
+            <div id="fn-cwms-group">
               <div class="text-xs font-semibold mb-1.5" style="color:#f59e0b;letter-spacing:.06em;text-transform:uppercase;">
                 <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);margin-right:5px;">CWMS</span>Dam Operations
               </div>
-              <div class="flex flex-wrap gap-2">
+              <div class="flex flex-wrap gap-2" id="fn-cwms-chips">
                 <% cwmsSitesFN.forEach(function(s, i) { var c = ['#f59e0b','#fb923c','#fbbf24','#e879f9'][i % 4]; %>
-                <button class="fn-chip" data-id="<%= s.site_id %>" data-name="<%= s.name %>" data-color="<%= c %>" data-source="cwms" onclick="toggleSite(this)">
+                <button class="fn-chip" data-id="<%= s.site_id %>" data-name="<%= s.name %>" data-color="<%= c %>" data-source="cwms" data-huc8="<%= s.huc8_code || '' %>" onclick="toggleSite(this)">
                   <span class="cdot"></span>
                   ⬡ <%= s.name %>
                 </button>
@@ -396,6 +426,268 @@
 // ── State ─────────────────────────────────────────────────────────────────────
 var SITES       = <%- JSON.stringify(sites) %>;
 var INIT_CONNS  = <%- JSON.stringify(connections) %>;
+
+// ── Basin multi-selector ──────────────────────────────────────────────────────
+var _fnBasinOpts    = [];
+var _fnBasinHiIdx   = -1;
+var _fnActiveBasins = [];  // [{code, display, color}, ...]
+var _FN_BASIN_COLORS = ['#38bdf8','#a78bfa','#34d399','#fb923c','#f472b6','#facc15','#22d3ee','#4ade80'];
+
+(async function _loadFnBasins() {
+  try {
+    var r = await fetch('/api/basins');
+    var basins = await r.json();
+    if (!Array.isArray(basins)) return;
+    _fnBasinOpts = basins.map(function(b) {
+      return { code: b.huc8_code, display: b.huc8_name ? b.huc8_name + ' (' + b.huc8_code + ')' : b.huc8_code };
+    });
+  } catch (_) {}
+})();
+
+// Return degree-distance between two basin centroids (uses SITES lat/lon).
+function _fnBasinCentroid(code) {
+  var pts = SITES.filter(function(s) { return s.huc8_code === code && s.latitude && s.longitude; });
+  if (!pts.length) return null;
+  return {
+    lat: pts.reduce(function(a, s) { return a + s.latitude;  }, 0) / pts.length,
+    lon: pts.reduce(function(a, s) { return a + s.longitude; }, 0) / pts.length
+  };
+}
+
+function _fnBasinDist(codeA, codeB) {
+  var a = _fnBasinCentroid(codeA), b = _fnBasinCentroid(codeB);
+  if (!a || !b) return Infinity;
+  var dlat = a.lat - b.lat, dlon = a.lon - b.lon;
+  return Math.sqrt(dlat * dlat + dlon * dlon);
+}
+
+// Top-N unused basins sorted by min-distance to any active basin.
+function _fnGetRecommended(limit) {
+  if (!_fnActiveBasins.length) return [];
+  var activeCodes = _fnActiveBasins.map(function(b) { return b.code; });
+  return _fnBasinOpts
+    .filter(function(b) { return activeCodes.indexOf(b.code) === -1; })
+    .map(function(b) {
+      var d = Math.min.apply(null, _fnActiveBasins.map(function(ab) { return _fnBasinDist(ab.code, b.code); }));
+      return { code: b.code, display: b.display, dist: d };
+    })
+    .filter(function(b) { return isFinite(b.dist); })
+    .sort(function(a, b) { return a.dist - b.dist; })
+    .slice(0, limit || 5);
+}
+
+function _fnBasinFiltered(q) {
+  var activeCodes = _fnActiveBasins.map(function(b) { return b.code; });
+  var opts = _fnBasinOpts.filter(function(b) { return activeCodes.indexOf(b.code) === -1; });
+  if (!q) return opts;
+  var lq = q.toLowerCase();
+  return opts.filter(function(b) { return b.display.toLowerCase().indexOf(lq) !== -1; });
+}
+
+function _fnMakeOpt(b, idx) {
+  return '<div class="_fn-bopt" data-code="' + b.code + '"'
+    + ' onclick="_fnPickBasin(\'' + b.code + '\',\'' + b.display.replace(/'/g, '&#39;') + '\')"'
+    + ' onmouseenter="_fnBasinHover(' + idx + ')"'
+    + ' style="padding:7px 12px;font-size:12px;color:#94a3b8;cursor:pointer;">'
+    + b.display + '</div>';
+}
+
+function _fnSectionLabel(text) {
+  return '<div style="padding:4px 12px 2px;font-size:9px;font-weight:700;letter-spacing:.08em;'
+    + 'text-transform:uppercase;color:#334155;">' + text + '</div>';
+}
+
+function _fnRenderBasinDropdown(q) {
+  var dd = document.getElementById('fnBasinDropdown');
+  if (!dd) return;
+  _fnBasinHiIdx = -1;
+
+  if (q) {
+    // Search mode — flat filtered list
+    var hits = _fnBasinFiltered(q);
+    if (!hits.length) {
+      dd.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#475569;">No matching basins</div>';
+      return;
+    }
+    dd.innerHTML = hits.slice(0, 60).map(_fnMakeOpt).join('');
+    return;
+  }
+
+  // Empty query — show recommended (if any active) then the rest
+  var recommended = _fnGetRecommended(5);
+  var recCodes    = recommended.map(function(b) { return b.code; });
+  var activeCodes = _fnActiveBasins.map(function(b) { return b.code; });
+  var rest        = _fnBasinOpts.filter(function(b) {
+    return activeCodes.indexOf(b.code) === -1 && recCodes.indexOf(b.code) === -1;
+  });
+
+  if (!recommended.length && !rest.length) {
+    dd.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#475569;">'
+      + (_fnBasinOpts.length ? 'All basins already added' : 'No basins — run Basin Geometry sync')
+      + '</div>';
+    return;
+  }
+
+  var html = '';
+  var idx  = 0;
+  if (recommended.length) {
+    html += _fnSectionLabel('Suggested nearby');
+    html += recommended.map(function(b) { return _fnMakeOpt(b, idx++); }).join('');
+    if (rest.length) {
+      html += '<div style="height:1px;background:#1e293b;margin:3px 0;"></div>';
+      html += _fnSectionLabel('All basins');
+    }
+  }
+  html += rest.slice(0, 60).map(function(b) { return _fnMakeOpt(b, idx++); }).join('');
+  dd.innerHTML = html;
+}
+
+function _fnBasinHover(i) {
+  _fnBasinHiIdx = i;
+  document.querySelectorAll('._fn-bopt').forEach(function(el, j) {
+    el.style.background = j === i ? '#1e293b' : '';
+    el.style.color      = j === i ? '#e2e8f0' : '#94a3b8';
+  });
+}
+
+function _fnOpenBasin() {
+  var inp = document.getElementById('fnBasinInput');
+  _fnRenderBasinDropdown(inp ? inp.value : '');
+  var dd = document.getElementById('fnBasinDropdown');
+  if (dd) dd.style.display = 'block';
+}
+
+function _fnBasinInput(val) {
+  _fnRenderBasinDropdown(val);
+  var dd = document.getElementById('fnBasinDropdown');
+  if (dd) dd.style.display = 'block';
+}
+
+function _fnBasinKeydown(e) {
+  var dd = document.getElementById('fnBasinDropdown');
+  if (!dd || dd.style.display === 'none') return;
+  var opts = dd.querySelectorAll('._fn-bopt');
+  if (!opts.length) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    _fnBasinHover(Math.min(_fnBasinHiIdx + 1, opts.length - 1));
+    opts[_fnBasinHiIdx] && opts[_fnBasinHiIdx].scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    _fnBasinHover(Math.max(_fnBasinHiIdx - 1, 0));
+    opts[_fnBasinHiIdx] && opts[_fnBasinHiIdx].scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    var t = _fnBasinHiIdx >= 0 ? opts[_fnBasinHiIdx] : opts[0];
+    if (t) _fnPickBasin(t.dataset.code, t.textContent.trim());
+  } else if (e.key === 'Escape') {
+    if (dd) dd.style.display = 'none';
+  }
+}
+
+function _fnPickBasin(code, display) {
+  var dd = document.getElementById('fnBasinDropdown');
+  if (dd) dd.style.display = 'none';
+  var inp = document.getElementById('fnBasinInput');
+  if (inp) inp.value = '';
+  // Skip duplicates
+  if (_fnActiveBasins.some(function(b) { return b.code === code; })) return;
+  var color = _FN_BASIN_COLORS[_fnActiveBasins.length % _FN_BASIN_COLORS.length];
+  _fnActiveBasins.push({ code: code, display: display, color: color });
+  _fnRenderBasinTags();
+  _fnApplyBasinFilter();
+}
+
+function _fnRemoveBasin(code) {
+  _fnActiveBasins = _fnActiveBasins.filter(function(b) { return b.code !== code; });
+  // Deselect sites that belong to this basin and no remaining active basin
+  var remainingCodes = _fnActiveBasins.map(function(b) { return b.code; });
+  document.querySelectorAll('#site-chips .fn-chip').forEach(function(btn) {
+    var huc = btn.getAttribute('data-huc8') || '';
+    if (huc === code && remainingCodes.indexOf(huc) === -1 && btn.classList.contains('active')) {
+      btn.classList.remove('active');
+      btn.querySelector('.cdot').style.background = '#334155';
+      var sid = btn.getAttribute('data-id');
+      _selectedSites = _selectedSites.filter(function(s) { return s.site_id !== sid; });
+    }
+  });
+  _fnRenderBasinTags();
+  _fnApplyBasinFilter();
+}
+
+function _fnRenderBasinTags() {
+  var container = document.getElementById('fn-basin-tags');
+  if (!container) return;
+  container.innerHTML = _fnActiveBasins.map(function(b) {
+    var name = b.display.replace(/ \(\d{8}\)$/, '');  // strip code suffix for brevity
+    return '<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 10px;'
+      + 'border-radius:20px;border:1px solid ' + b.color + '44;background:' + b.color + '18;'
+      + 'color:' + b.color + ';font-size:11px;font-weight:500;white-space:nowrap;">'
+      + name
+      + '<button onclick="_fnRemoveBasin(\'' + b.code + '\')" '
+      + 'style="background:none;border:none;color:' + b.color + ';cursor:pointer;padding:0;'
+      + 'font-size:13px;line-height:1;opacity:0.7;" onmouseover="this.style.opacity=\'1\'" onmouseout="this.style.opacity=\'0.7\'">'
+      + '×</button></span>';
+  }).join('');
+}
+
+function _fnApplyBasinFilter() {
+  var hint = document.getElementById('fn-basin-hint');
+  var chipsWrap = document.getElementById('site-chips');
+  var activeCodes = _fnActiveBasins.map(function(b) { return b.code; });
+
+  if (!activeCodes.length) {
+    if (hint) hint.style.display = '';
+    if (chipsWrap) chipsWrap.style.display = 'none';
+    _selectedSites = [];
+    document.querySelectorAll('#site-chips .fn-chip.active').forEach(function(btn) {
+      btn.classList.remove('active');
+      btn.querySelector('.cdot').style.background = '#334155';
+    });
+    document.getElementById('site-count').textContent = '0 selected';
+    if (_mapMode) renderMaplibreMap(); else redrawNetwork();
+    return;
+  }
+
+  if (hint) hint.style.display = 'none';
+  if (chipsWrap) chipsWrap.style.display = 'flex';
+
+  // Show/hide individual chips
+  document.querySelectorAll('#site-chips .fn-chip').forEach(function(btn) {
+    var huc = btn.getAttribute('data-huc8') || '';
+    var visible = activeCodes.indexOf(huc) !== -1;
+    btn.style.display = visible ? '' : 'none';
+    if (!visible && btn.classList.contains('active')) {
+      btn.classList.remove('active');
+      btn.querySelector('.cdot').style.background = '#334155';
+      var sid = btn.getAttribute('data-id');
+      _selectedSites = _selectedSites.filter(function(s) { return s.site_id !== sid; });
+    }
+  });
+
+  // Hide entire group header if it has no visible chips
+  var usgsGroup = document.getElementById('fn-usgs-group');
+  var cwmsGroup = document.getElementById('fn-cwms-group');
+  if (usgsGroup) {
+    var anyUsgs = Array.from(document.querySelectorAll('#fn-usgs-chips .fn-chip'))
+      .some(function(b) { return b.style.display !== 'none'; });
+    usgsGroup.style.display = anyUsgs ? '' : 'none';
+  }
+  if (cwmsGroup) {
+    var anyCwms = Array.from(document.querySelectorAll('#fn-cwms-chips .fn-chip'))
+      .some(function(b) { return b.style.display !== 'none'; });
+    cwmsGroup.style.display = anyCwms ? '' : 'none';
+  }
+
+  document.getElementById('site-count').textContent = _selectedSites.length + ' selected';
+  if (_mapMode) renderMaplibreMap(); else redrawNetwork();
+}
+
+document.addEventListener('click', function(e) {
+  var inp = document.getElementById('fnBasinInput');
+  var dd  = document.getElementById('fnBasinDropdown');
+  if (inp && dd && !inp.contains(e.target) && !dd.contains(e.target)) dd.style.display = 'none';
+});
 var SITE_COLORS = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15','#e879f9','#22d3ee','#4ade80','#f97316','#818cf8','#fbbf24'];
 
 var _selectedSites  = [];
@@ -419,6 +711,7 @@ var _mlMap          = null;
 var _mlMapReady     = false; // true after 'load' fires and sources/layers are initialized
 var _mlMarkers      = [];   // maplibregl.Marker instances (cleared on each render)
 var _mlPopups       = [];   // maplibregl.Popup instances
+var _mlBasinLayers  = [];   // [{fillId, outlineId}] for cleanup
 var _mapRenderToken = 0;    // incremented per render; stale async renders self-abort
 var STALE_HOURS     = 6;
 
@@ -1032,7 +1325,7 @@ function toggleMapMode() {
     btn.style.color = '#0ea5e9';
     btn.style.borderColor = '#0ea5e9';
     if (rst)  rst.style.display = 'none';
-    if (hint) hint.textContent = 'CARTO Voyager · accurate geographic positions · click markers for data';
+    if (hint) hint.textContent = 'USGS National Map · NHDPlus hydrography · click markers for data';
     if (!_mlMap) _initMaplibreMap();
     else { _mlMap.resize(); renderMaplibreMap(); }
   } else {
@@ -1054,16 +1347,16 @@ function _initMaplibreMap() {
     container: mapEl,
     style: {
       version: 8,
-      sources: { 'carto': {
-        type: 'raster',
-        tiles: [
-          'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
-          'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
-        ],
-        tileSize: 256,
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
-      }},
-      layers: [{ id: 'carto', type: 'raster', source: 'carto' }],
+      sources: {
+        'usgs-topo': {
+          type: 'raster',
+          tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}'],
+          tileSize: 256,
+          attribution: 'USGS National Map',
+          maxzoom: 16,
+        },
+      },
+      layers: [{ id: 'usgs-topo', type: 'raster', source: 'usgs-topo' }],
     },
     center: [-122.5, 45.5],
     zoom: 7,
@@ -1433,10 +1726,39 @@ function renderMaplibreMap() {
     if (_mlMap.getLayer(id)) _mlMap.removeLayer(id);
     if (_mlMap.getSource(id)) _mlMap.removeSource(id);
   });
+  // Remove basin polygon layers from previous render
+  _mlBasinLayers.forEach(function(ids) {
+    if (_mlMap.getLayer(ids.outline)) _mlMap.removeLayer(ids.outline);
+    if (_mlMap.getLayer(ids.fill))    _mlMap.removeLayer(ids.fill);
+    if (_mlMap.getSource(ids.src))    _mlMap.removeSource(ids.src);
+  });
+  _mlBasinLayers = [];
   _setFlowlineStatus(null);
 
   var selectedIds = _selectedSites.map(function(s){ return s.site_id; });
   var boundsCoords = [];
+
+  // ── Basin polygon overlays (drawn first so they sit below all other layers) ─
+  _fnActiveBasins.forEach(function(basin) {
+    var srcId     = 'basin-src-'  + basin.code;
+    var fillId    = 'basin-fill-' + basin.code;
+    var outlineId = 'basin-ol-'   + basin.code;
+    var renderTok = token;
+    fetch('/api/basins/' + basin.code + '/polygon')
+      .then(function(r) { return r.json(); })
+      .then(function(json) {
+        if (renderTok !== _mapRenderToken) return;
+        if (!json.feature) return;
+        if (_mlMap.getSource(srcId)) return;
+        _mlMap.addSource(srcId, { type: 'geojson', data: json.feature });
+        _mlMap.addLayer({ id: fillId, type: 'fill', source: srcId,
+          paint: { 'fill-color': basin.color, 'fill-opacity': 0.18 } });
+        _mlMap.addLayer({ id: outlineId, type: 'line', source: srcId,
+          paint: { 'line-color': basin.color, 'line-width': 3, 'line-opacity': 0.9 } });
+        _mlBasinLayers.push({ src: srcId, fill: fillId, outline: outlineId });
+      })
+      .catch(function() {});
+  });
 
   // effectiveConns = direct + bridged connections between selected sites
   var effectiveConns = effectiveConnections(selectedIds);
@@ -1655,7 +1977,7 @@ function renderMaplibreMap() {
     }
 
     if (stillPending > 0) {
-      _setFlowlineStatus('loading', stillPending);
+      _setFlowlineStatus('loading');
       setTimeout(function() {
         if (token !== _mapRenderToken) return;
         _fetchAndDrawWaterways();

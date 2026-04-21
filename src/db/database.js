@@ -24,6 +24,8 @@ function initDatabase() {
   try { db.exec(`ALTER TABLE sites ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`); } catch (_) {}
   try { db.exec(`ALTER TABLE measurements ADD COLUMN source TEXT NOT NULL DEFAULT 'usgs'`); } catch (_) {}
   try { db.exec(`ALTER TABLE fetch_log ADD COLUMN source TEXT NOT NULL DEFAULT 'usgs'`); } catch (_) {}
+  try { db.exec(`ALTER TABLE sites ADD COLUMN huc8_code TEXT`); } catch (_) {}
+  try { db.exec(`ALTER TABLE sites ADD COLUMN huc8_name TEXT`); } catch (_) {}
 
   // ── Phase 2: apply schema (CREATE TABLE/INDEX IF NOT EXISTS — safe on existing DB)
   const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
@@ -65,21 +67,28 @@ function initDatabase() {
 
 // ── Sites ────────────────────────────────────────────────────────────────────
 
-function upsertSite({ site_id, name, type, source, latitude, longitude, description }) {
+function upsertSite({ site_id, name, type, source, latitude, longitude, description, huc8_code, huc8_name }) {
   const db = getDb();
   // NOTE: `enabled` is intentionally excluded from the ON CONFLICT update —
   // we never want an automated re-seed to re-enable a site the user disabled.
   db.prepare(`
-    INSERT INTO sites (site_id, name, type, source, latitude, longitude, description, enabled)
-    VALUES (@site_id, @name, @type, @source, @latitude, @longitude, @description, 1)
+    INSERT INTO sites (site_id, name, type, source, latitude, longitude, description, huc8_code, huc8_name, enabled)
+    VALUES (@site_id, @name, @type, @source, @latitude, @longitude, @description, @huc8_code, @huc8_name, 1)
     ON CONFLICT(site_id) DO UPDATE SET
       name        = excluded.name,
       type        = excluded.type,
       source      = excluded.source,
       latitude    = excluded.latitude,
       longitude   = excluded.longitude,
-      description = excluded.description
-  `).run({ site_id, name, type: type || 'river', source: source || 'usgs', latitude: latitude || null, longitude: longitude || null, description: description || null });
+      description = excluded.description,
+      huc8_code   = COALESCE(excluded.huc8_code, sites.huc8_code),
+      huc8_name   = COALESCE(excluded.huc8_name, sites.huc8_name)
+  `).run({
+    site_id, name, type: type || 'river', source: source || 'usgs',
+    latitude: latitude || null, longitude: longitude || null,
+    description: description || null,
+    huc8_code: huc8_code || null, huc8_name: huc8_name || null,
+  });
 }
 
 function getAllSites() {
@@ -703,7 +712,55 @@ function getSystemStatus() {
   const totalPairs = db.prepare('SELECT COUNT(*) AS count FROM site_connections').get();
   waterways.total_pairs = totalPairs ? totalPairs.count : 0;
 
-  return { usgsFetches, cwmsFetches, cwmsMeta, weatherMeta, topology, manualConns, waterways };
+  // Basin geometry sync status
+  const hucStats = db.prepare(`
+    SELECT
+      COUNT(*)                                                    AS total,
+      SUM(CASE WHEN huc8_code IS NOT NULL THEN 1 ELSE 0 END)     AS with_huc,
+      SUM(CASE WHEN huc8_code IS NULL
+               AND latitude IS NOT NULL THEN 1 ELSE 0 END)       AS missing
+    FROM sites
+  `).get();
+
+  return { usgsFetches, cwmsFetches, cwmsMeta, weatherMeta, topology, manualConns, waterways, hucStats };
+}
+
+// ── Basins ────────────────────────────────────────────────────────────────────
+
+function getDistinctBasins() {
+  return getDb().prepare(`
+    SELECT DISTINCT huc8_code, huc8_name, COUNT(*) AS site_count
+    FROM sites WHERE huc8_code IS NOT NULL
+    GROUP BY huc8_code ORDER BY huc8_name
+  `).all();
+}
+
+function getCachedBasinPolygon(huc8Code) {
+  return getDb().prepare(`SELECT * FROM basins WHERE huc8_code = ?`).get(huc8Code);
+}
+
+function upsertBasinPolygon({ huc8_code, huc8_name, polygon_json }) {
+  getDb().prepare(`
+    INSERT INTO basins (huc8_code, huc8_name, polygon_json, fetched_at)
+    VALUES (@huc8_code, @huc8_name, @polygon_json, CURRENT_TIMESTAMP)
+    ON CONFLICT(huc8_code) DO UPDATE SET
+      huc8_name    = excluded.huc8_name,
+      polygon_json = excluded.polygon_json,
+      fetched_at   = CURRENT_TIMESTAMP
+  `).run({ huc8_code, huc8_name, polygon_json });
+}
+
+function updateSiteHuc(site_id, huc8_code, huc8_name) {
+  getDb().prepare(`
+    UPDATE sites SET huc8_code = ?, huc8_name = ? WHERE site_id = ?
+  `).run(huc8_code || null, huc8_name || null, site_id);
+}
+
+function getSitesMissingHuc() {
+  return getDb().prepare(`
+    SELECT site_id, name, source, latitude, longitude
+    FROM sites WHERE huc8_code IS NULL AND latitude IS NOT NULL AND longitude IS NOT NULL
+  `).all();
 }
 
 module.exports = {
@@ -722,5 +779,6 @@ module.exports = {
   getWQPermitLimits, upsertWQPermitLimit, deleteWQPermitLimit,
   getProfile, updateProfile,
   getCachedInsight, saveInsight, getRecentInsights,
-  logFetch, getLastFetch, getFetchHistory, getSystemStatus
+  logFetch, getLastFetch, getFetchHistory, getSystemStatus,
+  getDistinctBasins, getCachedBasinPolygon, upsertBasinPolygon, updateSiteHuc, getSitesMissingHuc,
 };
