@@ -153,13 +153,22 @@ async function runWeatherFetch() {
 async function runTopologyDiscovery() {
   if (_running.topology) return { skipped: true };
   _running.topology = true;
-  const siteIds = db.getAllSites().map(s => s.site_id);
-  console.log('[Scheduler] Discovering watershed topology for', siteIds.length, 'sites…');
+  const allSites = db.getAllSites();
+  console.log('[Scheduler] Discovering watershed topology for', allSites.length, 'sites…');
   try {
-    const connections = await discoverNetworkTopology(siteIds);
+    const connections = await discoverNetworkTopology(allSites);
     db.syncNLDIConnections(connections);
     console.log(`[Scheduler] Topology synced: ${connections.length} connection(s).`);
     connections.forEach(c => console.log(`  ${c.from_site_id} → ${c.to_site_id}`));
+
+    // After topology sync, immediately drain any pending waterway pairs so new
+    // connections get river geometry without waiting for the next cron tick.
+    const pending = db.getPendingWaterwayPairs();
+    if (pending.length > 0) {
+      console.log(`[Scheduler] ${pending.length} waterway pair(s) queued — starting drain…`);
+      drainWaterwayPairs();
+    }
+
     return { ok: true, connections: connections.length };
   } catch (err) {
     console.error('[Scheduler] Topology discovery error:', err.message);
@@ -167,6 +176,26 @@ async function runTopologyDiscovery() {
   } finally {
     _running.topology = false;
   }
+}
+
+/**
+ * Self-scheduling loop: process one waterway pair every 4 minutes until
+ * no pending pairs remain.  Runs in the background; does not block the caller.
+ */
+function drainWaterwayPairs() {
+  if (_running.waterways) return;  // tick already in flight — it will self-reschedule
+  runWaterwayTick()
+    .then(result => {
+      if (result && result.processed) {
+        // More pairs may be waiting — schedule the next one in 4 minutes
+        if (db.getPendingWaterwayPairs().length > 0) {
+          setTimeout(drainWaterwayPairs, 4 * 60 * 1000);
+        } else {
+          console.log('[Scheduler] All waterway pairs processed.');
+        }
+      }
+    })
+    .catch(e => console.error('[Scheduler] drainWaterwayPairs error:', e.message));
 }
 
 async function runWaterwayTick() {
@@ -251,8 +280,8 @@ function startTask(name) {
       fn   = () => runTopologyDiscovery().catch(e => console.error('[Scheduler] topology error:', e.message));
       break;
     case 'waterways':
-      expr = minutesToCron(svc.interval);
-      fn   = () => runWaterwayTick().catch(e => console.error('[Scheduler] waterways error:', e.message));
+      expr = hoursToCron(svc.interval);   // unit is hours — was incorrectly using minutesToCron
+      fn   = () => drainWaterwayPairs();  // drain all pending pairs, not just one
       break;
     case 'cwms':
       expr = minutesToCron(svc.interval);
@@ -307,4 +336,5 @@ module.exports = {
   startScheduler, stopScheduler, reloadConfig,
   runFetch, runWeatherFetch, runTopologyDiscovery, runWaterwayTick, runCwmsFetch,
   restartService, getRunningState, getAllServiceConfigs, SERVICE_META,
+  drainWaterwayPairs,
 };

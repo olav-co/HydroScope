@@ -2,8 +2,8 @@
 <%- include('partials/nav') %>
 
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 
 <style>
 /* ── chips ───────────────────────────────────────────────────────────────────*/
@@ -154,22 +154,25 @@
 .flow-line-anim { animation: flow-march 1.4s linear infinite; }
 .flow-line-anim-fast { animation: flow-march 0.7s linear infinite; }
 .flow-line-anim-slow { animation: flow-march 2.4s linear infinite; }
-.fn-map-label.leaflet-tooltip {
+/* MapLibre GL overrides */
+.fn-map-site-label {
   background:rgba(8,18,32,0.92); border:1px solid rgba(255,255,255,0.18); border-radius:4px;
   color:#f1f5f9; font-size:10px; font-weight:600; padding:2px 7px;
   white-space:nowrap; box-shadow:0 1px 4px rgba(0,0,0,0.4); pointer-events:none;
+  position:absolute; bottom:calc(100% + 4px); left:50%; transform:translateX(-50%);
 }
-.fn-map-label.leaflet-tooltip::before { display:none; }
-.leaflet-popup-content-wrapper {
-  background:#0f172a; border:1px solid #334155; border-radius:8px;
-  box-shadow:0 4px 20px rgba(0,0,0,0.5); color:#e2e8f0;
+.maplibregl-popup-content {
+  background:#0f172a !important; border:1px solid #334155 !important; border-radius:8px !important;
+  box-shadow:0 4px 20px rgba(0,0,0,0.5) !important; color:#e2e8f0 !important;
+  padding:10px 14px !important; font-family:Inter,sans-serif;
 }
-.leaflet-popup-tip { background:#0f172a; }
-.leaflet-popup-close-button { color:#64748b !important; }
-.leaflet-control-zoom a { background:#0f172a !important; border-color:#334155 !important; color:#94a3b8 !important; }
-.leaflet-control-zoom a:hover { background:#1e293b !important; color:#e2e8f0 !important; }
-.leaflet-control-attribution { background:rgba(15,23,42,0.8) !important; color:#475569 !important; font-size:9px; }
-.leaflet-control-attribution a { color:#64748b !important; }
+.maplibregl-popup-tip { border-top-color:#0f172a !important; border-bottom-color:#0f172a !important; }
+.maplibregl-popup-close-button { color:#64748b !important; font-size:16px !important; }
+.maplibregl-ctrl-group { background:#0f172a !important; border-color:#334155 !important; }
+.maplibregl-ctrl-group button { background:#0f172a !important; color:#94a3b8 !important; }
+.maplibregl-ctrl-group button:hover { background:#1e293b !important; color:#e2e8f0 !important; }
+.maplibregl-ctrl-attrib { background:rgba(15,23,42,0.8) !important; color:#475569 !important; font-size:9px; }
+.maplibregl-ctrl-attrib a { color:#64748b !important; }
 
 /* ── nldi badge ──────────────────────────────────────────────────────────────*/
 .nldi-badge {
@@ -412,11 +415,61 @@ window.addEventListener('hydroProfileUpdated', function() {
 });
 var _fullscreen     = false;
 var _mapMode        = false;
-var _leafletMap     = null;
-var _leafletLayers  = [];
-var _flowlineCache  = {};   // key: "fromId->toId" → [[lat,lon],...] or null  (cleared on reload)
+var _mlMap          = null;
+var _mlMapReady     = false; // true after 'load' fires and sources/layers are initialized
+var _mlMarkers      = [];   // maplibregl.Marker instances (cleared on each render)
+var _mlPopups       = [];   // maplibregl.Popup instances
 var _mapRenderToken = 0;    // incremented per render; stale async renders self-abort
 var STALE_HOURS     = 6;
+
+// ── Flow-line dash animation (MapLibre equivalent of CSS stroke-dashoffset) ────
+// Pre-compute all 22 dasharray phases for a 14-dash / 8-gap pattern (period=22).
+// Cycling through them at ~35 ms/step produces the same marching-ants speed as
+// the original CSS `flow-march 1.4s` (40 dashoffset units / 1.4 s ≈ 28 u/s;
+// 22-unit period / 28 u/s ≈ 0.77 s/cycle ≈ 35 ms/step).
+var _DASH_SEQ = (function() {
+  var seq = [], D = 14, G = 8, P = D + G;
+  for (var k = 0; k < P; k++) {
+    if (k === 0)    seq.push([D, G]);
+    else if (k < D) seq.push([D-k, G, k]);
+    else { var i = k-D; seq.push(i ? [0, G-i, D, i] : [0, G, D]); }
+  }
+  return seq;
+}());
+// Three speed tiers matching the original CSS classes:
+//   fast   → flow-line-anim-fast  (0.7 s/cycle  → 17 ms/step)
+//   normal → flow-line-anim       (1.4 s/cycle  → 35 ms/step)
+//   slow   → flow-line-anim-slow  (2.4 s/cycle  → 60 ms/step)
+var _DASH_MS    = { slow: 60, normal: 35, fast: 17 };
+var _dashSteps  = { slow: 0,  normal: 0,  fast: 0  };
+var _dashAccum  = { slow: 0,  normal: 0,  fast: 0  };
+var _dashPrev   = 0;
+var _dashRaf    = null;
+
+function _startDashAnim() {
+  _stopDashAnim();
+  _dashPrev = 0;
+  function frame(ts) {
+    _dashRaf = requestAnimationFrame(frame);
+    if (!_mlMap) return;
+    var dt = _dashPrev ? Math.min(ts - _dashPrev, 100) : 0;
+    _dashPrev = ts;
+    ['slow', 'normal', 'fast'].forEach(function(sp) {
+      _dashAccum[sp] += dt;
+      if (_dashAccum[sp] < _DASH_MS[sp]) return;
+      _dashAccum[sp] -= _DASH_MS[sp];
+      _dashSteps[sp] = (_dashSteps[sp] + _DASH_SEQ.length - 1) % _DASH_SEQ.length;
+      var id = sp === 'normal' ? 'ww-line' : 'ww-line-' + sp;
+      try { if (_mlMap.getLayer(id)) _mlMap.setPaintProperty(id, 'line-dasharray', _DASH_SEQ[_dashSteps[sp]]); } catch(_) {}
+    });
+  }
+  _dashRaf = requestAnimationFrame(frame);
+}
+function _stopDashAnim() {
+  if (_dashRaf) { cancelAnimationFrame(_dashRaf); _dashRaf = null; }
+  _dashPrev = 0;
+  _dashAccum = { slow: 0, normal: 0, fast: 0 };
+}
 
 // ── Chip toggles ──────────────────────────────────────────────────────────────
 function toggleSite(btn) {
@@ -424,7 +477,7 @@ function toggleSite(btn) {
   btn.querySelector('.cdot').style.background = btn.classList.contains('active')
     ? btn.dataset.color : '#334155';
   _selectedSites = Array.from(document.querySelectorAll('#site-chips .fn-chip.active')).map(function(b) {
-    return { site_id: b.dataset.id, name: b.dataset.name, color: b.dataset.color };
+    return { site_id: b.dataset.id, name: b.dataset.name, color: b.dataset.color, source: b.dataset.source };
   });
   document.getElementById('site-count').textContent = _selectedSites.length + ' selected';
   refreshData();
@@ -467,7 +520,7 @@ async function refreshData() {
     }
     _readings[s.site_id] = paramReadings;
   }));
-  if (_mapMode) renderLeafletMap(); else redrawNetwork();
+  if (_mapMode) renderMaplibreMap(); else redrawNetwork();
   renderConnections();
   scheduleAnalysis();
 }
@@ -575,11 +628,48 @@ function syncNodes(W, H) {
   });
 }
 
+// ── Effective connections for a given selection ───────────────────────────────
+// After transitive reduction, A→C may not exist in the DB because A→B→C does.
+// When B is NOT selected (e.g. only CWMS dams are selected, USGS gauges are not),
+// we still need to show A→C. This BFS bridges through unselected intermediate nodes.
+function effectiveConnections(selectedIds) {
+  if (!selectedIds.length) return [];
+  var selectedSet = new Set(selectedIds);
+
+  // Build full directed adjacency from ALL stored connections
+  var adj = {};
+  _connections.forEach(function(c) {
+    if (!adj[c.from_site_id]) adj[c.from_site_id] = [];
+    adj[c.from_site_id].push(c.to_site_id);
+  });
+
+  var result = [];
+  selectedIds.forEach(function(fromId) {
+    var seen  = new Set([fromId]);
+    var queue = [];
+    (adj[fromId] || []).forEach(function(n) {
+      if (!seen.has(n)) { seen.add(n); queue.push(n); }
+    });
+    while (queue.length) {
+      var cur = queue.shift();
+      if (selectedSet.has(cur)) {
+        // Reached another selected site — emit effective edge
+        result.push({ from_site_id: fromId, to_site_id: cur, bridged: !_connections.some(function(c){ return c.from_site_id===fromId && c.to_site_id===cur; }) });
+      } else {
+        // Unselected intermediate — keep walking downstream
+        (adj[cur] || []).forEach(function(n) {
+          if (!seen.has(n)) { seen.add(n); queue.push(n); }
+        });
+      }
+    }
+  });
+  return result;
+}
+
 // ── Build link data ───────────────────────────────────────────────────────────
 function buildLinks() {
   var selectedIds = _selectedSites.map(function(s){ return s.site_id; });
-  _d3Links = _connections
-    .filter(function(c){ return selectedIds.includes(c.from_site_id) && selectedIds.includes(c.to_site_id); })
+  _d3Links = effectiveConnections(selectedIds)
     .map(function(c) {
       var src = _d3Nodes.find(function(n){ return n.id === c.from_site_id; });
       var tgt = _d3Nodes.find(function(n){ return n.id === c.to_site_id; });
@@ -600,8 +690,8 @@ function buildLinks() {
       var color = _nodeColor(c.from_site_id);
 
       // ── Link label: show best available active parameter ───────────────────
-      // Priority: discharge → gage height → temperature → DO → pH → first reading
-      var PARAM_PRIORITY = ['00060','00065','00010','00300','00400'];
+      // Priority: discharge → gage height → CWMS flow/pool → temperature → DO → pH → first reading
+      var PARAM_PRIORITY = ['00060','00065','Flow','Flow-Out','Flow-In','Elev-Pool','Elev-Tail','Stor','00010','00300','00400'];
       var activeCodes = (_selectedParams || []).map(function(p){ return p.code; });
       var labelParam = null;
 
@@ -921,7 +1011,7 @@ function toggleFullscreen() {
   card.classList.toggle('fn-fullscreen', _fullscreen);
   if (label) label.textContent = _fullscreen ? '✕' : '⛶';
   setTimeout(function() {
-    if (_mapMode && _leafletMap) _leafletMap.invalidateSize();
+    if (_mapMode && _mlMap) _mlMap.resize();
     else redrawNetwork();
   }, 60);
 }
@@ -942,9 +1032,9 @@ function toggleMapMode() {
     btn.style.color = '#0ea5e9';
     btn.style.borderColor = '#0ea5e9';
     if (rst)  rst.style.display = 'none';
-    if (hint) hint.textContent = 'OpenStreetMap · accurate geographic positions · click markers for data';
-    if (!_leafletMap) _initLeafletMap();
-    else { _leafletMap.invalidateSize(); renderLeafletMap(); }
+    if (hint) hint.textContent = 'CARTO Voyager · accurate geographic positions · click markers for data';
+    if (!_mlMap) _initMaplibreMap();
+    else { _mlMap.resize(); renderMaplibreMap(); }
   } else {
     mapEl.style.display = 'none';
     svgEl.style.display = 'block';
@@ -953,18 +1043,36 @@ function toggleMapMode() {
     btn.style.borderColor = '';
     if (rst)  rst.style.display = '';
     if (hint) hint.textContent = 'Geographic lat/lon layout · drag nodes to adjust · topology from NLDI';
+    _stopDashAnim();
     redrawNetwork();
   }
 }
 
-function _initLeafletMap() {
+function _initMaplibreMap() {
   var mapEl = document.getElementById('map-view');
-  _leafletMap = L.map(mapEl, { zoomControl: true, attributionControl: true });
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19,
-    attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ'
-  }).addTo(_leafletMap);
-  renderLeafletMap();
+  _mlMap = new maplibregl.Map({
+    container: mapEl,
+    style: {
+      version: 8,
+      sources: { 'carto': {
+        type: 'raster',
+        tiles: [
+          'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+          'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+        ],
+        tileSize: 256,
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+      }},
+      layers: [{ id: 'carto', type: 'raster', source: 'carto' }],
+    },
+    center: [-122.5, 45.5],
+    zoom: 7,
+  });
+  _mlMap.addControl(new maplibregl.NavigationControl(), 'top-right');
+  _mlMap.on('load', function() {
+    _mlMapReady = true;
+    renderMaplibreMap();
+  });
 }
 
 // Returns compass bearing (degrees clockwise from north) between two lat/lon points
@@ -1238,43 +1346,58 @@ function _pairFlowline(nodes, fromSite, toSite) {
   return path.map(function(id) { var n = nodes.get(id); return [n.lat, n.lon]; });
 }
 
-// Place a directional arrow + optional discharge label along a polyline path
+// Place a directional arrow + optional discharge label along a polyline path.
+// latlngs = [[lat,lon],...].
+// Arrow sits on the line; label is a SEPARATE marker offset perpendicular to
+// the flow direction (right side of bearing) so it never overlaps the waterway
+// or the permanent site-name labels at the endpoints.
 function _addFlowArrow(latlngs, color, upQ, token) {
   if (_mapRenderToken !== token) return;
-  var mid  = Math.floor(latlngs.length / 2);
-  var p1   = latlngs[Math.max(mid - 1, 0)];
-  var p2   = latlngs[Math.min(mid, latlngs.length - 1)];
-  var bear = mapBearing(p1[0], p1[1], p2[0], p2[1]);
+  var mid    = Math.floor(latlngs.length / 2);
+  var p1     = latlngs[Math.max(mid - 1, 0)];
+  var p2     = latlngs[Math.min(mid, latlngs.length - 1)];
+  var bear   = mapBearing(p1[0], p1[1], p2[0], p2[1]);
+  var lngLat = [latlngs[mid][1], latlngs[mid][0]];
 
-  // Directional arrow at midpoint
-  var arrowSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22"'
-    + ' style="display:block;transform:rotate('+bear.toFixed(1)+'deg);transform-origin:11px 11px;">'
-    + '<polygon points="11,2 19,17 11,12 3,17" fill="'+color+'" opacity="0.95"/>'
-    + '<polygon points="11,2 19,17 11,12 3,17" fill="none" stroke="rgba(8,18,32,0.7)" stroke-width="1.5" stroke-linejoin="round"/>'
+  // ── Arrow — centered exactly on the waterway line ─────────────────────────
+  var arrowEl = document.createElement('div');
+  arrowEl.style.cssText = 'pointer-events:none;width:22px;height:22px;';
+  arrowEl.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22"'
+    + ' style="display:block;transform:rotate(' + bear.toFixed(1) + 'deg);transform-origin:11px 11px;">'
+    + '<polygon points="11,2 19,17 11,12 3,17" fill="' + color + '" opacity="0.95"/>'
+    + '<polygon points="11,2 19,17 11,12 3,17" fill="none" stroke="rgba(8,18,32,0.7)"'
+    + ' stroke-width="1.5" stroke-linejoin="round"/>'
     + '</svg>';
-  var arrowIcon = L.divIcon({ className:'', html:arrowSvg, iconSize:[22,22], iconAnchor:[11,11] });
-  var am = L.marker(latlngs[mid], { icon:arrowIcon, interactive:false }).addTo(_leafletMap);
-  _leafletLayers.push(am);
+  var am = new maplibregl.Marker({ element: arrowEl, anchor: 'center' })
+    .setLngLat(lngLat).addTo(_mlMap);
+  _mlMarkers.push(am);
 
+  // ── Label — perpendicular offset, right side of flow direction ────────────
+  // Perpendicular-right of bearing θ in screen coords (x=right, y=down):
+  //   offset = [ cos(θ_rad), sin(θ_rad) ] × PERP_PX
+  // Verified: N→+x(east), E→+y(south), S→-x(west), W→-y(north)
   if (upQ && upQ.value) {
-    var ti  = upQ.trend==='rising'?'↑':upQ.trend==='falling'?'↓':'→';
-    var lbl = (upQ.value >= 1000 ? (upQ.value/1000).toFixed(1)+'k' : Math.round(upQ.value)) + ' cfs ' + ti;
-    // iconSize:[0,0] + iconAnchor:[0,0] lets the div size itself naturally.
-    // The inner div uses transform to center itself above the arrow.
-    var lblIcon = L.divIcon({
-      className: '',
-      iconSize:   [0, 0],
-      iconAnchor: [0, 0],
-      html: '<div style="'
-          + 'position:absolute;transform:translate(-50%,-180%);'
-          + 'font-family:JetBrains Mono,monospace;font-size:10px;font-weight:700;'
-          + 'color:'+color+';background:rgba(8,18,32,0.92);'
-          + 'border:1.5px solid '+color+';padding:2px 8px;border-radius:4px;'
-          + 'white-space:nowrap;pointer-events:none;'
-          + 'box-shadow:0 1px 5px rgba(0,0,0,0.5);">'+lbl+'</div>',
-    });
-    var lm = L.marker(latlngs[mid], { icon:lblIcon, interactive:false }).addTo(_leafletMap);
-    _leafletLayers.push(lm);
+    var ti  = upQ.trend === 'rising' ? '↑' : upQ.trend === 'falling' ? '↓' : '→';
+    var lbl = (upQ.value >= 1000 ? (upQ.value / 1000).toFixed(1) + 'k' : Math.round(upQ.value))
+            + (upQ.unit && upQ.unit !== 'ft³/s' && upQ.unit !== 'cfs' ? ' ' + upQ.unit : ' cfs')
+            + ' ' + ti;
+
+    var rad  = bear * Math.PI / 180;
+    var PERP = 24; // px — enough clearance from a 3.5px line + arrow
+    var ox   = Math.cos(rad) * PERP;
+    var oy   = Math.sin(rad) * PERP;
+
+    var lblEl = document.createElement('div');
+    lblEl.style.cssText = 'pointer-events:none;white-space:nowrap;'
+      + 'font-family:JetBrains Mono,monospace;font-size:10px;font-weight:700;'
+      + 'color:' + color + ';background:rgba(8,18,32,0.88);'
+      + 'border:1.5px solid ' + color + ';padding:2px 7px;border-radius:4px;'
+      + 'box-shadow:0 1px 4px rgba(0,0,0,0.5);';
+    lblEl.textContent = lbl;
+
+    var lm = new maplibregl.Marker({ element: lblEl, anchor: 'center', offset: [ox, oy] })
+      .setLngLat(lngLat).addTo(_mlMap);
+    _mlMarkers.push(lm);
   }
 }
 
@@ -1289,96 +1412,173 @@ function _nodeColor(siteId) {
   return sel ? sel.color : '#64748b';
 }
 
-function renderLeafletMap() {
+function renderMaplibreMap() {
   var token = ++_mapRenderToken;
-  if (!_leafletMap) return;
+  if (!_mlMap) return;
 
-  _leafletLayers.forEach(function(l) { try { _leafletMap.removeLayer(l); } catch(_) {} });
-  _leafletLayers = [];
-  _setFlowlineStatus(null); // clear any prior indicator
+  // Sources/layers are created in _initMaplibreMap's 'load' handler.
+  // If that hasn't fired yet, bail — the load handler will call us.
+  if (!_mlMapReady) return;
+
+  // Stop any running dash animation and clear markers/popups
+  _stopDashAnim();
+  _mlMarkers.forEach(function(m) { m.remove(); });
+  _mlMarkers = [];
+  _mlPopups.forEach(function(p) { p.remove(); });
+  _mlPopups = [];
+
+  // Remove previously added GeoJSON sources/layers (all three speed tiers + base layers)
+  ['ww-line-fast','ww-shadow-fast','ww-line','ww-shadow','ww-line-slow','ww-shadow-slow',
+   'conn-placeholder','conn-inactive'].forEach(function(id) {
+    if (_mlMap.getLayer(id)) _mlMap.removeLayer(id);
+    if (_mlMap.getSource(id)) _mlMap.removeSource(id);
+  });
+  _setFlowlineStatus(null);
 
   var selectedIds = _selectedSites.map(function(s){ return s.site_id; });
-  var bounds = [];
+  var boundsCoords = [];
 
-  // ── Inactive connections: faint straight dashed lines (drawn immediately) ──
+  // effectiveConns = direct + bridged connections between selected sites
+  var effectiveConns = effectiveConnections(selectedIds);
+
+  // ── Inactive connection lines (faint dashed) — direct edges to unselected sites ──
+  var inactiveFeatures = [];
   _connections.forEach(function(c) {
     if (selectedIds.includes(c.from_site_id) && selectedIds.includes(c.to_site_id)) return;
     var from = SITES.find(function(s){ return s.site_id === c.from_site_id; });
     var to   = SITES.find(function(s){ return s.site_id === c.to_site_id; });
     if (!from || !to || !from.latitude || !to.latitude) return;
-    var l = L.polyline([[from.latitude,from.longitude],[to.latitude,to.longitude]],
-      { color:'#94a3b8', weight:1, opacity:0.3, dashArray:'5,6' }).addTo(_leafletMap);
-    _leafletLayers.push(l);
+    inactiveFeatures.push({ type:'Feature', geometry:{ type:'LineString',
+      coordinates:[[from.longitude,from.latitude],[to.longitude,to.latitude]] } });
   });
+  _mlMap.addSource('conn-inactive', { type:'geojson', data:{ type:'FeatureCollection', features:inactiveFeatures } });
+  _mlMap.addLayer({ id:'conn-inactive', type:'line', source:'conn-inactive',
+    paint:{ 'line-color':'#94a3b8', 'line-width':1, 'line-opacity':0.3, 'line-dasharray':[5,6] } });
 
-  // ── Active connections: placeholder straight lines drawn NOW, replaced when waterways arrive ──
-  var activeConns = _connections.filter(function(c) {
-    return selectedIds.includes(c.from_site_id) && selectedIds.includes(c.to_site_id);
-  });
-
-  // Draw placeholder dashed lines immediately so the map isn't empty
-  var placeholders = {}; // key → [placeholder layers] to remove when real geometry arrives
+  // ── Active placeholder lines (colored dashed, replaced when waterways arrive) ──
+  var activeConns = effectiveConns;
+  var placeholderFeatures = [];
   activeConns.forEach(function(c) {
     var from = SITES.find(function(s){ return s.site_id === c.from_site_id; });
     var to   = SITES.find(function(s){ return s.site_id === c.to_site_id; });
     if (!from || !to || !from.latitude || !to.latitude) return;
     var color = _nodeColor(c.from_site_id);
-    var pts = [[from.latitude,from.longitude],[to.latitude,to.longitude]];
-    var pl = L.polyline(pts, { color:color, weight:2, opacity:0.55, dashArray:'8,6' }).addTo(_leafletMap);
-    _leafletLayers.push(pl);
-    placeholders[c.from_site_id + '->' + c.to_site_id] = pl;
+    placeholderFeatures.push({ type:'Feature',
+      properties:{ key: c.from_site_id+'->'+c.to_site_id, color: color },
+      geometry:{ type:'LineString', coordinates:[[from.longitude,from.latitude],[to.longitude,to.latitude]] } });
+  });
+  _mlMap.addSource('conn-placeholder', { type:'geojson', data:{ type:'FeatureCollection', features:placeholderFeatures } });
+  _mlMap.addLayer({ id:'conn-placeholder', type:'line', source:'conn-placeholder',
+    paint:{ 'line-color':['get','color'], 'line-width':2, 'line-opacity':0.55, 'line-dasharray':[8,6] } });
+
+  // ── Waterway path sources — three speed tiers (empty until paths arrive) ────
+  // slow=≤3000 cfs / normal=3–50k / fast=>50k — mirrors original CSS animation classes
+  ['slow', 'normal', 'fast'].forEach(function(sp) {
+    var shId = sp === 'normal' ? 'ww-shadow'   : 'ww-shadow-' + sp;
+    var lnId = sp === 'normal' ? 'ww-line'     : 'ww-line-'   + sp;
+    _mlMap.addSource(shId, { type:'geojson', data:{ type:'FeatureCollection', features:[] } });
+    _mlMap.addLayer({ id:shId, type:'line', source:shId,
+      paint:{ 'line-color':'#0a1628', 'line-width':6, 'line-opacity':0.22 } });
+    _mlMap.addSource(lnId, { type:'geojson', data:{ type:'FeatureCollection', features:[] } });
+    _mlMap.addLayer({ id:lnId, type:'line', source:lnId,
+      paint:{ 'line-color':['get','color'], 'line-width':3.5, 'line-opacity':0.85,
+              'line-dasharray': _DASH_SEQ[0] } });
   });
 
-  // ── Site markers (drawn immediately, on top of placeholder lines) ──
+  // ── Site markers ──────────────────────────────────────────────────────────
   _selectedSites.forEach(function(s) {
     var full = SITES.find(function(f){ return f.site_id === s.site_id; }) || {};
     if (!full.latitude || !full.longitude) return;
-    bounds.push([full.latitude, full.longitude]);
+    boundsCoords.push([full.longitude, full.latitude]);
 
     var isDam  = (full.type||'river').toLowerCase() === 'dam';
     var isRes  = (full.type||'river').toLowerCase() === 'reservoir';
+    var isCwms = full.source === 'cwms';
     var accent = isDam ? '#f97316' : isRes ? '#06b6d4' : s.color;
     var readings = _readings[s.site_id] || [];
+    var sz = isDam ? 24 : isRes ? 22 : 18;
 
-    var hoverHtml = '<div style="font-family:Inter,sans-serif;min-width:170px;max-width:220px;">'
+    // ── Zero-size anchor wrapper — MapLibre anchors to the exact lat/lon ────────
+    // Using a 0×0 wrapper prevents any label overflow or child CSS from
+    // influencing the anchor-offset calculation MapLibre does via offsetWidth/Height.
+    var half = sz / 2;
+    var wrapper = document.createElement('div');
+    wrapper.style.cssText = 'width:0;height:0;overflow:visible;cursor:pointer;';
+
+    // Dot circle — absolutely centered on the anchor point
+    var dot = document.createElement('div');
+    dot.style.cssText = 'position:absolute;'
+      + 'width:'+sz+'px;height:'+sz+'px;border-radius:50%;'
+      + 'left:'+(-half)+'px;top:'+(-half)+'px;'
+      + 'background:'+accent+';border:2.5px solid #0a1628;'
+      + 'box-shadow:0 0 0 2px '+accent+'44;'
+      + 'display:flex;align-items:center;justify-content:center;';
+    if (isDam) dot.innerHTML = '<span style="font-size:6px;font-weight:800;color:#0a1628;letter-spacing:.02em;">DAM</span>';
+    else if (isRes) dot.innerHTML = '<span style="font-size:6px;font-weight:800;color:#0a1628;letter-spacing:.02em;">RES</span>';
+    else if (isCwms) dot.innerHTML = '<span style="font-size:7px;font-weight:800;color:#0a1628;">⬡</span>';
+    wrapper.appendChild(dot);
+
+    // Permanent name label — anchored to the same 0×0 point, shifted up above dot
+    var typeTag = isDam ? ' · DAM' : isRes ? ' · RES' : '';
+    var lbl = document.createElement('div');
+    lbl.textContent = truncate(s.name, 22) + typeTag;
+    lbl.style.cssText = 'position:absolute;left:0;top:0;'
+      + 'transform:translate(-50%, calc(-100% - '+(half+4)+'px));'
+      + 'background:rgba(8,18,32,0.92);border:1px solid rgba(255,255,255,0.15);border-radius:4px;'
+      + 'color:#f1f5f9;font-size:10px;font-weight:600;padding:2px 7px;'
+      + 'white-space:nowrap;pointer-events:none;font-family:Inter,sans-serif;';
+    wrapper.appendChild(lbl);
+
+    // Hover popup HTML
+    var popupHtml = '<div style="font-family:Inter,sans-serif;min-width:170px;max-width:220px;">'
       + '<div style="font-weight:700;font-size:12px;margin-bottom:5px;color:#e2e8f0;">' + esc(s.name) + '</div>'
       + (isDam ? '<div style="font-size:9px;color:#fb923c;font-weight:700;letter-spacing:.06em;margin-bottom:4px;">DAM</div>'
-               : isRes ? '<div style="font-size:9px;color:#22d3ee;font-weight:700;letter-spacing:.06em;margin-bottom:4px;">RESERVOIR</div>' : '')
+               : isRes ? '<div style="font-size:9px;color:#22d3ee;font-weight:700;letter-spacing:.06em;margin-bottom:4px;">RESERVOIR</div>'
+               : isCwms ? '<div style="font-size:9px;color:#f59e0b;font-weight:700;letter-spacing:.06em;margin-bottom:4px;">CWMS</div>' : '')
       + (readings.length
           ? readings.map(function(r) {
               var ti = r.trend==='rising'?'↑':r.trend==='falling'?'↓':'→';
               var tc = r.trend==='rising'?'#34d399':r.trend==='falling'?'#f87171':'#94a3b8';
               return '<div style="display:flex;justify-content:space-between;gap:12px;font-size:11px;margin-bottom:3px;">'
-                + '<span style="color:#64748b;">' + esc(r.param_name) + '</span>'
-                + '<span style="font-weight:600;color:'+tc+';">' + r.value.toFixed(1)+' '+esc(r.unit)+' '+ti+'</span>'
+                + '<span style="color:#64748b;">'+esc(r.param_name)+'</span>'
+                + '<span style="font-weight:600;color:'+tc+';">'+r.value.toFixed(1)+' '+esc(r.unit)+' '+ti+'</span>'
                 + '</div>';
             }).join('')
           : '<div style="font-size:11px;color:#475569;">No data loaded</div>')
       + '<div style="margin-top:6px;padding-top:6px;border-top:1px solid #1e293b;font-size:9px;color:#334155;">Click for full details</div>'
       + '</div>';
 
-    var marker = L.circleMarker([full.latitude, full.longitude], {
-      radius: isDam ? 11 : isRes ? 12 : 9,
-      fillColor: accent, color: '#0a1628', weight: 2.5, fillOpacity: 0.9,
-    }).addTo(_leafletMap);
+    var popup = new maplibregl.Popup({ closeButton:false, offset:half + 4, maxWidth:'240px' })
+      .setHTML(popupHtml);
+    _mlPopups.push(popup);
 
-    marker.bindPopup(hoverHtml, { maxWidth: 240, closeButton: false, autoPan: false });
-    marker.on('mouseover', function() { this.openPopup(); });
-    marker.on('mouseout',  function() { this.closePopup(); });
-    marker.on('click', function(e) { L.DomEvent.stopPropagation(e); openSlideover(s.site_id); });
+    // anchor:'center' on a 0×0 element → no offset applied → wrapper sits exactly at lat/lon
+    var marker = new maplibregl.Marker({ element: wrapper, anchor:'center' })
+      .setLngLat([full.longitude, full.latitude])
+      .addTo(_mlMap);
+    _mlMarkers.push(marker);
 
-    var typeTag = isDam ? ' · DAM' : isRes ? ' · RESVR' : '';
-    marker.bindTooltip(truncate(s.name, 22) + typeTag, {
-      permanent: true, direction: 'top', offset: [0, -14], className: 'fn-map-label',
-    });
-
-    _leafletLayers.push(marker);
+    // Hover: open/close popup
+    (function(mk, pp, sid) {
+      mk.getElement().addEventListener('mouseenter', function() { pp.setLngLat(mk.getLngLat()).addTo(_mlMap); });
+      mk.getElement().addEventListener('mouseleave', function() { pp.remove(); });
+      mk.getElement().addEventListener('click',      function(e) { e.stopPropagation(); openSlideover(sid); });
+    }(marker, popup, s.site_id));
   });
 
-  if (bounds.length > 1)        _leafletMap.fitBounds(bounds, { padding: [55, 55] });
-  else if (bounds.length === 1) _leafletMap.setView(bounds[0], 11);
+  // Fit map to selected sites
+  if (boundsCoords.length > 1) {
+    var lngs = boundsCoords.map(function(b){ return b[0]; });
+    var lats = boundsCoords.map(function(b){ return b[1]; });
+    _mlMap.fitBounds(
+      [[Math.min.apply(null,lngs), Math.min.apply(null,lats)],
+       [Math.max.apply(null,lngs), Math.max.apply(null,lats)]],
+      { padding:80, maxZoom:13, duration:400 }
+    );
+  } else if (boundsCoords.length === 1) {
+    _mlMap.easeTo({ center:boundsCoords[0], zoom:11, duration:400 });
+  }
 
-  // ── Waterway paths: fetch pre-computed paths from server cache ───────────────
   if (!activeConns.length) return;
   _setFlowlineStatus('loading', activeConns.length);
 
@@ -1390,56 +1590,71 @@ function renderLeafletMap() {
 
   function _drawWaterwayPaths(pathData) {
     if (token !== _mapRenderToken) { _setFlowlineStatus(null); return; }
-
-    var stillPending = 0;
-    // Only draw paths where both endpoints are currently selected
     pathData = pathData.filter(function(entry) {
       return selectedIds.includes(entry.from_site_id) && selectedIds.includes(entry.to_site_id);
     });
+
+    // Three speed buckets: slow=≤3000 cfs, normal=3–50k, fast=>50k
+    var shadowBuckets = { slow:[], normal:[], fast:[] };
+    var lineBuckets   = { slow:[], normal:[], fast:[] };
+    var stillPending  = 0;
+    var resolvedKeys  = {};
+
     pathData.forEach(function(entry) {
-      var key  = entry.from_site_id + '->' + entry.to_site_id;
-      var from = SITES.find(function(s){ return s.site_id === entry.from_site_id; });
-      var to   = SITES.find(function(s){ return s.site_id === entry.to_site_id; });
-      var upQ   = (_readings[entry.from_site_id]||[]).find(function(r){ return r.param_code==='00060'; }) || {};
+      // CWMS-aware discharge: try USGS 00060 first, then CWMS Flow params
+      var upReadings = _readings[entry.from_site_id] || [];
+      var upQ = upReadings.find(function(r){ return r.param_code==='00060'; })
+             || upReadings.find(function(r){ return r.param_code==='Flow' || r.param_code==='Flow-Out'; })
+             || {};
       var color = _nodeColor(entry.from_site_id);
+      var qVal  = upQ && upQ.value ? upQ.value : 0;
+      var sp    = qVal > 50000 ? 'fast' : qVal > 3000 ? 'normal' : 'slow';
 
-      if (entry.status === 'pending') { stillPending++; return; } // server still crawling
-
-      // Remove placeholder straight line
-      if (placeholders[key]) {
-        try { _leafletMap.removeLayer(placeholders[key]); } catch(_) {}
-        var idx = _leafletLayers.indexOf(placeholders[key]);
-        if (idx !== -1) _leafletLayers.splice(idx, 1);
-        delete placeholders[key];
-      }
+      if (entry.status === 'pending') { stillPending++; return; }
+      resolvedKeys[entry.from_site_id+'->'+entry.to_site_id] = true;
 
       var seg = (entry.status === 'ok' && entry.path && entry.path.length >= 2) ? entry.path : null;
       console.log('[Flowlines]', entry.from_site_id, '->', entry.to_site_id,
-                  '|', entry.status, seg ? seg.length + ' pts' : 'no path');
+                  '|', entry.status, seg ? seg.length+' pts' : 'no path', '|', sp);
 
       if (seg) {
-        // Animation speed class based on discharge magnitude
-        var qVal = upQ && upQ.value ? upQ.value : 0;
-        var animCls = qVal > 50000 ? 'flow-line-anim-fast' : qVal > 3000 ? 'flow-line-anim' : 'flow-line-anim-slow';
-        var h = L.polyline(seg, { color:'#0a1628', weight:6, opacity:0.22 }).addTo(_leafletMap);
-        var l = L.polyline(seg, { color:color, weight:3.5, opacity:0.85,
-          dashArray:'14, 8', className: animCls }).addTo(_leafletMap);
-        _leafletLayers.push(h, l);
-        h.bringToBack();
+        // seg = [[lat,lon],...] — MapLibre wants [lng,lat]
+        var coords = seg.map(function(pt){ return [pt[1], pt[0]]; });
+        shadowBuckets[sp].push({ type:'Feature', geometry:{ type:'LineString', coordinates:coords } });
+        lineBuckets[sp].push({ type:'Feature', properties:{ color:color },
+          geometry:{ type:'LineString', coordinates:coords } });
         _addFlowArrow(seg, color, upQ, token);
-      } else if (from && to) {
-        // Fallback dashed straight line (status=none means no OSM path exists)
-        var pts = [[from.latitude,from.longitude],[to.latitude,to.longitude]];
-        var fl = L.polyline(pts, { color:color, weight:2, opacity:0.45, dashArray:'10,6' }).addTo(_leafletMap);
-        _leafletLayers.push(fl);
-        _addFlowArrow(pts, color, upQ, token);
+      } else {
+        var from = SITES.find(function(s){ return s.site_id === entry.from_site_id; });
+        var to   = SITES.find(function(s){ return s.site_id === entry.to_site_id; });
+        if (from && to && from.latitude && to.latitude) {
+          var pts = [[from.latitude,from.longitude],[to.latitude,to.longitude]];
+          lineBuckets[sp].push({ type:'Feature', properties:{ color:color },
+            geometry:{ type:'LineString', coordinates:[[from.longitude,from.latitude],[to.longitude,to.latitude]] } });
+          _addFlowArrow(pts, color, upQ, token);
+        }
       }
     });
 
-    _leafletLayers.forEach(function(ll) { if (ll.bringToFront) ll.bringToFront(); });
+    // Push features into the three speed-tier sources
+    ['slow', 'normal', 'fast'].forEach(function(sp) {
+      var shId = sp === 'normal' ? 'ww-shadow'   : 'ww-shadow-' + sp;
+      var lnId = sp === 'normal' ? 'ww-line'     : 'ww-line-'   + sp;
+      if (_mlMap.getSource(shId)) _mlMap.getSource(shId).setData({ type:'FeatureCollection', features:shadowBuckets[sp] });
+      if (_mlMap.getSource(lnId)) _mlMap.getSource(lnId).setData({ type:'FeatureCollection', features:lineBuckets[sp] });
+    });
+
+    // Start animation if any waterway lines are visible
+    var hasLines = ['slow','normal','fast'].some(function(sp){ return lineBuckets[sp].length > 0; });
+    if (hasLines) _startDashAnim();
+
+    // Remove placeholder lines that now have real geometry
+    if (_mlMap.getSource('conn-placeholder')) {
+      var remaining = placeholderFeatures.filter(function(f){ return !resolvedKeys[f.properties.key]; });
+      _mlMap.getSource('conn-placeholder').setData({ type:'FeatureCollection', features:remaining });
+    }
 
     if (stillPending > 0) {
-      // Server crawl still in progress — poll again in 15s
       _setFlowlineStatus('loading', stillPending);
       setTimeout(function() {
         if (token !== _mapRenderToken) return;
@@ -1595,7 +1810,7 @@ function openSlideover(siteId) {
   document.getElementById('so-site-meta').innerHTML =
     '<span style="font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px;background:'+typeBg+';color:'+accent+';letter-spacing:.07em;">'+typeLabel+'</span>'
     + (full.latitude ? '&nbsp;<span style="color:#334155;">'+full.latitude.toFixed(4)+'°N '+Math.abs(full.longitude).toFixed(4)+'°W</span>' : '')
-    + '&nbsp;<span style="color:#334155;">USGS '+esc(siteId)+'</span>';
+    + '&nbsp;<span style="color:#334155;">'+(full.source==='cwms'?'CWMS':'USGS')+' '+esc(siteId)+'</span>';
   panel.style.borderLeftColor = accent;
 
   var incoming = _connections.filter(function(c){ return c.to_site_id   === siteId; });
@@ -1684,14 +1899,17 @@ function openSlideover(siteId) {
     + '<div id="so-sitrep-result" style="display:none;margin-top:10px;font-size:11px;color:#cbd5e1;line-height:1.7;"></div>';
 
   // ── Assemble all sections ──────────────────────────────────────────────────
+  var isCwms = full.source === 'cwms';
   var html = ''
     + _soMkSection('readings',   'Current Readings',         null,      readHtml,          true)
     + _soMkSection('trends',     '48-Hour Trends',           '#818cf8', _soLoading(),      true)
-    + _soMkSection('flood',      'Flood Stage Status',       '#fb923c', _soLoading(),      true)
+    + (isCwms
+        ? _soMkSection('resops', 'Reservoir Operations',     '#f59e0b', _soLoading(),      true)
+        : _soMkSection('flood',  'Flood Stage Status',       '#fb923c', _soLoading(),      true))
     + _soMkSection('anomaly',    'Anomaly Detection',        '#a78bfa', _soLoading(),      true)
     + _soMkSection('upstream',   'Upstream · Flows In',      '#38bdf8', upHtml,            true)
     + _soMkSection('downstream', 'Downstream · Flows Out',   '#34d399', dnHtml,            true)
-    + _soMkSection('snotel',     'Upstream Snow (SNOTEL)',   '#22d3ee', _soLoading(),      false)
+    + (!isCwms ? _soMkSection('snotel', 'Upstream Snow (SNOTEL)', '#22d3ee', _soLoading(), false) : '')
     + _soMkSection('sitrep',     'Situation Report',         '#a78bfa', sitrepHtml,        false);
 
   document.getElementById('so-body').innerHTML = html;
@@ -1699,10 +1917,14 @@ function openSlideover(siteId) {
   requestAnimationFrame(function(){ panel.style.transform = 'translateX(0)'; });
 
   // ── Kick off async section loads ──────────────────────────────────────────
-  _soLoadTrends(siteId, readings, accent);
-  _soLoadFloodStages(siteId, hR);
+  _soLoadTrends(siteId, readings, accent, isCwms);
+  if (isCwms) {
+    _soLoadReservoirOps(siteId, readings);
+  } else {
+    _soLoadFloodStages(siteId, hR);
+    if (full.latitude) _soLoadSnotel(siteId, full.latitude, full.longitude);
+  }
   _soLoadAnomaly(siteId, readings);
-  if (full.latitude) _soLoadSnotel(siteId, full.latitude, full.longitude);
 }
 
 function closeSlideover() {
@@ -1713,11 +1935,14 @@ function closeSlideover() {
 // ── Async section loaders ──────────────────────────────────────────────────────
 
 // 48-hour sparkline trends
-async function _soLoadTrends(siteId, readings, accent) {
+async function _soLoadTrends(siteId, readings, accent, isCwms) {
   var el = document.getElementById('so-sect-trends');
   if (!el) return;
   try {
-    var params = readings.length ? readings : [{ param_code:'00060', param_name:'Discharge', unit:'cfs' }];
+    var defaultParam = isCwms
+      ? { param_code:'Elev-Pool', param_name:'Pool Elevation', unit:'ft' }
+      : { param_code:'00060',     param_name:'Discharge',      unit:'cfs' };
+    var params = readings.length ? readings : [defaultParam];
     var rows = await Promise.all(params.map(async function(r) {
       var resp = await fetch('/api/data/timeseries?site='+siteId+'&param='+r.param_code+'&hours=48');
       var json = await resp.json();
@@ -1741,6 +1966,68 @@ async function _soLoadTrends(siteId, readings, accent) {
     el.innerHTML = html || '<div style="font-size:11px;color:#334155;padding:6px 0;">No timeseries data available.</div>';
   } catch(e) {
     if (el) el.innerHTML = '<div style="font-size:11px;color:#475569;">Could not load trends.</div>';
+  }
+}
+
+// Reservoir operations summary for CWMS dam sites
+async function _soLoadReservoirOps(siteId, readings) {
+  var el = document.getElementById('so-sect-resops');
+  if (!el) return;
+  try {
+    // Gather relevant CWMS params from current readings
+    var pool    = readings.find(function(r){ return r.param_code === 'Elev-Pool' || r.param_code === 'Elev-Forebay'; });
+    var tail    = readings.find(function(r){ return r.param_code === 'Elev-Tail'; });
+    var outflow = readings.find(function(r){ return r.param_code === 'Flow' || r.param_code === 'Flow-Out'; });
+    var inflow  = readings.find(function(r){ return r.param_code === 'Flow-In' || r.param_code === 'Flow-Res In'; });
+    var stor    = readings.find(function(r){ return r.param_code === 'Stor' || r.param_code === 'Stor-Conservation Pool'; });
+    var pctFull = readings.find(function(r){ return r.param_code.startsWith('%-'); });
+
+    if (!pool && !outflow && !inflow && !stor) {
+      el.innerHTML = '<div style="font-size:11px;color:#475569;padding:4px 0;">No CWMS timeseries loaded — select Pool Elev or Outflow parameters above, or add timeseries in the Sites page.</div>';
+      return;
+    }
+
+    var html = '<div style="display:flex;flex-direction:column;gap:8px;">';
+
+    var rows = [
+      pool    && { label: pool.param_name,    val: pool.value,    unit: pool.unit,    trend: pool.trend,    color: '#06b6d4' },
+      tail    && { label: tail.param_name,    val: tail.value,    unit: tail.unit,    trend: tail.trend,    color: '#38bdf8' },
+      inflow  && { label: inflow.param_name,  val: inflow.value,  unit: inflow.unit,  trend: inflow.trend,  color: '#34d399' },
+      outflow && { label: outflow.param_name, val: outflow.value, unit: outflow.unit, trend: outflow.trend, color: '#fb923c' },
+      stor    && { label: stor.param_name,    val: stor.value,    unit: stor.unit,    trend: stor.trend,    color: '#a78bfa' },
+      pctFull && { label: pctFull.param_name, val: pctFull.value, unit: pctFull.unit, trend: pctFull.trend, color: '#facc15' },
+    ].filter(Boolean);
+
+    rows.forEach(function(row) {
+      var ti = row.trend==='rising'?'↑':row.trend==='falling'?'↓':'→';
+      var tc = row.trend==='rising'?'#34d399':row.trend==='falling'?'#f87171':'#94a3b8';
+      var valStr = row.val >= 1000 ? (row.val/1000).toFixed(1)+'k' : row.val.toFixed(1);
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-radius:7px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.05);">'
+        + '<div style="display:flex;align-items:center;gap:7px;">'
+        + '<div style="width:3px;height:26px;border-radius:2px;background:'+row.color+';flex-shrink:0;"></div>'
+        + '<span style="font-size:11px;color:#94a3b8;">'+esc(row.label)+'</span>'
+        + '</div>'
+        + '<span style="font-family:JetBrains Mono,monospace;font-size:12px;font-weight:700;color:'+tc+';">'+valStr+' <span style="font-size:9px;font-weight:400;color:#475569;">'+esc(row.unit)+'</span> '+ti+'</span>'
+        + '</div>';
+    });
+
+    // If pool elev available, show a simple fill indicator (conceptual, no actual capacity data)
+    if (pctFull) {
+      var pct = Math.min(Math.max(pctFull.value, 0), 100);
+      var barColor = pct > 90 ? '#ef4444' : pct > 75 ? '#fb923c' : '#06b6d4';
+      html += '<div style="margin-top:4px;">'
+        + '<div style="font-size:9px;color:#475569;margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em;">Pool Fill</div>'
+        + '<div style="height:8px;border-radius:4px;background:#0f1f35;overflow:hidden;">'
+        + '<div style="height:100%;width:'+pct.toFixed(1)+'%;background:'+barColor+';border-radius:4px;transition:width 0.4s;"></div>'
+        + '</div>'
+        + '<div style="font-size:9px;color:#475569;margin-top:3px;text-align:right;">'+pct.toFixed(1)+'%</div>'
+        + '</div>';
+    }
+
+    html += '</div>';
+    el.innerHTML = html;
+  } catch(e) {
+    if (el) el.innerHTML = '<div style="font-size:11px;color:#475569;">Could not load reservoir operations.</div>';
   }
 }
 
@@ -1954,7 +2241,7 @@ async function analyzeNetwork() {
 
   var hours = parseInt(document.getElementById('fnHours').value);
   var activeIds = _selectedSites.map(function(s){ return s.site_id; });
-  var activeConns = _connections.filter(function(c){ return activeIds.includes(c.from_site_id) && activeIds.includes(c.to_site_id); });
+  var activeConns = effectiveConnections(activeIds);
   var nodes = _selectedSites.map(function(s){ return { site_id: s.site_id, site_name: s.name, readings: _readings[s.site_id] || [] }; });
 
   try {
@@ -2041,7 +2328,7 @@ async function syncTopology() {
     status.textContent = n
       ? 'Found ' + n + ' connection' + (n !== 1 ? 's' : '') + ' · ' + fmtTime(json.synced_at)
       : 'NLDI returned no connections';
-    if (_mapMode) renderLeafletMap(); else redrawNetwork();
+    if (_mapMode) renderMaplibreMap(); else redrawNetwork();
     renderConnections();
   } catch(e) {
     status.textContent = 'Discovery failed — check console';
@@ -2060,16 +2347,34 @@ function renderConnections() {
     return;
   }
   var activeIds = _selectedSites.map(function(s){ return s.site_id; });
-  el.innerHTML = _connections.map(function(c) {
-    var fSite = SITES.find(function(s){ return s.site_id === c.from_site_id; });
-    var tSite = SITES.find(function(s){ return s.site_id === c.to_site_id; });
+
+  // Direct connections (from DB)
+  var rows = _connections.map(function(c) {
+    var fSite  = SITES.find(function(s){ return s.site_id === c.from_site_id; });
+    var tSite  = SITES.find(function(s){ return s.site_id === c.to_site_id; });
     var active = activeIds.includes(c.from_site_id) && activeIds.includes(c.to_site_id);
     return '<div class="conn-row" style="opacity:' + (active ? '1' : '0.3') + ';display:inline-flex;">'
       + '<span class="conn-from">' + esc(short(fSite ? fSite.name : c.from_site_id)) + '</span>'
       + '<span class="conn-arrow">›</span>'
       + '<span class="conn-to">'   + esc(short(tSite ? tSite.name : c.to_site_id))   + '</span>'
       + '</div>';
-  }).join('');
+  });
+
+  // Bridged connections (effective but not direct) — shown when sites are selected
+  if (activeIds.length) {
+    effectiveConnections(activeIds).forEach(function(c) {
+      if (!c.bridged) return; // skip direct ones already shown above
+      var fSite = SITES.find(function(s){ return s.site_id === c.from_site_id; });
+      var tSite = SITES.find(function(s){ return s.site_id === c.to_site_id; });
+      rows.push('<div class="conn-row" style="opacity:0.85;display:inline-flex;border-color:rgba(249,115,22,0.3);">'
+        + '<span class="conn-from" style="color:#fb923c;">' + esc(short(fSite ? fSite.name : c.from_site_id)) + '</span>'
+        + '<span class="conn-arrow" title="bridged through unselected sites" style="color:#fb923c;">⤳</span>'
+        + '<span class="conn-to"   style="color:#fb923c;">' + esc(short(tSite ? tSite.name : c.to_site_id))   + '</span>'
+        + '</div>');
+    });
+  }
+
+  el.innerHTML = rows.join('');
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -2121,7 +2426,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Rebuild _selectedSites from newly active chips and fire one refresh
     _selectedSites = Array.from(document.querySelectorAll('#site-chips .fn-chip.active')).map(function(b) {
-      return { site_id: b.dataset.id, name: b.dataset.name, color: b.dataset.color };
+      return { site_id: b.dataset.id, name: b.dataset.name, color: b.dataset.color, source: b.dataset.source };
     });
     document.getElementById('site-count').textContent = _selectedSites.length + ' selected';
     if (_selectedSites.length) refreshData();
@@ -2132,7 +2437,7 @@ document.addEventListener('DOMContentLoaded', function() {
   window.addEventListener('resize', function() {
     clearTimeout(_resizeTimer);
     _resizeTimer = setTimeout(function() {
-      if (_mapMode && _leafletMap) _leafletMap.invalidateSize();
+      if (_mapMode && _mlMap) _mlMap.resize();
       else if (_d3Nodes.length) redrawNetwork();
     }, 150);
   });

@@ -42,6 +42,24 @@ function initDatabase() {
     }
   } catch (_) {}
 
+  // Migration v3: clear ALL waterway_paths records for CWMS-site pairs.
+  // v3a: 'none'/'error' only (comid-nav upgrade)
+  // v3b: also clear 'ok' records — earlier paths used canal/tailrace snaps
+  //      instead of geographic trimming, producing garbage loops. Re-fetch all.
+  try {
+    const v3 = db.prepare(`SELECT value FROM app_meta WHERE key = 'waterways_cwms_v'`).get();
+    if (!v3 || v3.value !== '2') {
+      const deleted = db.prepare(`
+        DELETE FROM waterway_paths
+        WHERE CAST(from_site_id AS TEXT) GLOB '*[A-Za-z]*'
+           OR CAST(to_site_id   AS TEXT) GLOB '*[A-Za-z]*'
+      `).run();
+      db.prepare(`INSERT OR REPLACE INTO app_meta (key, value) VALUES ('waterways_cwms_v', '2')`).run();
+      if (deleted.changes > 0)
+        console.log(`[DB] Cleared ${deleted.changes} CWMS waterway_paths for re-fetch (geo-trim upgrade)`);
+    }
+  } catch (_) {}
+
   return db;
 }
 
@@ -375,9 +393,20 @@ function syncNLDIConnections(connections) {
     INSERT OR IGNORE INTO site_connections (from_site_id, to_site_id, label, notes, source)
     VALUES (@from_site_id, @to_site_id, 'flows into', 'Auto-discovered via USGS NLDI drainage network', 'nldi')
   `);
+  // Reset any waterway_paths that previously failed/were skipped for these
+  // specific pairs — they'll be retried by the waterways scheduler.
+  // Paths marked 'ok' are preserved (no need to re-fetch good geometry).
+  const resetPath = db.prepare(`
+    DELETE FROM waterway_paths
+    WHERE from_site_id = @from_site_id AND to_site_id = @to_site_id
+      AND status != 'ok'
+  `);
   db.transaction((conns) => {
     del.run();
-    for (const c of conns) ins.run(c);
+    for (const c of conns) {
+      ins.run(c);
+      resetPath.run(c);
+    }
   })(connections);
 }
 
@@ -432,9 +461,10 @@ function upsertWaterwayPath({ from_site_id, to_site_id, path_json, status }) {
 function getPendingWaterwayPairs() {
   // Returns connections that need crawling:
   //   - never attempted (no row in waterway_paths)
-  //   - status = 'pending' (in-progress or reset)
-  //   - status = 'error'   (previous attempt failed — retry)
-  // Does NOT return 'ok' (good path) or 'none' (confirmed no OSM path exists)
+  //   - status = 'pending' or 'error' (in-progress, reset, or previous failure)
+  //   - status = 'none' where either site is a CWMS site (non-numeric ID) —
+  //     'none' results from CWMS pairs were produced by old USGS-only nav code
+  //     and should be retried now that comid-based nav is in place.
   return getDb().prepare(`
     SELECT sc.from_site_id, sc.to_site_id,
            sf.latitude AS from_lat, sf.longitude AS from_lon,
@@ -446,7 +476,16 @@ function getPendingWaterwayPairs() {
       SELECT 1 FROM waterway_paths wp
       WHERE wp.from_site_id = sc.from_site_id
         AND wp.to_site_id   = sc.to_site_id
-        AND wp.status IN ('ok', 'none')
+        AND wp.status = 'ok'
+    )
+    AND NOT EXISTS (
+      -- Exclude pure USGS pairs where 'none' means genuinely no path
+      SELECT 1 FROM waterway_paths wp
+      WHERE wp.from_site_id = sc.from_site_id
+        AND wp.to_site_id   = sc.to_site_id
+        AND wp.status = 'none'
+        AND CAST(sc.from_site_id AS TEXT) NOT GLOB '*[A-Za-z]*'
+        AND CAST(sc.to_site_id   AS TEXT) NOT GLOB '*[A-Za-z]*'
     )
   `).all();
 }

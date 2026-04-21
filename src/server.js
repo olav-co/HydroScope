@@ -1,8 +1,7 @@
 const express = require('express');
 const path = require('path');
 const db = require('./db/database');
-const { startScheduler } = require('./services/scheduler');
-const { runBackgroundCrawl } = require('./services/waterways');
+const { startScheduler, drainWaterwayPairs } = require('./services/scheduler');
 const { ensureMigrated, applySeedFile, getDatasourcesConfig } = require('./services/config');
 
 const pagesRouter       = require('./routes/pages');
@@ -62,7 +61,10 @@ async function boot() {
   startScheduler();
   app.listen(PORT, HOST, () => {
     console.log(`[HydroScope] Listening on http://${HOST}:${PORT}`);
-    setTimeout(runBackgroundCrawl, 3000);
+    // Drain any pending waterway pairs 3s after boot (handles already-known pairs).
+    // Topology discovery also triggers its own drain when it completes, so new
+    // CWMS connections get geometry fetched without waiting for the next cron tick.
+    setTimeout(drainWaterwayPairs, 3000);
   });
 }
 

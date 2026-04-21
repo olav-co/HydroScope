@@ -15,9 +15,11 @@
 
 const https = require('https');
 const db    = require('../db/database');
+const { fetchComidForLatLon } = require('./usgs');
 
 const NLDI_HOST = 'api.water.usgs.gov';
 const NLDI_BASE = '/nldi/linked-data/nwissite';
+const NLDI_COMID_BASE = '/nldi/linked-data/comid';
 
 let _busy = false;
 
@@ -53,27 +55,45 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── NLDI comid lookup ─────────────────────────────────────────────────────────
 
+/** Detect whether a site_id is USGS (all-numeric) or CWMS (alphanumeric). */
+function isUsgsId(siteId) { return /^\d+$/.test(siteId); }
+
 /**
- * Get the NHDPlus comid string for a USGS site.
- * Result is cached in memory for the lifetime of the process.
+ * Get the NHDPlus comid string for any site (USGS or CWMS).
+ * USGS: uses NLDI nwissite metadata endpoint.
+ * CWMS: looks up lat/lon from the DB then snaps via NLDI position endpoint.
+ * Results are cached in memory for the lifetime of the process.
  */
 async function getSiteComid(siteId) {
   if (_comidCache[siteId]) return _comidCache[siteId];
-  const data = await httpsGet(NLDI_HOST, `${NLDI_BASE}/USGS-${siteId}`);
-  const comid = data?.features?.[0]?.properties?.comid;
+
+  let comid = null;
+
+  if (isUsgsId(siteId)) {
+    // USGS — NLDI nwissite lookup
+    const data = await httpsGet(NLDI_HOST, `${NLDI_BASE}/USGS-${siteId}`);
+    const raw = data?.features?.[0]?.properties?.comid;
+    if (raw) comid = String(raw);
+  } else {
+    // CWMS — snap lat/lon to nearest NHD comid
+    const site = db.getSiteById(siteId);
+    if (site?.latitude && site?.longitude) {
+      comid = await fetchComidForLatLon(site.latitude, site.longitude);
+    }
+  }
+
   if (comid) {
-    _comidCache[siteId] = String(comid);
-    return _comidCache[siteId];
+    _comidCache[siteId] = comid;
+    return comid;
   }
   return null;
 }
 
-// ── Trim flowline features at a target comid ──────────────────────────────────
+// ── Trim flowline features ────────────────────────────────────────────────────
 
 /**
- * Given an ordered array of NLDI flowline features and a target comid,
- * return only the features up to and including the one matching targetComid.
- * If targetComid is not found, return the full array (fall through to caller).
+ * Trim a flowline feature array at the first feature matching targetComid.
+ * Returns { trimmed, found }.
  */
 function trimAtComid(features, targetComid) {
   if (!targetComid || !features.length) return { trimmed: features, found: false };
@@ -84,6 +104,35 @@ function trimAtComid(features, targetComid) {
   );
   if (idx === -1) return { trimmed: features, found: false };
   return { trimmed: features.slice(0, idx + 1), found: true };
+}
+
+/**
+ * Trim a flowline feature array at the feature whose geometry is closest to
+ * (targetLat, targetLon).  Used as a fallback when the exact comid of a CWMS
+ * dam is not on the main NHD navigation path (e.g. snap landed on a canal).
+ *
+ * Returns the trimmed feature array, or null if features have no geometry.
+ */
+function trimAtLatLon(features, targetLat, targetLon) {
+  if (!features.length || targetLat == null || targetLon == null) return null;
+
+  let bestIdx  = -1;
+  let bestDist = Infinity;
+
+  features.forEach((f, fi) => {
+    if (!f.geometry) return;
+    const coords = f.geometry.type === 'LineString'
+      ? f.geometry.coordinates
+      : (f.geometry.coordinates || []).flat();  // MultiLineString
+
+    for (const [lon, lat] of coords) {
+      const d = (lat - targetLat) ** 2 + (lon - targetLon) ** 2;
+      if (d < bestDist) { bestDist = d; bestIdx = fi; }
+    }
+  });
+
+  if (bestIdx === -1) return null;
+  return features.slice(0, bestIdx + 1);
 }
 
 // ── NLDI flowline fetch ───────────────────────────────────────────────────────
@@ -100,7 +149,13 @@ function trimAtComid(features, targetComid) {
  *
  * Returns [[lat,lon],...] or null.
  */
-async function fetchFlowlinePath(fromSiteId, toSiteId) {
+/**
+ * Fetch the NHDPlus flowline path between two sites.
+ * toLat/toLon and fromLat/fromLon enable geographic trimming as a fallback
+ * for CWMS dams whose snap comids land on canals/tailraces rather than the
+ * main river channel.
+ */
+async function fetchFlowlinePath(fromSiteId, toSiteId, toLat, toLon, fromLat, fromLon) {
   const distanceKm = 999;
 
   // Fetch comids for both sites (cached after first call)
@@ -111,43 +166,79 @@ async function fetchFlowlinePath(fromSiteId, toSiteId) {
 
   console.log(`[Waterways] comids: ${fromSiteId}=${fromComid||'?'} ${toSiteId}=${toComid||'?'}`);
 
-  // ── Try DM from upstream site, trimmed at downstream site's comid ──────────
-  const dmPath = `${NLDI_BASE}/USGS-${fromSiteId}/navigation/DM/flowlines?distance=${distanceKm}`;
-  const dmData = await httpsGet(NLDI_HOST, dmPath);
+  // Choose navigation base: USGS nwissite when possible; comid-based for CWMS
+  const fromIsUsgs = isUsgsId(fromSiteId);
+  const toIsUsgs   = isUsgsId(toSiteId);
 
-  if (dmData?.features?.length) {
-    const { trimmed, found } = trimAtComid(dmData.features, toComid);
-    if (found) {
-      const coords = extractCoords(trimmed);
-      if (coords.length >= 2) {
-        console.log(`[Waterways] DM ${fromSiteId}→${toSiteId}: ${trimmed.length} flowlines (of ${dmData.features.length}), ${coords.length} pts`);
-        return coords;
+  const dmNavBase = fromIsUsgs
+    ? `${NLDI_BASE}/USGS-${fromSiteId}`
+    : (fromComid ? `${NLDI_COMID_BASE}/${fromComid}` : null);
+
+  const umNavBase = toIsUsgs
+    ? `${NLDI_BASE}/USGS-${toSiteId}`
+    : (toComid ? `${NLDI_COMID_BASE}/${toComid}` : null);
+
+  // ── Try DM from upstream site ─────────────────────────────────────────────
+  if (dmNavBase) {
+    const dmData = await httpsGet(NLDI_HOST,
+      `${dmNavBase}/navigation/DM/flowlines?distance=${distanceKm}`);
+
+    if (dmData?.features?.length) {
+      // 1. Exact comid trim
+      const { trimmed, found } = trimAtComid(dmData.features, toComid);
+      if (found) {
+        const coords = extractCoords(trimmed);
+        if (coords.length >= 2) {
+          console.log(`[Waterways] DM comid-trim ${fromSiteId}→${toSiteId}: ${trimmed.length}/${dmData.features.length} flowlines, ${coords.length} pts`);
+          return coords;
+        }
       }
-    }
-    // toComid not in DM results — try without trimming as a last resort only if
-    // the full DM path is short (direct connection, no intermediate sites)
-    if (dmData.features.length <= 5) {
-      const coords = extractCoords(dmData.features);
-      if (coords.length >= 2) {
-        console.log(`[Waterways] DM ${fromSiteId}→${toSiteId}: short path (${dmData.features.length} flowlines), using as-is`);
-        return coords;
+
+      // 2. Geographic trim — for CWMS dams whose snap comid isn't on main channel
+      if (!found && toLat != null && toLon != null) {
+        const geoFeatures = trimAtLatLon(dmData.features, toLat, toLon);
+        if (geoFeatures && geoFeatures.length >= 2) {
+          const coords = extractCoords(geoFeatures);
+          if (coords.length >= 2) {
+            console.log(`[Waterways] DM geo-trim ${fromSiteId}→${toSiteId}: ${geoFeatures.length}/${dmData.features.length} flowlines, ${coords.length} pts`);
+            return coords;
+          }
+        }
+      }
+
+      // 3. Short path — use as-is (direct connection, no intermediate sites)
+      if (dmData.features.length <= 5) {
+        const coords = extractCoords(dmData.features);
+        if (coords.length >= 2) {
+          console.log(`[Waterways] DM short ${fromSiteId}→${toSiteId}: ${dmData.features.length} flowlines`);
+          return coords;
+        }
       }
     }
   }
 
-  // ── Fallback: UM from downstream site, trimmed at upstream site's comid ────
-  const umPath = `${NLDI_BASE}/USGS-${toSiteId}/navigation/UM/flowlines?distance=${distanceKm}`;
-  const umData = await httpsGet(NLDI_HOST, umPath);
+  // ── Fallback: UM from downstream site ────────────────────────────────────
+  if (umNavBase) {
+    const umData = await httpsGet(NLDI_HOST,
+      `${umNavBase}/navigation/UM/flowlines?distance=${distanceKm}`);
 
-  if (umData?.features?.length) {
-    const { trimmed, found } = trimAtComid(umData.features, fromComid);
-    const features = found ? trimmed : umData.features;
-    const coords = extractCoords(features);
-    // UM goes upstream → reverse to get from→to direction
-    coords.reverse();
-    if (coords.length >= 2) {
-      console.log(`[Waterways] UM ${fromSiteId}→${toSiteId}: ${features.length} flowlines (trimmed=${found}), ${coords.length} pts`);
-      return coords;
+    if (umData?.features?.length) {
+      // 1. Exact comid trim
+      const { trimmed: umTrimmed, found: umFound } = trimAtComid(umData.features, fromComid);
+
+      // 2. Geographic trim fallback
+      let features = umFound ? umTrimmed : null;
+      if (!features && fromLat != null && fromLon != null) {
+        features = trimAtLatLon(umData.features, fromLat, fromLon);
+      }
+      if (!features) features = umData.features;
+
+      const coords = extractCoords(features);
+      coords.reverse();  // UM goes upstream → reverse for from→to direction
+      if (coords.length >= 2) {
+        console.log(`[Waterways] UM ${fromSiteId}→${toSiteId}: ${features.length} flowlines (comidTrim=${umFound}), ${coords.length} pts`);
+        return coords;
+      }
     }
   }
 
@@ -197,7 +288,11 @@ async function processNextPair() {
   });
 
   try {
-    const coords = await fetchFlowlinePath(pair.from_site_id, pair.to_site_id);
+    const coords = await fetchFlowlinePath(
+      pair.from_site_id, pair.to_site_id,
+      pair.to_lat,   pair.to_lon,
+      pair.from_lat, pair.from_lon
+    );
 
     if (coords && coords.length >= 2) {
       db.upsertWaterwayPath({

@@ -22,8 +22,8 @@ router.post('/sync', async (req, res) => {
   try {
     const allSites = db.getAllSites();
     if (!allSites.length) return res.status(400).json({ error: 'No sites configured.' });
-    const siteIds = allSites.map(s => s.site_id);
-    const discovered = await discoverNetworkTopology(siteIds);
+    // Pass full site objects so discoverNetworkTopology can handle CWMS via lat/lon comid snapping
+    const discovered = await discoverNetworkTopology(allSites);
     db.syncNLDIConnections(discovered);
     const all = db.getSiteConnections(null);
     const syncInfo = db.getLastNLDISync();

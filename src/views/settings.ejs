@@ -198,6 +198,7 @@ let _activeProvider = null;
 let _schedulerEnabled = true;
 let _serviceStates = {};   // { usgs: { enabled, interval }, … }
 let _pollTimer     = null;
+let _wasRunning    = {};   // track prior running state to detect transitions
 
 const SERVICE_INFO = {
   usgs:      { label: 'USGS Stream Data',       desc: 'Discharge, gage height, water temp & more',    icon: '〰' },
@@ -246,6 +247,9 @@ async function loadSettings() {
   for (const [name, svc] of Object.entries(_settings.scheduler.services)) {
     _serviceStates[name] = { enabled: svc.enabled, interval: svc.interval };
   }
+
+  // Seed _wasRunning so the first poll doesn't false-positive "just finished"
+  _wasRunning = { ...(_settings.runningState || {}) };
 
   renderProviderSelector();
   renderModelSelector();
@@ -492,11 +496,32 @@ async function runNow(name) {
   dot.className = 'status-dot running';
   document.getElementById(`svc-${name}`).classList.add('running');
 
+  let started = false;
   try {
-    await fetch(`/api/settings/run/${name}`, { method: 'POST' });
-  } catch (_) {}
+    const resp = await fetch(`/api/settings/run/${name}`, { method: 'POST' });
+    const data = await resp.json();
+    if (data.skipped) {
+      // Already running — keep showing running state, start polling to detect completion
+      started = true;
+    } else if (data.ok) {
+      started = true;
+    } else {
+      // Unexpected error — re-enable button
+      btn.disabled = false;
+      btn.textContent = '▷ Run Now';
+      btn.classList.remove('running-state');
+      dot.className = 'status-dot ok';
+      document.getElementById(`svc-${name}`).classList.remove('running');
+      return;
+    }
+  } catch (_) {
+    started = true; // assume started, poll will clarify
+  }
 
-  schedulePoll();
+  if (started) {
+    _wasRunning[name] = true;  // seed so poll can detect completion
+    schedulePoll();
+  }
 }
 
 // ── Polling ───────────────────────────────────────────────────────────────────
@@ -508,7 +533,7 @@ function checkPolling() {
 
 function schedulePoll() {
   if (_pollTimer) return;
-  _pollTimer = setTimeout(doPoll, 2000);
+  _pollTimer = setTimeout(doPoll, 1000);  // first tick fast — jobs like USGS finish in <2s
 }
 
 async function doPoll() {
@@ -516,13 +541,59 @@ async function doPoll() {
   try {
     const resp = await fetch('/api/settings');
     const data = await resp.json();
-    _settings  = data;
+
+    // Preserve any unsaved interval/enabled changes the user made
+    const prevStates = { ..._serviceStates };
+    _settings = data;
     _serviceStates = {};
     for (const [n, svc] of Object.entries(data.scheduler.services)) {
-      _serviceStates[n] = { enabled: svc.enabled, interval: svc.interval };
+      // Use server value as base, but keep user's pending edits if present
+      const prev = prevStates[n];
+      _serviceStates[n] = {
+        enabled:  prev ? prev.enabled  : svc.enabled,
+        interval: prev ? prev.interval : svc.interval,
+      };
     }
+
+    // Detect transitions: was running → now stopped → flash "Done ✓"
+    const nowRunning  = data.runningState || {};
+    const justFinished = Object.keys(_wasRunning).filter(n => _wasRunning[n] && !nowRunning[n]);
+    _wasRunning = { ...nowRunning };
+
     renderServiceCards();
-    if (Object.values(data.runningState || {}).some(Boolean)) schedulePoll();
+
+    // Flash "Done ✓" on buttons for services that just completed
+    justFinished.forEach(n => {
+      const b = document.getElementById(`run-${n}`);
+      if (b) {
+        b.textContent = '✓ Done';
+        b.style.color = '#34d399';
+        b.style.borderColor = '#34d399';
+        setTimeout(() => {
+          b.textContent = '▷ Run Now';
+          b.style.color = '';
+          b.style.borderColor = '';
+        }, 2500);
+      }
+    });
+
+    if (Object.values(nowRunning).some(Boolean)) {
+      _pollTimer = setTimeout(doPoll, 2000);  // keep polling every 2s while something runs
+    } else {
+      // One extra poll after 3s to pick up any final status writes (e.g. logFetch after job ends)
+      if (!_pollTimer) _pollTimer = setTimeout(async () => {
+        _pollTimer = null;
+        try {
+          const r2 = await fetch('/api/settings');
+          const d2 = await r2.json();
+          _settings = d2;
+          for (const [n, svc] of Object.entries(d2.scheduler.services)) {
+            if (!_serviceStates[n]) _serviceStates[n] = { enabled: svc.enabled, interval: svc.interval };
+          }
+          renderServiceCards();
+        } catch(_) {}
+      }, 3000);
+    }
   } catch (_) {}
 }
 
