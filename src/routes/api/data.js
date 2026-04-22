@@ -11,9 +11,25 @@ router.get('/latest', (req, res) => {
 });
 
 // GET /api/data/timeseries?site=14211720&param=00060&hours=168
+// GET /api/data/timeseries?site=14211720&param=00060&hours=168
+// If site is a combined parent, unions measurements from all enabled child sources.
 router.get('/timeseries', (req, res) => {
   const { site, param, hours = 168 } = req.query;
   if (!site || !param) return res.status(400).json({ error: 'site and param are required' });
+
+  const siteRow = db.getSiteById(site);
+  if (siteRow && siteRow.source === 'combined') {
+    const children = db.getSiteChildren(site);
+    const enabled  = children.filter(c => c.enabled).map(c => c.child_site_id);
+    const data     = enabled.length ? db.getTimeSeriesForSites(enabled, param, parseInt(hours)) : [];
+    return res.json({
+      ok: true, site, param, data, combined: true,
+      sources: children.map(c => ({
+        site_id: c.child_site_id, source: c.source, name: c.name, enabled: !!c.enabled,
+      })),
+    });
+  }
+
   const data = db.getTimeSeriesForSite(site, param, parseInt(hours));
   res.json({ ok: true, site, param, data });
 });

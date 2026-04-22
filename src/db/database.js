@@ -27,6 +27,23 @@ function initDatabase() {
   try { db.exec(`ALTER TABLE sites ADD COLUMN huc8_code TEXT`); } catch (_) {}
   try { db.exec(`ALTER TABLE sites ADD COLUMN huc8_name TEXT`); } catch (_) {}
   try { db.exec(`ALTER TABLE user_profile ADD COLUMN user_id INTEGER`); } catch (_) {}
+  try { db.exec(`ALTER TABLE sites ADD COLUMN parent_site_id TEXT`); } catch (_) {}
+  try { db.exec(`ALTER TABLE basins ADD COLUMN centroid_lat REAL`); } catch (_) {}
+  try { db.exec(`ALTER TABLE basins ADD COLUMN centroid_lon REAL`); } catch (_) {}
+  try { db.exec(`ALTER TABLE basins ADD COLUMN bbox_minlon REAL`); } catch (_) {}
+  try { db.exec(`ALTER TABLE basins ADD COLUMN bbox_minlat REAL`); } catch (_) {}
+  try { db.exec(`ALTER TABLE basins ADD COLUMN bbox_maxlon REAL`); } catch (_) {}
+  try { db.exec(`ALTER TABLE basins ADD COLUMN bbox_maxlat REAL`); } catch (_) {}
+  try { db.exec(`ALTER TABLE site_groups ADD COLUMN is_published INTEGER DEFAULT 0`); }
+  catch (e) { if (!e.message.includes('duplicate column')) console.warn('[DB migration] site_groups.is_published:', e.message); }
+  try { db.exec(`ALTER TABLE site_groups ADD COLUMN published_at DATETIME`); }
+  catch (e) { if (!e.message.includes('duplicate column')) console.warn('[DB migration] site_groups.published_at:', e.message); }
+  try { db.exec(`ALTER TABLE site_groups ADD COLUMN source_group_id INTEGER`); }
+  catch (e) { if (!e.message.includes('duplicate column')) console.warn('[DB migration] site_groups.source_group_id:', e.message); }
+  try { db.exec(`ALTER TABLE site_groups ADD COLUMN synced_at DATETIME`); }
+  catch (e) { if (!e.message.includes('duplicate column')) console.warn('[DB migration] site_groups.synced_at:', e.message); }
+  try { db.exec(`ALTER TABLE site_groups ADD COLUMN updated_at DATETIME`); }
+  catch (e) { if (!e.message.includes('duplicate column')) console.warn('[DB migration] site_groups.updated_at:', e.message); }
 
   // ── Phase 2: apply schema (CREATE TABLE/INDEX IF NOT EXISTS — safe on existing DB)
   const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
@@ -754,6 +771,10 @@ function getDistinctBasins() {
   `).all();
 }
 
+function getAllCachedBasins() {
+  return getDb().prepare(`SELECT huc8_code, huc8_name FROM basins ORDER BY huc8_name`).all();
+}
+
 function getCachedBasinPolygon(huc8Code) {
   return getDb().prepare(`SELECT * FROM basins WHERE huc8_code = ?`).get(huc8Code);
 }
@@ -775,11 +796,165 @@ function updateSiteHuc(site_id, huc8_code, huc8_name) {
   `).run(huc8_code || null, huc8_name || null, site_id);
 }
 
+// Returns basins whose bbox contains the point — fast pre-filter before ray-casting.
+// Expects polygon_json to be present for point-in-polygon verification.
+function getBasinCandidatesForPoint(lon, lat) {
+  return getDb().prepare(`
+    SELECT huc8_code, huc8_name, polygon_json
+    FROM basins
+    WHERE bbox_minlon IS NOT NULL
+      AND bbox_minlon <= @lon AND bbox_maxlon >= @lon
+      AND bbox_minlat <= @lat AND bbox_maxlat >= @lat
+      AND polygon_json IS NOT NULL
+    ORDER BY huc8_code
+  `).all({ lon, lat });
+}
+
 function getSitesMissingHuc() {
   return getDb().prepare(`
     SELECT site_id, name, source, latitude, longitude
     FROM sites WHERE huc8_code IS NULL AND latitude IS NOT NULL AND longitude IS NOT NULL
   `).all();
+}
+
+function getBasinsInBbox(minLon, minLat, maxLon, maxLat) {
+  // Standard AABB intersection: basin rect overlaps viewport rect when neither is
+  // entirely left/right/above/below the other.  Falls back to centroid point-in-box
+  // for rows that were synced before bbox columns were populated.
+  return getDb().prepare(`
+    SELECT huc8_code, huc8_name
+    FROM basins
+    WHERE (
+      -- bbox intersection (preferred — catches edge-overlapping basins)
+      (bbox_minlon IS NOT NULL
+        AND bbox_maxlon >= @minLon AND bbox_minlon <= @maxLon
+        AND bbox_maxlat >= @minLat AND bbox_minlat <= @maxLat)
+      OR
+      -- centroid fallback for rows without bbox data yet
+      (bbox_minlon IS NULL
+        AND centroid_lon BETWEEN @minLon AND @maxLon
+        AND centroid_lat BETWEEN @minLat AND @maxLat)
+    )
+    ORDER BY huc8_name
+  `).all({ minLon, minLat, maxLon, maxLat });
+}
+
+// Suggest basins related to active ones via HUC hierarchy.
+// Same HUC4 (first 4 digits) = same watershed subregion — most relevant.
+// Falls back to same HUC2 (first 2 digits) if not enough results.
+function getBasinRecommendations(activeCodes, excludeCodes, limit = 8) {
+  if (!activeCodes.length) return [];
+  const db      = getDb();
+  const exclude = new Set(excludeCodes);
+  const seen    = new Set();
+  const results = [];
+
+  const huc4s = [...new Set(activeCodes.map(c => c.slice(0, 4)))];
+  const huc2s = [...new Set(activeCodes.map(c => c.slice(0, 2)))];
+
+  for (const prefix of huc4s) {
+    const rows = db.prepare(
+      `SELECT huc8_code, huc8_name FROM basins WHERE huc8_code LIKE ? ORDER BY huc8_name LIMIT 20`
+    ).all(prefix + '%');
+    for (const r of rows) {
+      if (!seen.has(r.huc8_code) && !exclude.has(r.huc8_code)) {
+        seen.add(r.huc8_code); results.push(r);
+      }
+    }
+  }
+
+  if (results.length < limit) {
+    for (const prefix of huc2s) {
+      const rows = db.prepare(
+        `SELECT huc8_code, huc8_name FROM basins WHERE huc8_code LIKE ? ORDER BY huc8_name LIMIT 20`
+      ).all(prefix + '%');
+      for (const r of rows) {
+        if (!seen.has(r.huc8_code) && !exclude.has(r.huc8_code)) {
+          seen.add(r.huc8_code); results.push(r);
+          if (results.length >= limit) break;
+        }
+      }
+      if (results.length >= limit) break;
+    }
+  }
+
+  return results.slice(0, limit);
+}
+
+// Resolve a list of huc8 codes to full basin records (for AI suggestion matching).
+function getBasinsByCodes(codes) {
+  if (!codes.length) return [];
+  const placeholders = codes.map(() => '?').join(',');
+  return getDb().prepare(
+    `SELECT huc8_code, huc8_name FROM basins WHERE huc8_code IN (${placeholders}) ORDER BY huc8_name`
+  ).all(...codes);
+}
+
+function searchBasinsLocal(q) {
+  if (!q) return [];
+  const db = getDb();
+  if (/^\d+$/.test(q)) {
+    return db.prepare(
+      `SELECT huc8_code, huc8_name FROM basins WHERE huc8_code LIKE ? ORDER BY huc8_name LIMIT 150`
+    ).all(q + '%');
+  }
+  return db.prepare(
+    `SELECT huc8_code, huc8_name FROM basins WHERE UPPER(huc8_name) LIKE UPPER(?) ORDER BY huc8_name LIMIT 150`
+  ).all('%' + q + '%');
+}
+
+function getNotableBasinsLocal(names) {
+  const db   = getDb();
+  const seen = new Set();
+  const out  = [];
+  for (const name of names) {
+    const rows = db.prepare(
+      `SELECT huc8_code, huc8_name FROM basins WHERE UPPER(huc8_name) LIKE UPPER(?) ORDER BY huc8_name LIMIT 2`
+    ).all(name + '%');
+    for (const row of rows) {
+      if (!seen.has(row.huc8_code)) { seen.add(row.huc8_code); out.push(row); }
+    }
+  }
+  return out;
+}
+
+function getBasinCount() {
+  const row = getDb().prepare(
+    `SELECT COUNT(*) as total,
+            SUM(CASE WHEN bbox_minlon IS NOT NULL THEN 1 ELSE 0 END) as with_bbox
+     FROM basins`
+  ).get();
+  return { total: row.total, with_bbox: row.with_bbox };
+}
+
+function updateBasinBbox(huc8_code, { bbox_minlon, bbox_minlat, bbox_maxlon, bbox_maxlat }) {
+  getDb().prepare(`
+    UPDATE basins SET bbox_minlon=@bbox_minlon, bbox_minlat=@bbox_minlat,
+                      bbox_maxlon=@bbox_maxlon, bbox_maxlat=@bbox_maxlat
+    WHERE huc8_code=@huc8_code
+  `).run({ huc8_code, bbox_minlon, bbox_minlat, bbox_maxlon, bbox_maxlat });
+}
+
+function bulkUpsertBasins(rows) {
+  const stmt = getDb().prepare(`
+    INSERT INTO basins (huc8_code, huc8_name, polygon_json, fetched_at,
+                        centroid_lat, centroid_lon,
+                        bbox_minlon, bbox_minlat, bbox_maxlon, bbox_maxlat)
+    VALUES (@huc8_code, @huc8_name, @polygon_json, CURRENT_TIMESTAMP,
+            @centroid_lat, @centroid_lon,
+            @bbox_minlon, @bbox_minlat, @bbox_maxlon, @bbox_maxlat)
+    ON CONFLICT(huc8_code) DO UPDATE SET
+      huc8_name    = excluded.huc8_name,
+      polygon_json = excluded.polygon_json,
+      fetched_at   = CURRENT_TIMESTAMP,
+      centroid_lat = excluded.centroid_lat,
+      centroid_lon = excluded.centroid_lon,
+      bbox_minlon  = excluded.bbox_minlon,
+      bbox_minlat  = excluded.bbox_minlat,
+      bbox_maxlon  = excluded.bbox_maxlon,
+      bbox_maxlat  = excluded.bbox_maxlat
+  `);
+  getDb().transaction(arr => { for (const r of arr) stmt.run(r); })(rows);
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
@@ -856,6 +1031,214 @@ function getDistinctBasinsForUser(userId) {
   return basins.map(b => ({ ...b, is_favorite: favSet.has(b.huc8_code) }));
 }
 
+// ── Combined / paired sites ───────────────────────────────────────────────────
+
+function createCombinedSite({ site_id, name, latitude, longitude }) {
+  getDb().prepare(`
+    INSERT OR REPLACE INTO sites (site_id, name, type, source, latitude, longitude, enabled)
+    VALUES (?, ?, 'combined', 'combined', ?, ?, 1)
+  `).run(site_id, name, latitude, longitude);
+}
+
+function clearCombinedSites() {
+  const d = getDb();
+  d.prepare(`UPDATE sites SET parent_site_id = NULL WHERE parent_site_id IS NOT NULL`).run();
+  d.prepare(`DELETE FROM sites WHERE source = 'combined'`).run();
+}
+
+function addSiteSource(parentSiteId, childSiteId) {
+  getDb().prepare(`
+    INSERT OR IGNORE INTO site_sources (parent_site_id, child_site_id) VALUES (?, ?)
+  `).run(parentSiteId, childSiteId);
+}
+
+function setParentSite(childSiteId, parentSiteId) {
+  getDb().prepare(`UPDATE sites SET parent_site_id = ? WHERE site_id = ?`).run(parentSiteId, childSiteId);
+}
+
+function getSiteChildren(parentSiteId) {
+  return getDb().prepare(`
+    SELECT ss.child_site_id, ss.enabled, s.source, s.name, s.latitude, s.longitude
+    FROM site_sources ss
+    JOIN sites s ON s.site_id = ss.child_site_id
+    WHERE ss.parent_site_id = ?
+    ORDER BY s.source
+  `).all(parentSiteId);
+}
+
+function setSiteSourceEnabled(parentSiteId, childSiteId, enabled) {
+  getDb().prepare(`
+    UPDATE site_sources SET enabled = ? WHERE parent_site_id = ? AND child_site_id = ?
+  `).run(enabled ? 1 : 0, parentSiteId, childSiteId);
+}
+
+// ── Site Groups ───────────────────────────────────────────────────────────────
+
+function getGroupsForUser(userId) {
+  try {
+    // Full query — requires sharing columns (added via ALTER TABLE migration or new schema).
+    return getDb().prepare(`
+      SELECT g.id, g.name, g.color, g.created_at, g.updated_at,
+             g.is_published, g.published_at,
+             g.source_group_id, g.synced_at,
+             COUNT(m.site_id) AS member_count,
+             src.name         AS source_name,
+             src.is_published AS source_is_published,
+             src.updated_at   AS source_updated_at,
+             su.username      AS source_author
+      FROM site_groups g
+      LEFT JOIN site_group_members m   ON m.group_id = g.id
+      LEFT JOIN site_groups src        ON src.id = g.source_group_id
+      LEFT JOIN users su               ON su.id   = src.user_id
+      WHERE g.user_id = ?
+      GROUP BY g.id
+      ORDER BY g.name
+    `).all(userId);
+  } catch (_) {
+    // Fallback: sharing columns not yet migrated on this DB.
+    // Return nulls for sharing fields so the rest of the page still works.
+    return getDb().prepare(`
+      SELECT g.id, g.name, g.color, g.created_at,
+             COUNT(m.site_id) AS member_count,
+             NULL AS updated_at, 0 AS is_published, NULL AS published_at,
+             NULL AS source_group_id, NULL AS synced_at,
+             NULL AS source_name, 0 AS source_is_published,
+             NULL AS source_updated_at, NULL AS source_author
+      FROM site_groups g
+      LEFT JOIN site_group_members m ON m.group_id = g.id
+      WHERE g.user_id = ?
+      GROUP BY g.id
+      ORDER BY g.name
+    `).all(userId);
+  }
+}
+
+function getGroupById(groupId, userId) {
+  return getDb().prepare(`SELECT * FROM site_groups WHERE id = ? AND user_id = ?`).get(groupId, userId);
+}
+
+function getGroupMembers(groupId) {
+  return getDb().prepare(`SELECT site_id FROM site_group_members WHERE group_id = ?`).all(groupId).map(r => r.site_id);
+}
+
+function createGroup(userId, name, color) {
+  const info = getDb().prepare(`
+    INSERT INTO site_groups (user_id, name, color) VALUES (?, ?, ?)
+  `).run(userId, name, color || '#3b82f6');
+  return info.lastInsertRowid;
+}
+
+function updateGroup(groupId, userId, { name, color }) {
+  const fields = ['updated_at = CURRENT_TIMESTAMP'];
+  const params = {};
+  if (name  !== undefined) { fields.push('name = @name');   params.name  = name; }
+  if (color !== undefined) { fields.push('color = @color'); params.color = color; }
+  params.id = groupId; params.userId = userId;
+  return getDb().prepare(
+    `UPDATE site_groups SET ${fields.join(', ')} WHERE id = @id AND user_id = @userId`
+  ).run(params).changes;
+}
+
+function deleteGroup(groupId, userId) {
+  return getDb().prepare('DELETE FROM site_groups WHERE id = ? AND user_id = ?').run(groupId, userId).changes;
+}
+
+function setGroupMembers(groupId, userId, siteIds) {
+  const d = getDb();
+  if (!d.prepare('SELECT id FROM site_groups WHERE id = ? AND user_id = ?').get(groupId, userId)) return false;
+  d.transaction(() => {
+    d.prepare('DELETE FROM site_group_members WHERE group_id = ?').run(groupId);
+    const ins = d.prepare('INSERT OR IGNORE INTO site_group_members (group_id, site_id) VALUES (?, ?)');
+    for (const siteId of (siteIds || [])) ins.run(groupId, siteId);
+    d.prepare('UPDATE site_groups SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(groupId);
+  })();
+  return true;
+}
+
+function publishGroup(groupId, userId, isPublished) {
+  const sql = isPublished
+    ? `UPDATE site_groups SET is_published=1, published_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`
+    : `UPDATE site_groups SET is_published=0, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`;
+  return getDb().prepare(sql).run(groupId, userId).changes;
+}
+
+// Returns all published groups from other users, with sample site names and
+// whether this user already has a saved copy.
+function getPublishedGroups(currentUserId) {
+  return getDb().prepare(`
+    SELECT g.id, g.name, g.color, g.published_at, g.updated_at,
+           u.username AS author,
+           COUNT(DISTINCT m.site_id) AS member_count,
+           GROUP_CONCAT(s.name, '||') AS site_names_raw,
+           (SELECT id FROM site_groups saved
+            WHERE saved.user_id = @uid AND saved.source_group_id = g.id
+            LIMIT 1) AS saved_local_id
+    FROM site_groups g
+    JOIN  users u ON u.id = g.user_id
+    LEFT JOIN site_group_members m ON m.group_id = g.id
+    LEFT JOIN sites s ON s.site_id = m.site_id
+    WHERE g.is_published = 1 AND g.user_id != @uid
+    GROUP BY g.id
+    ORDER BY g.published_at DESC
+  `).all({ uid: currentUserId });
+}
+
+// Save a copy of a published group into the current user's groups.
+// Returns the local group id (existing copy if already saved, new if first save).
+function saveGroupCopy(userId, sourceGroupId) {
+  const d = getDb();
+  const source = d.prepare(`SELECT * FROM site_groups WHERE id = ? AND is_published = 1`).get(sourceGroupId);
+  if (!source) return null;
+  // Idempotent — return existing copy if already saved
+  const existing = d.prepare(`SELECT id FROM site_groups WHERE user_id = ? AND source_group_id = ?`).get(userId, sourceGroupId);
+  if (existing) return existing.id;
+  // Create local copy
+  const r = d.prepare(`
+    INSERT INTO site_groups (user_id, name, color, source_group_id, synced_at, updated_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `).run(userId, source.name, source.color, sourceGroupId);
+  const newId = r.lastInsertRowid;
+  // Copy members
+  const members = d.prepare(`SELECT site_id FROM site_group_members WHERE group_id = ?`).all(sourceGroupId);
+  if (members.length) {
+    const ins = d.prepare(`INSERT OR IGNORE INTO site_group_members (group_id, site_id) VALUES (?, ?)`);
+    d.transaction(() => { for (const m of members) ins.run(newId, m.site_id); })();
+  }
+  return newId;
+}
+
+// Sync a saved copy to match the current published source (name, color, members).
+// Returns false if the source is no longer available/published.
+function syncGroupFromSource(groupId, userId) {
+  const d = getDb();
+  const local = d.prepare(`SELECT * FROM site_groups WHERE id = ? AND user_id = ?`).get(groupId, userId);
+  if (!local || !local.source_group_id) return false;
+  const source = d.prepare(`SELECT * FROM site_groups WHERE id = ? AND is_published = 1`).get(local.source_group_id);
+  if (!source) return false;
+  d.transaction(() => {
+    d.prepare(`UPDATE site_groups SET name=?, color=?, synced_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+     .run(source.name, source.color, groupId);
+    d.prepare(`DELETE FROM site_group_members WHERE group_id = ?`).run(groupId);
+    const ins = d.prepare(`INSERT OR IGNORE INTO site_group_members (group_id, site_id) VALUES (?, ?)`);
+    const members = d.prepare(`SELECT site_id FROM site_group_members WHERE group_id = ?`).all(source.id);
+    for (const m of members) ins.run(groupId, m.site_id);
+  })();
+  return true;
+}
+
+function getTimeSeriesForSites(siteIds, parameterCode, hours = 168) {
+  if (!siteIds.length) return [];
+  const placeholders = siteIds.map(() => '?').join(',');
+  return getDb().prepare(`
+    SELECT value, unit, recorded_at, site_id
+    FROM measurements
+    WHERE site_id IN (${placeholders})
+      AND parameter_code = ?
+      AND recorded_at >= datetime('now', ? || ' hours')
+    ORDER BY recorded_at ASC
+  `).all(...siteIds, parameterCode, `-${hours}`);
+}
+
 module.exports = {
   initDatabase, getDb,
   upsertSite, getAllSites, getSiteById, getActiveSites, setSiteEnabled, deleteSite,
@@ -873,8 +1256,14 @@ module.exports = {
   getProfile, updateProfile,
   getCachedInsight, saveInsight, getRecentInsights,
   logFetch, getLastFetch, getFetchHistory, getSystemStatus,
-  getDistinctBasins, getDistinctBasinsForUser, getCachedBasinPolygon, upsertBasinPolygon, updateSiteHuc, getSitesMissingHuc,
+  getDistinctBasins, getDistinctBasinsForUser, getAllCachedBasins, getCachedBasinPolygon, upsertBasinPolygon, updateSiteHuc, getSitesMissingHuc,
+  getBasinsInBbox, getBasinCandidatesForPoint, searchBasinsLocal, getNotableBasinsLocal, getBasinCount, bulkUpsertBasins, updateBasinBbox,
+  getBasinRecommendations, getBasinsByCodes,
   findOrCreateUser, getUserById, getAllUsers,
   getUserAiSettings, upsertUserAiSettings,
   getUserFavoriteBasins, addUserFavoriteBasin, removeUserFavoriteBasin,
+  createCombinedSite, clearCombinedSites, addSiteSource, setParentSite,
+  getSiteChildren, setSiteSourceEnabled, getTimeSeriesForSites,
+  getGroupsForUser, getGroupById, getGroupMembers, createGroup, updateGroup, deleteGroup, setGroupMembers,
+  publishGroup, getPublishedGroups, saveGroupCopy, syncGroupFromSource,
 };

@@ -1,0 +1,470 @@
+<%- include('partials/head', { title: 'Doppler Radar' }) %>
+<%- include('partials/nav') %>
+
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+
+<style>
+#radar-map { position: absolute; inset: 0; }
+#radar-wrap { position: relative; flex: 1; min-height: 0; }
+
+/* time scrubber overlay */
+#radar-timeline {
+  position: absolute; bottom: 0; left: 0; right: 0; z-index: 10;
+  background: rgba(8,18,32,0.88);
+  border-top: 1px solid #1e293b;
+  padding: 8px 16px 10px;
+  display: flex; flex-direction: column; gap: 6px;
+  backdrop-filter: blur(4px);
+}
+#radar-scrubber {
+  width: 100%; cursor: pointer; accent-color: #0ea5e9;
+  height: 4px;
+}
+.rv-frame-tick {
+  display: inline-block; width: 2px; height: 8px;
+  border-radius: 1px; cursor: pointer; flex-shrink: 0;
+  background: #334155; transition: background 0.1s;
+}
+.rv-frame-tick.past   { background: #0ea5e9; opacity: 0.5; }
+.rv-frame-tick.future { background: #a78bfa; opacity: 0.5; }
+.rv-frame-tick.active { opacity: 1 !important; transform: scaleY(1.8); }
+
+/* AI panel */
+#radar-ai-panel {
+  width: 320px; flex-shrink: 0;
+  display: flex; flex-direction: column;
+  border-left: 1px solid #1e293b;
+  background: #0a1120;
+  overflow: hidden;
+}
+.radar-ai-section {
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid #1e293b;
+}
+#radar-ai-body {
+  flex: 1; overflow-y: auto; padding: 14px;
+  font-size: 12.5px; color: #cbd5e1; line-height: 1.65;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* status dot */
+.status-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 600;
+}
+.status-dry      { background:rgba(100,116,139,0.15); color:#94a3b8; border:1px solid #334155; }
+.status-light    { background:rgba(14,165,233,0.12);  color:#38bdf8; border:1px solid rgba(14,165,233,0.3); }
+.status-moderate { background:rgba(250,204,21,0.12);  color:#fbbf24; border:1px solid rgba(250,204,21,0.3); }
+.status-heavy    { background:rgba(249,115,22,0.12);  color:#fb923c; border:1px solid rgba(249,115,22,0.3); }
+.status-severe   { background:rgba(248,113,113,0.12); color:#f87171; border:1px solid rgba(248,113,113,0.3); }
+
+/* opacity slider */
+#rv-opacity-slider { width: 80px; accent-color: #0ea5e9; cursor: pointer; }
+
+/* animate spin */
+@keyframes _spin { to { transform: rotate(360deg); } }
+.rv-spin { animation: _spin 1s linear infinite; display:inline-block; }
+</style>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+  <!-- Header -->
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);flex-shrink:0;">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Doppler Radar</h1>
+      <p class="text-xs text-slate-400 mt-0.5">RainViewer precipitation radar — Portland watershed · updated every 10 min</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <label class="flex items-center gap-2 text-xs text-slate-400 select-none">
+        <span>Opacity</span>
+        <input type="range" id="rv-opacity-slider" min="10" max="100" value="70" oninput="setOpacity(this.value)">
+        <span id="rv-opacity-val">70%</span>
+      </label>
+      <span id="rv-status-badge" class="status-badge status-dry">— Loading</span>
+      <span class="text-xs px-2 py-1 rounded" style="background:rgba(14,165,233,0.1);color:#38bdf8;border:1px solid rgba(14,165,233,0.2);">RainViewer · No API key</span>
+    </div>
+  </header>
+
+  <!-- Body: map + AI panel -->
+  <div class="flex flex-1 overflow-hidden">
+
+    <!-- Map column -->
+    <div id="radar-wrap" class="flex-1 flex flex-col" style="position:relative;">
+      <div id="radar-map"></div>
+
+      <!-- Timeline overlay -->
+      <div id="radar-timeline">
+        <div class="flex items-center gap-3">
+          <button id="rv-play-btn" onclick="togglePlay()" style="background:none;border:1px solid #334155;border-radius:6px;padding:4px 10px;color:#94a3b8;cursor:pointer;font-size:12px;flex-shrink:0;transition:all 0.15s;"
+            onmouseover="this.style.borderColor='#0ea5e9';this.style.color='#38bdf8'"
+            onmouseout="this.style.borderColor='#334155';this.style.color='#94a3b8'">▶ Play</button>
+
+          <div id="rv-ticks" class="flex items-end gap-px flex-1" style="height:14px;overflow:hidden;"></div>
+
+          <span id="rv-frame-ts" class="text-xs font-mono" style="color:#64748b;flex-shrink:0;min-width:130px;text-align:right;">—</span>
+        </div>
+        <input type="range" id="radar-scrubber" min="0" value="0" step="1" oninput="scrubTo(parseInt(this.value))">
+      </div>
+    </div>
+
+    <!-- AI Analysis panel -->
+    <div id="radar-ai-panel">
+      <div class="radar-ai-section">
+        <div class="flex items-center gap-2">
+          <span class="ai-badge">AI</span>
+          <span class="text-xs font-semibold text-slate-300 uppercase tracking-wider">Radar Analysis</span>
+          <span id="rv-ai-spin" class="ml-auto" style="display:none;">
+            <svg class="rv-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" style="color:#0ea5e9;">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+            </svg>
+          </span>
+          <button onclick="runAiAnalysis()" id="rv-ai-refresh" class="text-xs text-slate-500 hover:text-hydro-400" style="background:none;border:none;cursor:pointer;margin-left:auto;" title="Re-analyze">↻ refresh</button>
+        </div>
+        <div id="rv-ai-status-row" class="mt-2 flex items-center gap-2" style="display:none!important;">
+          <span class="text-xs text-slate-500">Watershed status:</span>
+          <span id="rv-ws-badge" class="status-badge status-dry" style="font-size:10px;">—</span>
+        </div>
+      </div>
+
+      <!-- Frame info strip -->
+      <div class="radar-ai-section" style="padding-top:8px;padding-bottom:8px;">
+        <div class="flex items-center gap-2 text-xs text-slate-500">
+          <span id="rv-frame-info">Loading radar frames…</span>
+          <span id="rv-nowcast-badge" class="hidden" style="padding:1px 6px;border-radius:4px;background:rgba(167,139,250,0.12);color:#a78bfa;border:1px solid rgba(167,139,250,0.25);font-size:10px;">NOWCAST</span>
+        </div>
+      </div>
+
+      <div id="radar-ai-body">
+        <div class="text-xs text-slate-600" style="font-style:italic;">Waiting for radar data to load…</div>
+      </div>
+    </div><!-- /AI panel -->
+
+  </div><!-- /body -->
+</main>
+
+<%- include('partials/profile-slideover') %>
+
+<script>
+var SITES = <%- JSON.stringify(sites) %>;
+
+// ── RainViewer state ──────────────────────────────────────────────────────────
+var _rvHost    = '';
+var _rvFrames  = [];
+var _pastCount = 0;
+var _rvIdx     = 0;
+var _rvPlaying = false;
+var _rvTimer   = null;
+var _rvOpacity = 0.70;
+var _rvMap     = null;
+var _rvMarkers = [];
+var _rvLoaded  = false;
+var _aiPending = false;
+
+// ── Map init ──────────────────────────────────────────────────────────────────
+(function initMap() {
+  _rvMap = new maplibregl.Map({
+    container: 'radar-map',
+    style: {
+      version: 8,
+      sources: {
+        'usgs-topo': {
+          type: 'raster',
+          tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}'],
+          tileSize: 256,
+          attribution: 'USGS National Map',
+          maxzoom: 16,
+        },
+      },
+      layers: [{ id: 'usgs-topo', type: 'raster', source: 'usgs-topo' }],
+    },
+    center: [-122.5, 45.2],
+    zoom: 7,
+  });
+  _rvMap.addControl(new maplibregl.NavigationControl(), 'top-right');
+  _rvMap.on('load', function() {
+    addSiteMarkers();
+    loadRainViewer();
+  });
+}());
+
+// ── Site markers ──────────────────────────────────────────────────────────────
+function addSiteMarkers() {
+  SITES.forEach(function(s) {
+    if (!s.latitude || !s.longitude) return;
+    var isDam = (s.type || '').toLowerCase() === 'dam';
+    var isRes = (s.type || '').toLowerCase() === 'reservoir';
+    var sz  = isDam ? 20 : isRes ? 18 : 14;
+    var col = isDam ? '#f97316' : isRes ? '#06b6d4' : '#0ea5e9';
+    var half = sz / 2;
+
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'width:0;height:0;overflow:visible;cursor:pointer;';
+
+    var dot = document.createElement('div');
+    dot.style.cssText = 'position:absolute;width:'+sz+'px;height:'+sz+'px;border-radius:50%;'
+      + 'left:'+(-half)+'px;top:'+(-half)+'px;'
+      + 'background:'+col+';border:2px solid #0a1628;'
+      + 'box-shadow:0 0 0 2px '+col+'44;'
+      + 'display:flex;align-items:center;justify-content:center;';
+    if (isDam) dot.innerHTML = '<span style="font-size:5px;font-weight:800;color:#0a1628;">DAM</span>';
+    else if (isRes) dot.innerHTML = '<span style="font-size:5px;font-weight:800;color:#0a1628;">RES</span>';
+    wrap.appendChild(dot);
+
+    var lbl = document.createElement('div');
+    lbl.textContent = s.name.length > 18 ? s.name.slice(0, 17) + '…' : s.name;
+    lbl.style.cssText = 'position:absolute;left:0;top:0;'
+      + 'transform:translate(-50%, calc(-100% - '+(half+3)+'px));'
+      + 'background:rgba(8,18,32,0.9);border:1px solid rgba(255,255,255,0.12);border-radius:4px;'
+      + 'color:#f1f5f9;font-size:9px;font-weight:600;padding:2px 6px;'
+      + 'white-space:nowrap;pointer-events:none;font-family:Inter,sans-serif;';
+    wrap.appendChild(lbl);
+
+    var marker = new maplibregl.Marker({ element: wrap, anchor: 'center' })
+      .setLngLat([s.longitude, s.latitude])
+      .addTo(_rvMap);
+    _rvMarkers.push(marker);
+  });
+}
+
+// ── RainViewer load ───────────────────────────────────────────────────────────
+async function loadRainViewer() {
+  setFrameInfo('Fetching radar frames…');
+  try {
+    var r = await fetch('https://api.rainviewer.com/public/weather-maps.json');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var data = await r.json();
+    _rvHost    = data.host;
+    _pastCount = (data.radar.past || []).length;
+    _rvFrames  = (data.radar.past || []).concat(data.radar.nowcast || []);
+
+    buildScrubber();
+    showFrame(_pastCount - 1); // show latest past frame by default
+    _rvLoaded = true;
+    setFrameInfo(_rvFrames.length + ' frames loaded (' + _pastCount + ' past)');
+    scheduleAiAnalysis();
+  } catch(e) {
+    console.error('[Radar] Load failed:', e);
+    setFrameInfo('Failed to load radar data — check connection.');
+    document.getElementById('radar-ai-body').innerHTML =
+      '<div class="text-xs text-red-400">Radar data unavailable. RainViewer API unreachable.</div>';
+  }
+}
+
+// ── Scrubber UI ───────────────────────────────────────────────────────────────
+function buildScrubber() {
+  var scrubber = document.getElementById('radar-scrubber');
+  scrubber.max = String(_rvFrames.length - 1);
+  scrubber.value = String(_pastCount - 1);
+
+  var ticksEl = document.getElementById('rv-ticks');
+  ticksEl.innerHTML = '';
+  _rvFrames.forEach(function(f, i) {
+    var t = document.createElement('div');
+    t.className = 'rv-frame-tick ' + (i < _pastCount ? 'past' : 'future');
+    t.title = fmtTs(f.time);
+    t.onclick = (function(idx){ return function() { scrubTo(idx); }; })(i);
+    ticksEl.appendChild(t);
+  });
+}
+
+function updateScrubberUI(idx) {
+  if (typeof idx !== 'number') idx = _rvIdx;
+  var scrubber = document.getElementById('radar-scrubber');
+  scrubber.value = String(idx);
+
+  var ticks = document.querySelectorAll('.rv-frame-tick');
+  ticks.forEach(function(t, i) { t.classList.toggle('active', i === idx); });
+
+  var frame = _rvFrames[idx];
+  var ts = fmtTs(frame.time);
+  document.getElementById('rv-frame-ts').textContent = ts;
+  document.getElementById('rv-frame-info').textContent =
+    (idx < _pastCount ? 'Past' : 'Nowcast') + ' · frame ' + (idx + 1) + ' of ' + _rvFrames.length;
+
+  var nowcastBadge = document.getElementById('rv-nowcast-badge');
+  if (idx >= _pastCount) nowcastBadge.classList.remove('hidden');
+  else nowcastBadge.classList.add('hidden');
+}
+
+// ── Frame display ─────────────────────────────────────────────────────────────
+function showFrame(idx) {
+  if (!_rvFrames.length || !_rvMap) return;
+  idx = Math.max(0, Math.min(_rvFrames.length - 1, idx));
+  _rvIdx = idx;
+
+  var frame   = _rvFrames[idx];
+  var tileUrl = _rvHost + frame.path + '/256/{z}/{x}/{y}/2/1_1.png';
+
+  if (_rvMap.getLayer('radar-layer')) _rvMap.removeLayer('radar-layer');
+  if (_rvMap.getSource('radar-tiles')) _rvMap.removeSource('radar-tiles');
+
+  _rvMap.addSource('radar-tiles', {
+    type: 'raster',
+    tiles: [tileUrl],
+    tileSize: 256,
+    attribution: 'RainViewer',
+  });
+  _rvMap.addLayer({
+    id: 'radar-layer',
+    type: 'raster',
+    source: 'radar-tiles',
+    paint: { 'raster-opacity': _rvOpacity },
+  });
+
+  updateScrubberUI(idx);
+}
+
+// ── Playback ──────────────────────────────────────────────────────────────────
+function scrubTo(idx) {
+  if (_rvPlaying) { stopPlay(); }
+  showFrame(idx);
+}
+
+function togglePlay() {
+  if (_rvPlaying) stopPlay(); else startPlay();
+}
+
+function startPlay() {
+  if (!_rvFrames.length) return;
+  _rvPlaying = true;
+  var btn = document.getElementById('rv-play-btn');
+  btn.textContent = '⏸ Pause';
+  btn.style.borderColor = '#0ea5e9';
+  btn.style.color = '#38bdf8';
+  // If at last frame, restart
+  if (_rvIdx >= _rvFrames.length - 1) _rvIdx = 0;
+  _rvTimer = setInterval(function() {
+    var next = _rvIdx + 1;
+    if (next >= _rvFrames.length) {
+      stopPlay();
+      return;
+    }
+    showFrame(next);
+  }, 600);
+}
+
+function stopPlay() {
+  _rvPlaying = false;
+  clearInterval(_rvTimer);
+  _rvTimer = null;
+  var btn = document.getElementById('rv-play-btn');
+  btn.textContent = '▶ Play';
+  btn.style.borderColor = '#334155';
+  btn.style.color = '#94a3b8';
+}
+
+// ── Opacity ───────────────────────────────────────────────────────────────────
+function setOpacity(val) {
+  _rvOpacity = parseInt(val, 10) / 100;
+  document.getElementById('rv-opacity-val').textContent = val + '%';
+  if (_rvMap && _rvMap.getLayer('radar-layer')) {
+    _rvMap.setPaintProperty('radar-layer', 'raster-opacity', _rvOpacity);
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function fmtTs(unix) {
+  var d = new Date(unix * 1000);
+  var mo = (d.getMonth()+1).toString().padStart(2,'0');
+  var dd = d.getDate().toString().padStart(2,'0');
+  var hh = d.getHours().toString().padStart(2,'0');
+  var mm = d.getMinutes().toString().padStart(2,'0');
+  return mo + '/' + dd + ' ' + hh + ':' + mm + ' local';
+}
+
+function setFrameInfo(msg) {
+  document.getElementById('rv-frame-info').textContent = msg;
+}
+
+function setStatusBadge(label, cls) {
+  var b = document.getElementById('rv-status-badge');
+  b.textContent = label;
+  b.className = 'status-badge ' + (cls || 'status-dry');
+
+  var wb = document.getElementById('rv-ws-badge');
+  if (wb) { wb.textContent = label; wb.className = 'status-badge ' + (cls || 'status-dry'); }
+
+  var row = document.getElementById('rv-ai-status-row');
+  if (row) row.style.display = 'flex';
+}
+
+function detectStatusFromText(text) {
+  var lower = text.toLowerCase();
+  if (lower.includes('severe') || lower.includes('flooding') || lower.includes('flood warning'))
+    return ['Severe', 'status-severe'];
+  if (lower.includes('heavy') || lower.includes('intense'))
+    return ['Heavy', 'status-heavy'];
+  if (lower.includes('moderate'))
+    return ['Moderate', 'status-moderate'];
+  if (lower.includes('light') || lower.includes('scattered') || lower.includes('drizzle'))
+    return ['Light Rain', 'status-light'];
+  if (lower.includes('dry') || lower.includes('no precip') || lower.includes('clear'))
+    return ['Dry', 'status-dry'];
+  return ['Active', 'status-light'];
+}
+
+// ── AI Analysis ───────────────────────────────────────────────────────────────
+var _aiTimer = null;
+function scheduleAiAnalysis() {
+  clearTimeout(_aiTimer);
+  _aiTimer = setTimeout(runAiAnalysis, 1200);
+}
+
+async function runAiAnalysis() {
+  if (_aiPending) return;
+  _aiPending = true;
+
+  var spin    = document.getElementById('rv-ai-spin');
+  var refresh = document.getElementById('rv-ai-refresh');
+  var body    = document.getElementById('radar-ai-body');
+
+  spin.style.display    = 'inline';
+  refresh.style.display = 'none';
+  body.innerHTML = '<div class="text-xs text-slate-500" style="font-style:italic;">Analyzing radar + stream gauge data…</div>';
+
+  // Build a note from current frame
+  var radarNote = '';
+  if (_rvFrames.length && _rvLoaded) {
+    var frame  = _rvFrames[_rvIdx];
+    var isNow  = _rvIdx >= _pastCount;
+    radarNote  = 'Viewing ' + (isNow ? 'nowcast' : 'past radar') + ' frame from ' + fmtTs(frame.time) + '. ';
+    radarNote += 'Total frames available: ' + _rvFrames.length + ' (' + _pastCount + ' past, ' + (_rvFrames.length - _pastCount) + ' nowcast). ';
+    radarNote += 'Region: Portland/Willamette Valley watershed, Pacific Northwest, Oregon.';
+  } else {
+    radarNote = 'Radar imagery currently unavailable — analyze stream gauge data only and note the radar data gap.';
+  }
+
+  var siteIds = SITES.map(function(s) { return s.site_id; });
+
+  try {
+    var r = await fetch('/api/radar/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ radar_note: radarNote, site_ids: siteIds }),
+    });
+    var j = await r.json();
+    if (j.ok && j.response) {
+      body.textContent = j.response;
+      var detected = detectStatusFromText(j.response);
+      setStatusBadge(detected[0], detected[1]);
+    } else {
+      body.innerHTML = '<div class="text-xs text-red-400">' + (j.error || 'Analysis failed.') + '</div>';
+    }
+  } catch(e) {
+    body.innerHTML = '<div class="text-xs text-red-400">Request failed: ' + e.message + '</div>';
+  } finally {
+    _aiPending = false;
+    spin.style.display    = 'none';
+    refresh.style.display = '';
+  }
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowRight') { stopPlay(); showFrame(_rvIdx + 1); }
+  else if (e.key === 'ArrowLeft') { stopPlay(); showFrame(_rvIdx - 1); }
+  else if (e.key === ' ') { e.preventDefault(); togglePlay(); }
+});
+</script>

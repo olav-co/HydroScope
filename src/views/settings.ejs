@@ -40,6 +40,30 @@
 
       </div>
 
+      <!-- ── Basin Catalog ─────────────────────────────────────────────────────── -->
+      <div class="card" id="basinCatalogCard">
+        <h2 class="section-title">Basin Catalog</h2>
+        <p class="text-xs text-slate-500 mb-4">
+          Downloads the full list of ~2,267 US watersheds from USGS and saves them locally.
+          Run this once — after that, all basin search and filtering is instant.
+          Boundary shapes are still pulled on demand the first time you view a specific basin.
+        </p>
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+          <div id="basinCatalogStatus" style="font-size:13px;color:#64748b;">Checking…</div>
+          <button id="basinSyncBtn" onclick="triggerBasinFullSync()"
+            style="padding:6px 16px;border-radius:6px;border:none;background:#0369a1;
+                   color:#fff;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;">
+            Download All Basins
+          </button>
+        </div>
+        <div id="basinSyncProgress" style="display:none;margin-top:10px;">
+          <div style="font-size:12px;color:#475569;margin-bottom:4px;" id="basinProgressLabel">Starting…</div>
+          <div style="height:4px;background:#1e293b;border-radius:2px;overflow:hidden;max-width:300px;">
+            <div id="basinProgressBar" style="height:100%;background:#0ea5e9;width:0%;transition:width .4s;border-radius:2px;"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- ── Data Services ──────────────────────────────────────────────────────── -->
       <div class="card hidden" id="servicesCard">
         <div class="flex items-center justify-between mb-1">
@@ -683,6 +707,84 @@ async function saveSettings() {
 }
 
 loadSettings();
+
+// ── Basin Catalog ─────────────────────────────────────────────────────────────
+
+let _basinSyncPollTimer = null;
+const EXPECTED_TOTAL = 2267;
+
+async function loadBasinCatalogStatus() {
+  try {
+    const r = await fetch('/api/basins/catalog-status');
+    const d = await r.json();
+    renderBasinCatalogStatus(d);
+    if (d.running) {
+      if (!_basinSyncPollTimer) _basinSyncPollTimer = setInterval(loadBasinCatalogStatus, 1500);
+    } else {
+      clearInterval(_basinSyncPollTimer);
+      _basinSyncPollTimer = null;
+    }
+  } catch (_) {}
+}
+
+function renderBasinCatalogStatus(d) {
+  const statusEl   = document.getElementById('basinCatalogStatus');
+  const progressEl = document.getElementById('basinSyncProgress');
+  const labelEl    = document.getElementById('basinProgressLabel');
+  const barEl      = document.getElementById('basinProgressBar');
+  const btn        = document.getElementById('basinSyncBtn');
+  if (!statusEl) return;
+
+  const count      = d.count || 0;
+  const withBbox   = d.with_bbox || 0;
+  const needsResync = count > 0 && withBbox < count * 0.9; // <90% have map boundary data
+
+  if (d.running) {
+    statusEl.textContent = `Downloading… ${d.progress.saved.toLocaleString()} saved so far`;
+    progressEl.style.display = '';
+    labelEl.textContent = `${d.progress.saved.toLocaleString()} / ~${EXPECTED_TOTAL.toLocaleString()} basins`;
+    barEl.style.width = Math.min(100, Math.round((d.progress.saved / EXPECTED_TOTAL) * 100)) + '%';
+    btn.disabled = true;
+    btn.textContent = 'Downloading…';
+  } else if (d.progress.error) {
+    statusEl.innerHTML = `<span style="color:#f87171;">Download failed: ${d.progress.error}</span>`;
+    progressEl.style.display = 'none';
+    btn.disabled = false;
+    btn.textContent = 'Retry';
+  } else if (count === 0) {
+    statusEl.textContent = 'No basins saved yet — click Download to sync all.';
+    progressEl.style.display = 'none';
+    btn.disabled = false;
+    btn.textContent = 'Download All Basins';
+  } else if (needsResync) {
+    statusEl.innerHTML = `<span style="color:#34d399;">${count.toLocaleString()} basins saved</span>` +
+      ` <span style="color:#fbbf24;margin-left:8px;">— map boundary data missing, re-download to enable area filtering</span>`;
+    progressEl.style.display = 'none';
+    btn.disabled = false;
+    btn.textContent = 'Re-download';
+  } else {
+    statusEl.innerHTML = `<span style="color:#34d399;">${count.toLocaleString()} basins saved</span>`;
+    progressEl.style.display = 'none';
+    btn.disabled = false;
+    btn.textContent = 'Re-download';
+  }
+}
+
+async function triggerBasinFullSync() {
+  const btn = document.getElementById('basinSyncBtn');
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+  try {
+    await fetch('/api/basins/full-sync', { method: 'POST' });
+    _basinSyncPollTimer = setInterval(loadBasinCatalogStatus, 1500);
+    loadBasinCatalogStatus();
+  } catch (_) {
+    btn.disabled = false;
+    btn.textContent = 'Download All Basins';
+  }
+}
+
+loadBasinCatalogStatus();
 </script>
 
 <%- include('partials/foot') %>

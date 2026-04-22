@@ -202,6 +202,47 @@ CREATE TABLE IF NOT EXISTS user_favorite_basins (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- Combined site sources: links a 'combined' parent to its USGS/CWMS children.
+-- Each child can be toggled on/off independently via the `enabled` flag.
+CREATE TABLE IF NOT EXISTS site_sources (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  parent_site_id TEXT    NOT NULL,
+  child_site_id  TEXT    NOT NULL,
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(parent_site_id, child_site_id),
+  FOREIGN KEY (parent_site_id) REFERENCES sites(site_id) ON DELETE CASCADE,
+  FOREIGN KEY (child_site_id)  REFERENCES sites(site_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_site_sources_parent ON site_sources(parent_site_id);
+CREATE INDEX IF NOT EXISTS idx_site_sources_child  ON site_sources(child_site_id);
+
+-- User-defined site groups
+CREATE TABLE IF NOT EXISTS site_groups (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id          INTEGER NOT NULL,
+  name             TEXT    NOT NULL,
+  color            TEXT    NOT NULL DEFAULT '#3b82f6',
+  is_published     INTEGER NOT NULL DEFAULT 0,        -- 1 = visible to other users
+  published_at     DATETIME,
+  source_group_id  INTEGER REFERENCES site_groups(id) ON DELETE SET NULL,  -- FK to originator if this is a saved copy
+  synced_at        DATETIME,                          -- last time this copy was synced from source
+  updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+  created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_site_groups_user ON site_groups(user_id);
+
+-- Members of each site group
+CREATE TABLE IF NOT EXISTS site_group_members (
+  group_id INTEGER NOT NULL,
+  site_id  TEXT    NOT NULL,
+  PRIMARY KEY (group_id, site_id),
+  FOREIGN KEY (group_id) REFERENCES site_groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (site_id)  REFERENCES sites(site_id)  ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_sgm_site ON site_group_members(site_id);
+
 -- App metadata / migration version tracking
 CREATE TABLE IF NOT EXISTS app_meta (
   key   TEXT PRIMARY KEY,

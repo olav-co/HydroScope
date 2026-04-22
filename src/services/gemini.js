@@ -159,6 +159,24 @@ function buildDataContext(recentRows, sites) {
 
   ctx += '\n---\n';
 
+  // Note co-located CWMS/USGS pairs so the AI doesn't treat them as independent signals
+  try {
+    const pairNotes = [];
+    const siteList = sites || [];
+    // A CWMS site and a USGS site sharing the same parent_site_id are a dam/tailwater pair
+    const cwmsPaired = siteList.filter(s => s.source === 'cwms' && s.parent_site_id);
+    for (const c of cwmsPaired) {
+      const partner = siteList.find(s => s.source === 'usgs' && s.parent_site_id === c.parent_site_id);
+      if (partner) {
+        pairNotes.push(`"${c.name}" (CWMS ${c.site_id}) and "${partner.name}" (USGS ${partner.site_id}) are a co-located dam/tailwater pair — CWMS tracks reservoir operations (pool elevation, releases, storage), USGS measures the downstream flow response with a short lag.`);
+      }
+    }
+    if (pairNotes.length) {
+      ctx += '\n[CO-LOCATED SITE PAIRS]\n';
+      for (const n of pairNotes) ctx += '• ' + n + '\n';
+    }
+  } catch (_) {}
+
   // Append weather context from Open-Meteo if available
   try {
     const weatherRows = db.getRecentWeather(72);

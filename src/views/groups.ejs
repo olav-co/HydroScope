@@ -1,0 +1,1018 @@
+<%- include('partials/head', { title: 'Site Groups' }) %>
+<%- include('partials/nav') %>
+
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+
+<style>
+#grp-left    { width:240px;flex-shrink:0;border-right:1px solid #1e293b;display:flex;flex-direction:column;background:#0f172a;overflow:hidden; }
+#grp-center  { width:360px;flex-shrink:0;border-right:1px solid #1e293b;display:flex;flex-direction:column;overflow:hidden; }
+#grp-map-wrap{ flex:1;position:relative;min-width:0; }
+#grp-map     { position:absolute;inset:0; }
+
+.grp-item {
+  display:flex;align-items:center;gap:9px;
+  padding:9px 10px;border-radius:8px;cursor:pointer;
+  transition:background 0.12s;margin:2px 6px;
+  border:1px solid transparent;
+}
+.grp-item:hover { background:rgba(30,41,59,0.5); }
+.grp-item.active { background:rgba(14,165,233,0.08);border-color:rgba(14,165,233,0.2); }
+
+.grp-swatch { width:11px;height:11px;border-radius:50%;flex-shrink:0; }
+
+.grp-count {
+  margin-left:auto;font-size:10px;padding:1px 6px;border-radius:10px;
+  background:rgba(30,41,59,0.8);color:#475569;flex-shrink:0;
+}
+
+.site-row {
+  display:flex;align-items:center;gap:9px;
+  padding:7px 14px;border-bottom:1px solid rgba(30,41,59,0.5);
+  cursor:pointer;transition:background 0.1s;
+}
+.site-row:hover { background:rgba(14,165,233,0.05); }
+.site-row.in-group { background:rgba(14,165,233,0.07); }
+
+.type-badge {
+  font-size:9px;padding:1px 5px;border-radius:8px;
+  font-weight:700;text-transform:uppercase;letter-spacing:0.05em;flex-shrink:0;
+}
+.badge-river      { background:rgba(14,165,233,0.15);color:#38bdf8; }
+.badge-reservoir  { background:rgba(99,102,241,0.15);color:#818cf8; }
+.badge-dam        { background:rgba(245,158,11,0.15);color:#fbbf24; }
+.badge-stream     { background:rgba(34,197,94,0.15);color:#4ade80; }
+.badge-wetland    { background:rgba(52,211,153,0.15);color:#6ee7b7; }
+.badge-tidal      { background:rgba(236,72,153,0.15);color:#f472b6; }
+.badge-spring     { background:rgba(167,139,250,0.15);color:#a78bfa; }
+.badge-combined   { background:rgba(100,116,139,0.15);color:#94a3b8; }
+
+.color-opt {
+  width:19px;height:19px;border-radius:50%;cursor:pointer;
+  border:2px solid transparent;transition:transform 0.1s,border-color 0.1s;
+  flex-shrink:0;
+}
+.color-opt:hover  { transform:scale(1.2); }
+.color-opt.chosen { border-color:#fff; }
+
+.grp-del-btn {
+  flex-shrink:0;padding:3px;border-radius:5px;
+  background:none;border:none;cursor:pointer;
+  color:#334155;transition:color 0.15s;
+  display:none;
+}
+.grp-item:hover .grp-del-btn { display:block; }
+.grp-del-btn:hover { color:#f87171; }
+
+/* sharing */
+.share-pill {
+  display:inline-flex;align-items:center;gap:4px;
+  padding:2px 7px;border-radius:999px;font-size:10px;font-weight:600;
+  letter-spacing:.03em;flex-shrink:0;
+}
+.share-pill-pub  { background:rgba(52,211,153,0.12);color:#34d399;border:1px solid rgba(52,211,153,0.25); }
+.share-pill-copy { background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.25); }
+.share-pill-upd  { background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3); }
+
+.shared-card {
+  background:#1e293b;border:1px solid #334155;border-radius:10px;
+  padding:0;overflow:hidden;display:flex;flex-direction:column;
+  transition:border-color 0.15s;
+}
+.shared-card:hover { border-color:#475569; }
+.shared-card-header { padding:14px 16px 10px;display:flex;align-items:flex-start;gap:10px; }
+.shared-card-body   { padding:0 16px 14px;flex:1; }
+.shared-card-footer { padding:10px 16px;border-top:1px solid #1e293b;display:flex;align-items:center;justify-content:space-between; }
+
+#map-tip {
+  position:absolute;pointer-events:none;
+  background:rgba(15,23,42,0.92);border:1px solid #334155;
+  border-radius:8px;padding:7px 11px;font-size:11.5px;
+  color:#e2e8f0;z-index:20;max-width:200px;display:none;
+}
+</style>
+
+<main class="flex-1 flex flex-col overflow-hidden">
+
+  <!-- Header -->
+  <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800 flex-shrink-0"
+    style="background:rgba(15,23,42,0.6);">
+    <div>
+      <h1 class="text-lg font-semibold text-white">Site Groups</h1>
+      <p class="text-xs text-slate-400 mt-0.5">Organise monitoring sites into custom groups for filtering across pages</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="dirty-lbl" class="text-xs" style="color:#f59e0b;display:none;">Unsaved changes</span>
+      <button id="save-btn" onclick="saveMembers()"
+        class="text-sm px-4 py-1.5 rounded-lg font-medium"
+        style="background:#0ea5e9;color:#fff;border:none;cursor:pointer;display:none;"
+        onmouseover="this.style.background='#0284c7'" onmouseout="this.style.background='#0ea5e9'">
+        Save changes
+      </button>
+    </div>
+  </header>
+
+  <!-- Three-panel body -->
+  <div class="flex flex-1 overflow-hidden">
+
+    <!-- LEFT: group list -->
+    <div id="grp-left">
+      <div class="px-4 py-3 flex-shrink-0" style="border-bottom:1px solid #1e293b;">
+        <button onclick="showCreateModal()"
+          class="w-full text-sm py-2 rounded-lg font-medium flex items-center justify-center gap-2"
+          style="background:rgba(14,165,233,0.1);color:#38bdf8;border:1px solid rgba(14,165,233,0.2);cursor:pointer;transition:all 0.15s;"
+          onmouseover="this.style.background='rgba(14,165,233,0.18)'"
+          onmouseout="this.style.background='rgba(14,165,233,0.1)'">
+          <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+          </svg>
+          New Group
+        </button>
+      </div>
+      <button onclick="browseShared()"
+        class="w-full text-sm py-2 rounded-lg flex items-center justify-center gap-2 mt-2"
+        style="background:none;color:#64748b;border:1px solid #1e293b;cursor:pointer;transition:all 0.15s;"
+        onmouseover="this.style.color='#94a3b8';this.style.borderColor='#334155'"
+        onmouseout="this.style.color='#64748b';this.style.borderColor='#1e293b'">
+        <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9"/>
+        </svg>
+        Browse Shared
+      </button>
+      <div id="grp-list" class="flex-1 overflow-y-auto py-2">
+        <p class="text-xs text-center py-6" style="color:#475569;">Loading…</p>
+      </div>
+    </div>
+
+    <!-- CENTER: site checklist -->
+    <div id="grp-center">
+
+      <!-- Empty state -->
+      <div id="center-empty" class="flex-1 flex flex-col items-center justify-center text-center px-8" style="color:#475569;">
+        <svg width="38" height="38" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+          style="margin-bottom:14px;opacity:0.35;">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+        </svg>
+        <p class="text-sm font-medium" style="color:#64748b;">Select a group</p>
+        <p class="text-xs mt-1">or create a new one to start adding sites</p>
+      </div>
+
+      <!-- Active group panel -->
+      <div id="center-panel" class="flex-1 flex flex-col overflow-hidden" style="display:none;">
+
+        <!-- Group meta controls -->
+        <div class="px-4 py-3 flex-shrink-0" style="border-bottom:1px solid #1e293b;">
+          <div class="flex items-center gap-2 mb-2">
+            <div id="active-dot" class="grp-swatch" style="width:14px;height:14px;"></div>
+            <input id="grp-name-input" type="text"
+              class="flex-1 bg-transparent border-none outline-none text-sm font-semibold"
+              style="color:#e2e8f0;" placeholder="Group name"
+              oninput="onNameEdit()" onblur="flushNameSave()"/>
+            <button onclick="deleteActiveGroup()" title="Delete group"
+              style="flex-shrink:0;background:none;border:none;cursor:pointer;padding:4px;border-radius:5px;color:#334155;transition:color 0.15s;"
+              onmouseover="this.style.color='#f87171'" onmouseout="this.style.color='#334155'">
+              <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+              </svg>
+            </button>
+          </div>
+          <!-- Color picker -->
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-xs" style="color:#475569;flex-shrink:0;">Color</span>
+            <div id="color-picker" class="flex flex-wrap gap-1.5"></div>
+          </div>
+          <!-- Member count + sharing status row -->
+          <div class="flex items-center gap-2 flex-wrap">
+            <p id="member-lbl" class="text-xs" style="color:#475569;">0 sites in group</p>
+            <div id="share-status" class="flex items-center gap-2 ml-auto"></div>
+          </div>
+        </div>
+
+        <!-- Search + bulk toggles -->
+        <div class="px-4 py-2 flex-shrink-0" style="border-bottom:1px solid #1e293b;">
+          <div class="flex items-center gap-2 rounded-lg px-3 py-1.5"
+            style="background:#0f172a;border:1px solid #1e293b;">
+            <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              style="color:#475569;flex-shrink:0;">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            <input id="site-search" type="text" placeholder="Search sites…"
+              class="flex-1 bg-transparent border-none outline-none text-xs" style="color:#e2e8f0;"
+              oninput="renderSiteList()"/>
+          </div>
+          <div class="flex items-center gap-3 mt-2">
+            <button onclick="selectAll()" class="text-xs" style="background:none;border:none;cursor:pointer;color:#38bdf8;padding:0;">Select all</button>
+            <button onclick="selectNone()" class="text-xs" style="background:none;border:none;cursor:pointer;color:#64748b;padding:0;">Clear all</button>
+            <span id="filter-count" class="text-xs ml-auto" style="color:#334155;"></span>
+          </div>
+        </div>
+
+        <!-- Site rows -->
+        <div id="site-list" class="flex-1 overflow-y-auto"></div>
+      </div>
+
+    </div><!-- /center -->
+
+    <!-- RIGHT: map -->
+    <div id="grp-map-wrap">
+      <div id="grp-map"></div>
+      <div id="map-tip"></div>
+    </div>
+
+    <!-- SHARED BROWSE panel (replaces center + map when active) -->
+    <div id="shared-panel" style="display:none;flex:1;flex-direction:column;overflow:hidden;background:#080f1a;">
+      <!-- header -->
+      <div class="flex items-center gap-3 px-5 py-3 flex-shrink-0" style="border-bottom:1px solid #1e293b;background:#0f172a;">
+        <button onclick="closeSharedPanel()"
+          style="display:flex;align-items:center;gap:6px;background:none;border:none;cursor:pointer;color:#64748b;font-size:12px;padding:4px 8px;border-radius:6px;border:1px solid #1e293b;transition:all .15s;"
+          onmouseover="this.style.color='#94a3b8';this.style.borderColor='#334155'"
+          onmouseout="this.style.color='#64748b';this.style.borderColor='#1e293b'">
+          <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/>
+          </svg>
+          Back
+        </button>
+        <div>
+          <div class="text-sm font-semibold text-white">Shared Groups</div>
+          <div class="text-xs" style="color:#475569;">Groups other users have made available to the team</div>
+        </div>
+        <button onclick="loadSharedGroups()" id="shared-refresh-btn"
+          style="margin-left:auto;background:none;border:1px solid #1e293b;border-radius:6px;color:#64748b;font-size:11px;padding:4px 9px;cursor:pointer;transition:all .15s;"
+          onmouseover="this.style.color='#94a3b8'" onmouseout="this.style.color='#64748b'">
+          ↻ Refresh
+        </button>
+      </div>
+      <!-- card grid -->
+      <div id="shared-grid" class="flex-1 overflow-y-auto" style="padding:20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;align-content:start;">
+        <div style="grid-column:1/-1;text-align:center;padding:48px 0;color:#475569;font-size:13px;">Loading…</div>
+      </div>
+    </div>
+
+  </div><!-- /body -->
+</main>
+
+<!-- Create group modal -->
+<div id="create-modal"
+  style="display:none;position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.55);align-items:center;justify-content:center;"
+  onclick="if(event.target===this)hideCreateModal()">
+  <div style="background:#1e293b;border:1px solid #334155;border-radius:14px;padding:24px;width:340px;"
+    onclick="event.stopPropagation()">
+    <h3 class="text-sm font-semibold text-white mb-4">Create site group</h3>
+    <label class="text-xs text-slate-400 block mb-1">Name</label>
+    <input id="modal-name" type="text"
+      class="w-full rounded-lg px-3 py-2 text-sm mb-4"
+      style="background:#0f172a;border:1px solid #334155;color:#e2e8f0;outline:none;"
+      placeholder="e.g. Sandy Watershed" maxlength="80"
+      onkeydown="if(event.key==='Enter')createGroup()"/>
+    <label class="text-xs text-slate-400 block mb-2">Color</label>
+    <div id="modal-color-picker" class="flex flex-wrap gap-2 mb-5"></div>
+    <div class="flex justify-end gap-2">
+      <button onclick="hideCreateModal()"
+        class="text-sm px-4 py-1.5 rounded-lg"
+        style="background:rgba(30,41,59,0.6);color:#94a3b8;border:1px solid #334155;cursor:pointer;">
+        Cancel
+      </button>
+      <button onclick="createGroup()"
+        class="text-sm px-4 py-1.5 rounded-lg font-medium"
+        style="background:#0ea5e9;color:#fff;border:none;cursor:pointer;">
+        Create
+      </button>
+    </div>
+  </div>
+</div>
+
+<%- include('partials/profile-slideover') %>
+
+<script>
+var SITES = <%- JSON.stringify(sites) %>;
+
+var _groups       = [];
+var _activeGroup  = null;
+var _memberSet    = new Set();
+var _savedSet     = new Set();
+var _dirty        = false;
+var _map          = null;
+var _mapReady     = false;
+var _modalColor   = '#3b82f6';
+var _pendingName  = null;
+
+var GROUP_COLORS = [
+  '#3b82f6','#0ea5e9','#06b6d4','#10b981','#84cc16',
+  '#f59e0b','#f97316','#ef4444','#ec4899','#8b5cf6',
+];
+
+// ── Bootstrap ─────────────────────────────────────────────────────────────────
+
+initMap();
+loadGroups();
+buildModalColorPicker();
+
+// ── Map ───────────────────────────────────────────────────────────────────────
+
+function initMap() {
+  _map = new maplibregl.Map({
+    container: 'grp-map',
+    style: {
+      version: 8,
+      glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+      sources: {
+        'base': {
+          type: 'raster',
+          tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}'],
+          tileSize: 256,
+          attribution: 'USGS National Map',
+          maxzoom: 16,
+        },
+      },
+      layers: [{ id: 'base', type: 'raster', source: 'base' }],
+    },
+    center: [-122.3, 45.4],
+    zoom: 7.5,
+  });
+  _map.addControl(new maplibregl.NavigationControl(), 'top-right');
+  _map.on('load', onMapLoad);
+}
+
+function buildSitesGeoJson() {
+  return {
+    type: 'FeatureCollection',
+    features: SITES
+      .filter(s => s.latitude && s.longitude)
+      .map(s => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [s.longitude, s.latitude] },
+        properties: {
+          id:       s.site_id,
+          name:     s.name,
+          type:     s.type || 'river',
+          in_group: _memberSet.has(s.site_id) ? 1 : 0,
+        },
+      })),
+  };
+}
+
+function onMapLoad() {
+  _mapReady = true;
+
+  _map.addSource('sites', { type: 'geojson', data: buildSitesGeoJson() });
+
+  // bg halo
+  _map.addLayer({
+    id: 'sites-halo',
+    type: 'circle',
+    source: 'sites',
+    paint: {
+      'circle-radius':       10,
+      'circle-color':        'rgba(0,0,0,0)',
+      'circle-stroke-width': 1,
+      'circle-stroke-color': ['case', ['==', ['get','in_group'], 1], 'rgba(255,255,255,0.25)', 'transparent'],
+    },
+  });
+
+  // all sites dim
+  _map.addLayer({
+    id: 'sites-dim',
+    type: 'circle',
+    source: 'sites',
+    filter: ['==', ['get','in_group'], 0],
+    paint: {
+      'circle-radius':       6,
+      'circle-color':        '#1e293b',
+      'circle-stroke-width': 1.5,
+      'circle-stroke-color': '#475569',
+    },
+  });
+
+  // group members
+  _map.addLayer({
+    id: 'sites-in',
+    type: 'circle',
+    source: 'sites',
+    filter: ['==', ['get','in_group'], 1],
+    paint: {
+      'circle-radius':       7,
+      'circle-color':        _activeGroup ? _activeGroup.color : '#3b82f6',
+      'circle-stroke-width': 2,
+      'circle-stroke-color': '#fff',
+    },
+  });
+
+  // labels for group members
+  _map.addLayer({
+    id: 'sites-labels',
+    type: 'symbol',
+    source: 'sites',
+    filter: ['==', ['get','in_group'], 1],
+    layout: {
+      'text-field':     ['get', 'name'],
+      'text-font':      ['Open Sans Regular'],
+      'text-size':      10,
+      'text-offset':    [0, 1.3],
+      'text-anchor':    'top',
+      'text-max-width': 10,
+    },
+    paint: {
+      'text-color':        '#e2e8f0',
+      'text-halo-color':   'rgba(10,17,32,0.8)',
+      'text-halo-width':   1.5,
+    },
+  });
+
+  // hover tooltip
+  _map.on('mousemove', 'sites-dim', showMapTip);
+  _map.on('mousemove', 'sites-in',  showMapTip);
+  _map.on('mouseleave','sites-dim', hideMapTip);
+  _map.on('mouseleave','sites-in',  hideMapTip);
+
+  // click to toggle
+  _map.on('click', 'sites-dim', function(e) { toggleSite(e.features[0].properties.id); });
+  _map.on('click', 'sites-in',  function(e) { toggleSite(e.features[0].properties.id); });
+
+  _map.getCanvas().style.cursor = '';
+  _map.on('mouseenter','sites-dim', function() { _map.getCanvas().style.cursor='pointer'; });
+  _map.on('mouseenter','sites-in',  function() { _map.getCanvas().style.cursor='pointer'; });
+  _map.on('mouseleave','sites-dim', function() { _map.getCanvas().style.cursor=''; });
+  _map.on('mouseleave','sites-in',  function() { _map.getCanvas().style.cursor=''; });
+}
+
+function showMapTip(e) {
+  var f   = e.features[0];
+  var tip = document.getElementById('map-tip');
+  var inG = f.properties.in_group === 1;
+  tip.innerHTML =
+    '<div style="font-weight:600;margin-bottom:3px;">' + f.properties.name + '</div>' +
+    '<div style="color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.05em;">' + f.properties.type + '</div>' +
+    '<div style="margin-top:5px;font-size:10px;color:' + (inG ? '#38bdf8' : '#475569') + ';">' +
+    (inG ? '✓ In this group' : 'Click to add') + '</div>';
+  tip.style.display = 'block';
+  tip.style.left  = (e.point.x + 14) + 'px';
+  tip.style.top   = (e.point.y - 10) + 'px';
+}
+
+function hideMapTip() {
+  document.getElementById('map-tip').style.display = 'none';
+}
+
+function refreshMapData() {
+  if (!_mapReady) return;
+  _map.getSource('sites').setData(buildSitesGeoJson());
+  if (_activeGroup) {
+    _map.setPaintProperty('sites-in','circle-color', _activeGroup.color);
+  }
+}
+
+// ── Groups list ───────────────────────────────────────────────────────────────
+
+function loadGroups(onDone) {
+  fetch('/api/groups')
+    .then(r => r.json())
+    .then(function(data) {
+      if (!Array.isArray(data)) {
+        console.error('loadGroups: unexpected response', data);
+        if (onDone) onDone();
+        return;
+      }
+      _groups = data;
+      renderGroupList();
+      if (_activeGroup) {
+        var refreshed = _groups.find(function(g) { return g.id === _activeGroup.id; });
+        if (refreshed) _activeGroup = refreshed;
+      }
+      if (onDone) onDone();
+    })
+    .catch(function(e) {
+      console.error('loadGroups', e);
+      if (onDone) onDone();
+    });
+}
+
+function renderGroupList() {
+  var el = document.getElementById('grp-list');
+  if (!_groups.length) {
+    el.innerHTML = '<p class="text-xs text-center py-6" style="color:#475569;">No groups yet.<br>Create one to get started.</p>';
+    return;
+  }
+  el.innerHTML = _groups.map(function(g) {
+    var isActive = _activeGroup && _activeGroup.id === g.id;
+    return '<div class="grp-item' + (isActive ? ' active' : '') + '" onclick="selectGroup(' + g.id + ')">' +
+      '<div class="grp-swatch" style="background:' + g.color + ';"></div>' +
+      '<span class="text-xs font-medium flex-1 truncate" style="color:#e2e8f0;">' + escHtml(g.name) + '</span>' +
+      '<span class="grp-count">' + g.member_count + '</span>' +
+      '<button class="grp-del-btn" onclick="event.stopPropagation();confirmDeleteGroup(' + g.id + ',\'' + escHtml(g.name).replace(/'/g,'\\\'') + '\')" title="Delete">' +
+        '<svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>' +
+      '</button>' +
+    '</div>';
+  }).join('');
+}
+
+function selectGroup(id) {
+  if (_dirty && !confirm('You have unsaved changes. Discard them?')) return;
+  var g = _groups.find(function(x) { return x.id === id; });
+  if (!g) return;
+  _activeGroup = g;
+  _dirty = false;
+  renderGroupList();
+  showCenterPanel();
+  loadMembers(id);
+}
+
+function showCenterPanel() {
+  document.getElementById('center-empty').style.display = 'none';
+  document.getElementById('center-panel').style.display = 'flex';
+  document.getElementById('grp-name-input').value = _activeGroup.name;
+  document.getElementById('active-dot').style.background = _activeGroup.color;
+  buildColorPicker('color-picker', _activeGroup.color, setActiveColor);
+}
+
+function loadMembers(groupId) {
+  fetch('/api/groups/' + groupId + '/members')
+    .then(r => r.json())
+    .then(function(siteIds) {
+      _memberSet  = new Set(siteIds);
+      _savedSet   = new Set(siteIds);
+      _dirty      = false;
+      updateDirtyUI();
+      renderSiteList();
+      refreshMapData();
+    })
+    .catch(function(e) { console.error('loadMembers', e); });
+}
+
+// ── Site list ─────────────────────────────────────────────────────────────────
+
+function renderSiteList() {
+  if (!_activeGroup) return;
+  var q   = (document.getElementById('site-search').value || '').toLowerCase();
+  var vis = SITES.filter(function(s) {
+    return !q || s.name.toLowerCase().includes(q) || s.site_id.toLowerCase().includes(q);
+  });
+
+  document.getElementById('filter-count').textContent =
+    q ? vis.length + ' / ' + SITES.length + ' sites' : '';
+
+  var inCount = 0;
+  SITES.forEach(function(s) { if (_memberSet.has(s.site_id)) inCount++; });
+  document.getElementById('member-lbl').textContent =
+    inCount + ' site' + (inCount === 1 ? '' : 's') + ' in group';
+
+  var html = '';
+  vis.forEach(function(s) {
+    var inG  = _memberSet.has(s.site_id);
+    var type = (s.type || 'river').toLowerCase().replace(/[^a-z]/g,'');
+    html +=
+      '<div class="site-row' + (inG ? ' in-group' : '') + '" onclick="toggleSite(\'' + s.site_id.replace(/'/g,"\\'") + '\')" style="' + (inG ? 'border-left:3px solid ' + _activeGroup.color + ';padding-left:11px;' : '') + '">' +
+        '<div style="width:16px;height:16px;border-radius:4px;border:1.5px solid ' + (inG ? _activeGroup.color : '#334155') + ';background:' + (inG ? _activeGroup.color : 'transparent') + ';flex-shrink:0;display:flex;align-items:center;justify-content:center;">' +
+          (inG ? '<svg width="9" height="9" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#fff;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>' : '') +
+        '</div>' +
+        '<span class="flex-1 truncate text-xs" style="color:' + (inG ? '#e2e8f0' : '#94a3b8') + ';">' + escHtml(s.name) + '</span>' +
+        '<span class="type-badge badge-' + type + '">' + type + '</span>' +
+      '</div>';
+  });
+  document.getElementById('site-list').innerHTML = html || '<p class="text-xs py-6 text-center" style="color:#475569;">No sites match</p>';
+}
+
+function toggleSite(siteId) {
+  if (!_activeGroup) return;
+  if (_memberSet.has(siteId)) { _memberSet.delete(siteId); }
+  else                        { _memberSet.add(siteId); }
+  markDirty();
+  renderSiteList();
+  refreshMapData();
+}
+
+function selectAll() {
+  if (!_activeGroup) return;
+  var q = (document.getElementById('site-search').value || '').toLowerCase();
+  SITES.forEach(function(s) {
+    if (!q || s.name.toLowerCase().includes(q) || s.site_id.toLowerCase().includes(q)) {
+      _memberSet.add(s.site_id);
+    }
+  });
+  markDirty();
+  renderSiteList();
+  refreshMapData();
+}
+
+function selectNone() {
+  if (!_activeGroup) return;
+  var q = (document.getElementById('site-search').value || '').toLowerCase();
+  SITES.forEach(function(s) {
+    if (!q || s.name.toLowerCase().includes(q) || s.site_id.toLowerCase().includes(q)) {
+      _memberSet.delete(s.site_id);
+    }
+  });
+  markDirty();
+  renderSiteList();
+  refreshMapData();
+}
+
+// ── Save ──────────────────────────────────────────────────────────────────────
+
+function saveMembers() {
+  if (!_activeGroup || !_dirty) return;
+  fetch('/api/groups/' + _activeGroup.id + '/members', {
+    method:  'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ siteIds: Array.from(_memberSet) }),
+  })
+  .then(r => r.json())
+  .then(function(d) {
+    if (d.ok) {
+      _savedSet = new Set(_memberSet);
+      _dirty    = false;
+      updateDirtyUI();
+      loadGroups(); // refresh counts in sidebar
+    }
+  })
+  .catch(function(e) { alert('Save failed: ' + e.message); });
+}
+
+function markDirty() {
+  _dirty = true;
+  updateDirtyUI();
+}
+
+function updateDirtyUI() {
+  document.getElementById('dirty-lbl').style.display = _dirty ? '' : 'none';
+  document.getElementById('save-btn').style.display  = _dirty ? '' : 'none';
+}
+
+// ── Group name ────────────────────────────────────────────────────────────────
+
+var _nameTimer = null;
+function onNameEdit() {
+  clearTimeout(_nameTimer);
+  _nameTimer = setTimeout(flushNameSave, 1200);
+}
+
+function flushNameSave() {
+  clearTimeout(_nameTimer);
+  if (!_activeGroup) return;
+  var val = document.getElementById('grp-name-input').value.trim();
+  if (!val || val === _activeGroup.name) return;
+  fetch('/api/groups/' + _activeGroup.id, {
+    method:  'PATCH',
+    headers: { 'Content-Type':'application/json' },
+    body:    JSON.stringify({ name: val }),
+  })
+  .then(r => r.json())
+  .then(function(d) {
+    if (d.ok) {
+      _activeGroup.name = val;
+      loadGroups();
+    }
+  });
+}
+
+// ── Group color ───────────────────────────────────────────────────────────────
+
+function buildColorPicker(containerId, selected, onPick) {
+  var el = document.getElementById(containerId);
+  el.innerHTML = GROUP_COLORS.map(function(c) {
+    return '<div class="color-opt' + (c === selected ? ' chosen' : '') + '" ' +
+      'style="background:' + c + ';" ' +
+      'onclick="(' + onPick.toString() + ')(\''+c+'\')" ' +
+      'data-color="' + c + '" ' +
+      'title="' + c + '"></div>';
+  }).join('');
+}
+
+function setActiveColor(color) {
+  if (!_activeGroup) return;
+  _activeGroup.color = color;
+  document.getElementById('active-dot').style.background = color;
+  // re-highlight chosen dot
+  document.querySelectorAll('#color-picker .color-opt').forEach(function(el) {
+    el.classList.toggle('chosen', el.dataset.color === color);
+  });
+  // persist
+  fetch('/api/groups/' + _activeGroup.id, {
+    method:  'PATCH',
+    headers: { 'Content-Type':'application/json' },
+    body:    JSON.stringify({ color: color }),
+  }).then(function() {
+    renderSiteList();
+    refreshMapData();
+    loadGroups();
+  });
+}
+
+// ── Delete group ──────────────────────────────────────────────────────────────
+
+function deleteActiveGroup() {
+  if (!_activeGroup) return;
+  confirmDeleteGroup(_activeGroup.id, _activeGroup.name);
+}
+
+function confirmDeleteGroup(id, name) {
+  if (!confirm('Delete group "' + name + '"? This cannot be undone.')) return;
+  fetch('/api/groups/' + id, { method: 'DELETE' })
+    .then(r => r.json())
+    .then(function(d) {
+      if (d.ok) {
+        if (_activeGroup && _activeGroup.id === id) {
+          _activeGroup = null;
+          _memberSet   = new Set();
+          _savedSet    = new Set();
+          _dirty       = false;
+          updateDirtyUI();
+          document.getElementById('center-panel').style.display = 'none';
+          document.getElementById('center-empty').style.display = '';
+          refreshMapData();
+        }
+        loadGroups();
+      }
+    });
+}
+
+// ── Create modal ──────────────────────────────────────────────────────────────
+
+function buildModalColorPicker() {
+  _modalColor = GROUP_COLORS[0];
+  var el = document.getElementById('modal-color-picker');
+  el.innerHTML = GROUP_COLORS.map(function(c, i) {
+    return '<div class="color-opt' + (i === 0 ? ' chosen' : '') + '" ' +
+      'style="background:' + c + ';" ' +
+      'onclick="pickModalColor(\'' + c + '\')" ' +
+      'data-color="' + c + '"></div>';
+  }).join('');
+}
+
+function pickModalColor(c) {
+  _modalColor = c;
+  document.querySelectorAll('#modal-color-picker .color-opt').forEach(function(el) {
+    el.classList.toggle('chosen', el.dataset.color === c);
+  });
+}
+
+function showCreateModal() {
+  document.getElementById('modal-name').value = '';
+  document.getElementById('create-modal').style.display = 'flex';
+  setTimeout(function() { document.getElementById('modal-name').focus(); }, 50);
+}
+
+function hideCreateModal() {
+  document.getElementById('create-modal').style.display = 'none';
+}
+
+function createGroup() {
+  var name = document.getElementById('modal-name').value.trim();
+  if (!name) { document.getElementById('modal-name').focus(); return; }
+  fetch('/api/groups', {
+    method:  'POST',
+    headers: { 'Content-Type':'application/json' },
+    body:    JSON.stringify({ name: name, color: _modalColor }),
+  })
+  .then(r => r.json())
+  .then(function(d) {
+    if (d.ok) {
+      hideCreateModal();
+      loadGroups(function() { selectGroup(d.id); });
+    }
+  })
+  .catch(function(e) { alert('Error: ' + e.message); });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ── Sharing — group list rendering ───────────────────────────────────────────
+
+// Overrides the base renderGroupList to include sharing metadata
+var _baseRenderGroupList = renderGroupList;
+renderGroupList = function() {
+  var el = document.getElementById('grp-list');
+  if (!_groups.length) {
+    el.innerHTML = '<p class="text-xs text-center py-6" style="color:#475569;">No groups yet.<br>Create one to get started.</p>';
+    return;
+  }
+  el.innerHTML = _groups.map(function(g) {
+    var isActive = _activeGroup && _activeGroup.id === g.id;
+
+    // Sharing indicators
+    var pills = '';
+    var updateAvail = g.source_group_id && g.source_updated_at && g.synced_at &&
+                      new Date(g.source_updated_at) > new Date(g.synced_at);
+    if (g.is_published) {
+      pills += '<span class="share-pill share-pill-pub" title="Shared with team">Shared</span>';
+    }
+    if (g.source_group_id) {
+      if (!g.source_is_published) {
+        pills += '<span class="share-pill" style="background:rgba(100,116,139,0.12);color:#64748b;border:1px solid #1e293b;" title="Original no longer shared">Unlinked</span>';
+      } else if (updateAvail) {
+        pills += '<span class="share-pill share-pill-upd" title="Source has been updated">↑ Update</span>';
+      } else {
+        pills += '<span class="share-pill share-pill-copy" title="Saved from ' + escHtml(g.source_author||'') + '">Synced</span>';
+      }
+    }
+
+    var subLine = g.source_group_id
+      ? '<div style="font-size:10px;color:#475569;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">from ' + escHtml(g.source_author||'unknown') + '</div>'
+      : '';
+
+    return '<div class="grp-item' + (isActive ? ' active' : '') + '" onclick="selectGroup(' + g.id + ')">' +
+      '<div class="grp-swatch" style="background:' + g.color + ';flex-shrink:0;"></div>' +
+      '<div class="flex-1 min-w-0">' +
+        '<div class="text-xs font-medium truncate" style="color:#e2e8f0;">' + escHtml(g.name) + '</div>' +
+        subLine +
+      '</div>' +
+      (pills ? '<div style="display:flex;gap:3px;flex-wrap:nowrap;">' + pills + '</div>' : '') +
+      '<span class="grp-count">' + g.member_count + '</span>' +
+      '<button class="grp-del-btn" onclick="event.stopPropagation();confirmDeleteGroup(' + g.id + ',\'' + escHtml(g.name).replace(/'/g,"\\'") + '\')" title="Delete">' +
+        '<svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>' +
+      '</button>' +
+    '</div>';
+  }).join('');
+};
+
+// ── Sharing — center panel status bar ────────────────────────────────────────
+
+var _baseShowCenterPanel = showCenterPanel;
+showCenterPanel = function() {
+  _baseShowCenterPanel();
+  renderShareStatus();
+};
+
+function renderShareStatus() {
+  var el = document.getElementById('share-status');
+  if (!el || !_activeGroup) return;
+  var g = _activeGroup;
+
+  var updateAvail = g.source_group_id && g.source_updated_at && g.synced_at &&
+                    new Date(g.source_updated_at) > new Date(g.synced_at);
+
+  if (g.source_group_id) {
+    // This is a saved copy — show source info + sync button
+    var syncLabel  = updateAvail ? '↑ Sync now' : '✓ Up to date';
+    var syncStyle  = updateAvail
+      ? 'background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3);cursor:pointer;'
+      : 'background:none;color:#475569;border:1px solid #1e293b;cursor:default;';
+    var canSync = g.source_is_published;
+    el.innerHTML =
+      '<span style="font-size:10px;color:#475569;">from <span style="color:#818cf8;">' + escHtml(g.source_author||'?') + '</span></span>' +
+      (canSync
+        ? '<button onclick="syncActiveGroup()" style="' + syncStyle + 'padding:2px 8px;border-radius:5px;font-size:10px;font-weight:600;transition:all .15s;">' + syncLabel + '</button>'
+        : '<span style="font-size:10px;color:#475569;font-style:italic;">original no longer shared</span>');
+  } else {
+    // This is an owned group — show publish toggle
+    var isPublished = !!g.is_published;
+    el.innerHTML =
+      '<button onclick="togglePublish()" ' +
+      'style="display:flex;align-items:center;gap:5px;padding:3px 9px;border-radius:6px;font-size:10px;font-weight:600;cursor:pointer;transition:all .15s;' +
+      (isPublished
+        ? 'background:rgba(52,211,153,0.12);color:#34d399;border:1px solid rgba(52,211,153,0.3);'
+        : 'background:none;color:#64748b;border:1px solid #1e293b;') +
+      '" title="' + (isPublished ? 'Stop sharing with team' : 'Share this group with the team') + '">' +
+        '<svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9"/></svg>' +
+        (isPublished ? 'Shared' : 'Share') +
+      '</button>';
+  }
+}
+
+function togglePublish() {
+  if (!_activeGroup || _activeGroup.source_group_id) return;
+  var nowPublished = !_activeGroup.is_published;
+  fetch('/api/groups/' + _activeGroup.id + '/publish', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ published: nowPublished }),
+  }).then(r => r.json()).then(function(d) {
+    if (!d.ok) return;
+    _activeGroup.is_published = nowPublished ? 1 : 0;
+    // Refresh the sidebar group to keep state in sync
+    var g = _groups.find(function(x) { return x.id === _activeGroup.id; });
+    if (g) g.is_published = _activeGroup.is_published;
+    renderGroupList();
+    renderShareStatus();
+  });
+}
+
+function syncActiveGroup() {
+  if (!_activeGroup || !_activeGroup.source_group_id) return;
+  var gid = _activeGroup.id;
+  fetch('/api/groups/' + gid + '/sync', { method: 'POST' })
+    .then(r => r.json())
+    .then(function(d) {
+      if (!d.ok) { alert(d.error || 'Sync failed'); return; }
+      loadMembers(gid);
+      loadGroups(function() {
+        // Re-read the refreshed group so updated_at / synced_at are current
+        var refreshed = _groups.find(function(g) { return g.id === gid; });
+        if (refreshed) { _activeGroup = refreshed; renderShareStatus(); }
+      });
+    });
+}
+
+// ── Browse Shared panel ───────────────────────────────────────────────────────
+
+function browseShared() {
+  document.getElementById('grp-center').style.display    = 'none';
+  document.getElementById('grp-map-wrap').style.display  = 'none';
+  document.getElementById('shared-panel').style.display  = 'flex';
+  loadSharedGroups();
+}
+
+function closeSharedPanel() {
+  document.getElementById('shared-panel').style.display  = 'none';
+  document.getElementById('grp-center').style.display    = '';
+  document.getElementById('grp-map-wrap').style.display  = '';
+}
+
+function loadSharedGroups() {
+  var grid = document.getElementById('shared-grid');
+  grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:48px 0;color:#475569;font-size:13px;">Loading…</div>';
+  fetch('/api/groups/shared')
+    .then(r => r.json())
+    .then(function(d) { renderSharedGrid(d.groups || []); })
+    .catch(function() {
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:48px 0;color:#f87171;font-size:13px;">Failed to load shared groups.</div>';
+    });
+}
+
+function renderSharedGrid(groups) {
+  var grid = document.getElementById('shared-grid');
+  if (!groups.length) {
+    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:64px 0;color:#475569;font-size:13px;">' +
+      '<div style="font-size:28px;margin-bottom:12px;opacity:.3;">🌐</div>' +
+      'No shared groups yet. Publish one of your groups to share it with the team.' +
+      '</div>';
+    return;
+  }
+  grid.innerHTML = groups.map(function(g) {
+    var sitePreview = (g.site_names || []).map(function(n) {
+      return '<span style="display:inline-block;padding:1px 7px;border-radius:4px;font-size:10px;background:#0f172a;border:1px solid #334155;color:#64748b;margin:2px;">' + escHtml(n) + '</span>';
+    }).join('');
+    if (g.member_count > (g.site_names||[]).length) {
+      sitePreview += '<span style="font-size:10px;color:#475569;padding:2px 4px;">+' + (g.member_count - (g.site_names||[]).length) + ' more</span>';
+    }
+
+    var actionBtn;
+    if (g.saved_local_id) {
+      // Check if update available (saved_local_id present means we have a copy — but we need sync info)
+      // We don't have synced_at here, so offer sync regardless when already saved
+      actionBtn =
+        '<span style="font-size:11px;color:#34d399;display:flex;align-items:center;gap:4px;">' +
+        '<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Saved</span>' +
+        '<button onclick="syncFromBrowse(' + g.saved_local_id + ',this)" ' +
+        'style="padding:4px 10px;border-radius:6px;border:1px solid #334155;background:none;color:#64748b;font-size:11px;cursor:pointer;transition:all .15s;" ' +
+        'onmouseover="this.style.color=\'#94a3b8\'" onmouseout="this.style.color=\'#64748b\'">Sync</button>';
+    } else {
+      actionBtn =
+        '<button onclick="saveSharedGroup(' + g.id + ',this)" ' +
+        'style="padding:4px 12px;border-radius:6px;border:none;background:#0369a1;color:#fff;font-size:11px;font-weight:600;cursor:pointer;transition:background .15s;" ' +
+        'onmouseover="this.style.background=\'#0284c7\'" onmouseout="this.style.background=\'#0369a1\'">Save to My Groups</button>';
+    }
+
+    return '<div class="shared-card">' +
+      '<div class="shared-card-header">' +
+        '<div style="width:36px;height:36px;border-radius:8px;background:' + g.color + ';flex-shrink:0;opacity:.85;"></div>' +
+        '<div class="flex-1 min-w-0">' +
+          '<div style="font-size:13px;font-weight:600;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escHtml(g.name) + '</div>' +
+          '<div style="font-size:11px;color:#475569;margin-top:1px;">by <span style="color:#818cf8;">' + escHtml(g.author) + '</span> &nbsp;·&nbsp; ' + g.member_count + ' site' + (g.member_count !== 1 ? 's' : '') + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="shared-card-body">' +
+        '<div style="min-height:28px;">' + (sitePreview || '<span style="font-size:11px;color:#334155;font-style:italic;">No sites yet</span>') + '</div>' +
+        '<div style="margin-top:6px;font-size:10px;color:#334155;">Shared ' + fmtDate(g.published_at) + '</div>' +
+      '</div>' +
+      '<div class="shared-card-footer">' + actionBtn + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function saveSharedGroup(sourceId, btn) {
+  btn.disabled = true; btn.textContent = 'Saving…';
+  fetch('/api/groups/shared/' + sourceId + '/save', { method: 'POST' })
+    .then(r => r.json())
+    .then(function(d) {
+      if (!d.ok) { btn.disabled = false; btn.textContent = 'Save to My Groups'; alert(d.error); return; }
+      // Refresh the card row to show "Saved" state
+      loadSharedGroups();
+      loadGroups(); // refresh sidebar
+    });
+}
+
+function syncFromBrowse(localId, btn) {
+  btn.disabled = true; btn.textContent = 'Syncing…';
+  fetch('/api/groups/' + localId + '/sync', { method: 'POST' })
+    .then(r => r.json())
+    .then(function(d) {
+      if (!d.ok) { btn.disabled = false; btn.textContent = 'Sync'; alert(d.error); return; }
+      btn.textContent = '✓ Synced';
+      loadGroups();
+      // If the synced group is currently active, reload its members too
+      if (_activeGroup && _activeGroup.id === localId) loadMembers(localId);
+    });
+}
+</script>

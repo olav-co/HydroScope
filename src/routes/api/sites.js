@@ -281,6 +281,28 @@ router.post('/import', (req, res) => {
   }
 });
 
+// ── GET /api/sites/:id/sources — list children of a combined site ─────────────
+router.get('/:id/sources', (req, res) => {
+  try {
+    const children = db.getSiteChildren(req.params.id);
+    res.json({ ok: true, sources: children });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PATCH /api/sites/:id/sources/:childId — toggle a source on/off ────────────
+router.patch('/:id/sources/:childId', (req, res) => {
+  try {
+    const { enabled } = req.body;
+    if (enabled === undefined) return res.status(400).json({ error: 'enabled is required' });
+    db.setSiteSourceEnabled(req.params.id, req.params.childId, enabled ? 1 : 0);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── GET /api/sites/discover/usgs ──────────────────────────────────────────────
 // bbox = "minLon,minLat,maxLon,maxLat"
 // USGS documents a 25° per-side limit. If the drawn box exceeds that we split

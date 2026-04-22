@@ -224,33 +224,66 @@
     <div class="card">
       <div class="flex flex-col gap-4">
 
-        <!-- Basin multi-selector -->
-        <div>
-          <div class="flex items-center gap-2 mb-2 flex-wrap">
-            <label class="label mb-0" style="flex-shrink:0;">Basins</label>
-            <div id="fn-basin-tags" class="flex flex-wrap gap-1.5"></div>
+        <!-- Group + Basin row -->
+        <div class="flex gap-4 items-start">
+
+          <!-- Group quick-load -->
+          <div style="flex:0 0 220px;">
+            <label class="label mb-1.5">Group</label>
+            <select id="fn-group-select" onchange="fnLoadGroup(this.value)"
+              style="width:100%;padding:5px 10px;background:#0f172a;border:1px solid #334155;
+                     border-radius:6px;color:#e2e8f0;font-size:12px;outline:none;cursor:pointer;">
+              <option value="">All sites</option>
+            </select>
           </div>
-          <div style="position:relative;">
-            <input id="fnBasinInput" type="text" autocomplete="off"
-              placeholder="Add a watershed…"
-              oninput="_fnBasinInput(this.value)"
-              onfocus="_fnOpenBasin()"
-              onkeydown="_fnBasinKeydown(event)"
-              style="width:100%;padding:5px 28px 5px 10px;background:#0f172a;border:1px solid #334155;
-                     border-radius:6px;color:#e2e8f0;font-size:12px;box-sizing:border-box;outline:none;"/>
-            <span style="position:absolute;right:9px;top:50%;transform:translateY(-50%);color:#475569;font-size:11px;pointer-events:none;">▾</span>
-            <div id="fnBasinDropdown"
-              style="display:none;position:absolute;top:calc(100% + 3px);left:0;right:0;z-index:200;
-                     background:#0f172a;border:1px solid #334155;border-radius:7px;
-                     max-height:220px;overflow-y:auto;box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+
+          <!-- AND / OR toggle — only meaningful when both are active -->
+          <div style="flex:0 0 auto;padding-top:22px;">
+            <div id="fn-mode-toggle" style="display:flex;border:1px solid #334155;border-radius:6px;overflow:hidden;">
+              <button id="fn-mode-or"  onclick="fnSetFilterMode('or')"
+                style="padding:4px 10px;font-size:11px;font-weight:600;border:none;cursor:pointer;
+                       background:#0ea5e9;color:#fff;transition:all 0.15s;">OR</button>
+              <button id="fn-mode-and" onclick="fnSetFilterMode('and')"
+                style="padding:4px 10px;font-size:11px;font-weight:600;border:none;cursor:pointer;
+                       background:#0f172a;color:#475569;transition:all 0.15s;">AND</button>
             </div>
           </div>
+
+          <!-- Basin multi-selector -->
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+              <label class="label mb-0" style="flex-shrink:0;">Basins</label>
+              <div id="fn-basin-tags" class="flex flex-wrap gap-1.5"></div>
+            </div>
+            <div style="position:relative;">
+              <input id="fnBasinInput" type="text" autocomplete="off"
+                placeholder="Add a watershed…"
+                oninput="_fnBasinInput(this.value)"
+                onfocus="_fnOpenBasin()"
+                onkeydown="_fnBasinKeydown(event)"
+                style="width:100%;padding:5px 28px 5px 10px;background:#0f172a;border:1px solid #334155;
+                       border-radius:6px;color:#e2e8f0;font-size:12px;box-sizing:border-box;outline:none;"/>
+              <span style="position:absolute;right:9px;top:50%;transform:translateY(-50%);color:#475569;font-size:11px;pointer-events:none;">▾</span>
+              <div id="fnBasinDropdown"
+                style="display:none;position:absolute;top:calc(100% + 3px);left:0;right:0;z-index:200;
+                       background:#0f172a;border:1px solid #334155;border-radius:7px;
+                       max-height:220px;overflow-y:auto;box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <div>
-          <div class="flex items-center justify-between mb-2">
-            <label class="label mb-0">Sites <span class="text-slate-600 font-normal">(select any · cross-selectable)</span></label>
-            <span id="site-count" class="text-xs text-slate-600">0 selected</span>
+          <div class="flex items-center gap-3 mb-2 flex-wrap">
+            <label class="label mb-0" style="flex-shrink:0;">Sites <span class="text-slate-600 font-normal">(select any · cross-selectable)</span></label>
+            <div class="flex items-center gap-2 ml-auto">
+              <button onclick="fnSelectAllSites()" class="text-xs" style="background:none;border:none;cursor:pointer;color:#38bdf8;padding:0;" onmouseover="this.style.color='#7dd3fc'" onmouseout="this.style.color='#38bdf8'">Select all</button>
+              <span style="color:#334155;font-size:10px;">|</span>
+              <button onclick="fnDeselectAllSites()" class="text-xs" style="background:none;border:none;cursor:pointer;color:#64748b;padding:0;" onmouseover="this.style.color='#94a3b8'" onmouseout="this.style.color='#64748b'">Deselect all</button>
+              <span style="color:#334155;font-size:10px;">|</span>
+              <span id="site-count" class="text-xs text-slate-600">0 selected</span>
+            </div>
           </div>
           <%
             var usgsSitesFN = sites.filter(function(s){ return s.source !== 'cwms'; });
@@ -328,6 +361,9 @@
           <button onclick="resetLayout()" id="resetBtn" class="text-xs text-slate-600 hover:text-slate-300 ml-auto" style="background:none;border:none;cursor:pointer;" title="Reset positions">↺ Reset</button>
           <button onclick="toggleMapMode()" id="mapToggleBtn" class="text-xs text-slate-500 hover:text-slate-300" style="background:none;border:none;cursor:pointer;padding:2px 8px;border:1px solid #334155;border-radius:4px;" title="Switch to real map view">
             ⊕ Map
+          </button>
+          <button onclick="toggleRadarLayer()" id="radarToggleBtn" class="text-xs text-slate-500 hover:text-slate-300" style="background:none;border:none;cursor:pointer;padding:2px 8px;border:1px solid #334155;border-radius:4px;display:none;" title="Toggle precipitation radar overlay">
+            🌧 Radar
           </button>
           <button onclick="toggleFullscreen()" id="expandBtn" class="text-xs text-slate-500 hover:text-slate-300" style="background:none;border:none;cursor:pointer;padding:2px 6px;border:1px solid #334155;border-radius:4px;" title="Expand / collapse">
             <span id="expand-label">⛶</span>
@@ -426,6 +462,109 @@
 // ── State ─────────────────────────────────────────────────────────────────────
 var SITES       = <%- JSON.stringify(sites) %>;
 var INIT_CONNS  = <%- JSON.stringify(connections) %>;
+
+// ── Group + Basin unified filter ──────────────────────────────────────────────
+var _fnGroupSiteIds = new Set();
+var _fnFilterMode   = 'or'; // 'or' | 'and'
+
+(function _loadFnGroups() {
+  fetch('/api/groups')
+    .then(function(r) { return r.json(); })
+    .then(function(groups) {
+      var sel = document.getElementById('fn-group-select');
+      if (!sel) return;
+      groups.forEach(function(g) {
+        var opt = document.createElement('option');
+        opt.value = g.id;
+        opt.textContent = g.name + ' (' + g.member_count + ' sites)';
+        sel.appendChild(opt);
+      });
+    })
+    .catch(function() {});
+}());
+
+function fnLoadGroup(groupId) {
+  if (!groupId) {
+    _fnGroupSiteIds = new Set();
+    _fnApplyVisibilityFilter();
+    return;
+  }
+  fetch('/api/groups/' + groupId + '/members')
+    .then(function(r) { return r.json(); })
+    .then(function(siteIds) {
+      _fnGroupSiteIds = new Set(siteIds);
+      _fnApplyVisibilityFilter();
+    })
+    .catch(function(e) { console.error('fnLoadGroup', e); });
+}
+
+function fnSetFilterMode(mode) {
+  _fnFilterMode = mode;
+  document.getElementById('fn-mode-or').style.background  = mode === 'or'  ? '#0ea5e9' : '#0f172a';
+  document.getElementById('fn-mode-or').style.color        = mode === 'or'  ? '#fff'    : '#475569';
+  document.getElementById('fn-mode-and').style.background = mode === 'and' ? '#0ea5e9' : '#0f172a';
+  document.getElementById('fn-mode-and').style.color       = mode === 'and' ? '#fff'    : '#475569';
+  _fnApplyVisibilityFilter();
+}
+
+function _fnApplyVisibilityFilter() {
+  var hint      = document.getElementById('fn-basin-hint');
+  var chipsWrap = document.getElementById('site-chips');
+  var basins    = _fnActiveBasins.map(function(b) { return b.code; });
+  var hasBasin  = basins.length > 0;
+  var hasGroup  = _fnGroupSiteIds.size > 0;
+
+  // Nothing selected → show prompt, hide chips
+  if (!hasBasin && !hasGroup) {
+    if (hint)      hint.style.display = '';
+    if (chipsWrap) chipsWrap.style.display = 'none';
+    _selectedSites = [];
+    document.querySelectorAll('#site-chips .fn-chip.active').forEach(function(btn) {
+      btn.classList.remove('active');
+      btn.querySelector('.cdot').style.background = '#334155';
+    });
+    document.getElementById('site-count').textContent = '0 selected';
+    if (_mapMode) renderMaplibreMap(); else redrawNetwork();
+    return;
+  }
+
+  if (hint)      hint.style.display = 'none';
+  if (chipsWrap) chipsWrap.style.display = 'flex';
+
+  document.querySelectorAll('#site-chips .fn-chip').forEach(function(btn) {
+    var huc    = btn.getAttribute('data-huc8') || '';
+    var sid    = btn.getAttribute('data-id')   || '';
+    var inBas  = hasBasin && basins.indexOf(huc) !== -1;
+    var inGrp  = hasGroup && _fnGroupSiteIds.has(sid);
+
+    var visible;
+    if (hasBasin && hasGroup) {
+      visible = _fnFilterMode === 'and' ? (inBas && inGrp) : (inBas || inGrp);
+    } else if (hasBasin) {
+      visible = inBas;
+    } else {
+      visible = inGrp;
+    }
+
+    btn.style.display = visible ? '' : 'none';
+    if (!visible && btn.classList.contains('active')) {
+      btn.classList.remove('active');
+      btn.querySelector('.cdot').style.background = '#334155';
+      _selectedSites = _selectedSites.filter(function(s) { return s.site_id !== sid; });
+    }
+  });
+
+  // Hide group headers if all their chips are hidden
+  ['fn-usgs-group','fn-cwms-group'].forEach(function(id) {
+    var grp = document.getElementById(id);
+    if (!grp) return;
+    var anyVis = Array.from(grp.querySelectorAll('.fn-chip')).some(function(b) { return b.style.display !== 'none'; });
+    grp.style.display = anyVis ? '' : 'none';
+  });
+
+  document.getElementById('site-count').textContent = _selectedSites.length + ' selected';
+  if (_mapMode) renderMaplibreMap(); else redrawNetwork();
+}
 
 // ── Basin multi-selector ──────────────────────────────────────────────────────
 var _fnBasinOpts    = [];
@@ -629,24 +768,13 @@ function _fnPickBasin(code, display) {
   var color = _FN_BASIN_COLORS[_fnActiveBasins.length % _FN_BASIN_COLORS.length];
   _fnActiveBasins.push({ code: code, display: display, color: color });
   _fnRenderBasinTags();
-  _fnApplyBasinFilter();
+  _fnApplyVisibilityFilter();
 }
 
 function _fnRemoveBasin(code) {
   _fnActiveBasins = _fnActiveBasins.filter(function(b) { return b.code !== code; });
-  // Deselect sites that belong to this basin and no remaining active basin
-  var remainingCodes = _fnActiveBasins.map(function(b) { return b.code; });
-  document.querySelectorAll('#site-chips .fn-chip').forEach(function(btn) {
-    var huc = btn.getAttribute('data-huc8') || '';
-    if (huc === code && remainingCodes.indexOf(huc) === -1 && btn.classList.contains('active')) {
-      btn.classList.remove('active');
-      btn.querySelector('.cdot').style.background = '#334155';
-      var sid = btn.getAttribute('data-id');
-      _selectedSites = _selectedSites.filter(function(s) { return s.site_id !== sid; });
-    }
-  });
   _fnRenderBasinTags();
-  _fnApplyBasinFilter();
+  _fnApplyVisibilityFilter();
 }
 
 function _fnRenderBasinTags() {
@@ -670,58 +798,6 @@ function _fnRenderBasinTags() {
       + 'font-size:13px;line-height:1;opacity:0.7;" onmouseover="this.style.opacity=\'1\'" onmouseout="this.style.opacity=\'0.7\'">'
       + '×</button></span>';
   }).join('');
-}
-
-function _fnApplyBasinFilter() {
-  var hint = document.getElementById('fn-basin-hint');
-  var chipsWrap = document.getElementById('site-chips');
-  var activeCodes = _fnActiveBasins.map(function(b) { return b.code; });
-
-  if (!activeCodes.length) {
-    if (hint) hint.style.display = '';
-    if (chipsWrap) chipsWrap.style.display = 'none';
-    _selectedSites = [];
-    document.querySelectorAll('#site-chips .fn-chip.active').forEach(function(btn) {
-      btn.classList.remove('active');
-      btn.querySelector('.cdot').style.background = '#334155';
-    });
-    document.getElementById('site-count').textContent = '0 selected';
-    if (_mapMode) renderMaplibreMap(); else redrawNetwork();
-    return;
-  }
-
-  if (hint) hint.style.display = 'none';
-  if (chipsWrap) chipsWrap.style.display = 'flex';
-
-  // Show/hide individual chips
-  document.querySelectorAll('#site-chips .fn-chip').forEach(function(btn) {
-    var huc = btn.getAttribute('data-huc8') || '';
-    var visible = activeCodes.indexOf(huc) !== -1;
-    btn.style.display = visible ? '' : 'none';
-    if (!visible && btn.classList.contains('active')) {
-      btn.classList.remove('active');
-      btn.querySelector('.cdot').style.background = '#334155';
-      var sid = btn.getAttribute('data-id');
-      _selectedSites = _selectedSites.filter(function(s) { return s.site_id !== sid; });
-    }
-  });
-
-  // Hide entire group header if it has no visible chips
-  var usgsGroup = document.getElementById('fn-usgs-group');
-  var cwmsGroup = document.getElementById('fn-cwms-group');
-  if (usgsGroup) {
-    var anyUsgs = Array.from(document.querySelectorAll('#fn-usgs-chips .fn-chip'))
-      .some(function(b) { return b.style.display !== 'none'; });
-    usgsGroup.style.display = anyUsgs ? '' : 'none';
-  }
-  if (cwmsGroup) {
-    var anyCwms = Array.from(document.querySelectorAll('#fn-cwms-chips .fn-chip'))
-      .some(function(b) { return b.style.display !== 'none'; });
-    cwmsGroup.style.display = anyCwms ? '' : 'none';
-  }
-
-  document.getElementById('site-count').textContent = _selectedSites.length + ' selected';
-  if (_mapMode) renderMaplibreMap(); else redrawNetwork();
 }
 
 document.addEventListener('click', function(e) {
@@ -748,6 +824,9 @@ window.addEventListener('hydroProfileUpdated', function() {
 });
 var _fullscreen     = false;
 var _mapMode        = false;
+var _radarOn        = false;
+var _rvHost         = '';
+var _rvLatestPath   = '';
 var _mlMap          = null;
 var _mlMapReady     = false; // true after 'load' fires and sources/layers are initialized
 var _mlMarkers      = [];   // maplibregl.Marker instances (cleared on each render)
@@ -815,6 +894,20 @@ function toggleSite(btn) {
   });
   document.getElementById('site-count').textContent = _selectedSites.length + ' selected';
   refreshData();
+}
+
+function fnSelectAllSites() {
+  document.querySelectorAll('#site-chips .fn-chip').forEach(function(btn) {
+    if (btn.style.display === 'none') return;
+    if (!btn.classList.contains('active')) toggleSite(btn);
+  });
+}
+
+function fnDeselectAllSites() {
+  document.querySelectorAll('#site-chips .fn-chip.active').forEach(function(btn) {
+    if (btn.style.display === 'none') return;
+    toggleSite(btn);
+  });
 }
 
 function toggleParam(btn) {
@@ -1359,6 +1452,7 @@ function toggleMapMode() {
   var rst    = document.getElementById('resetBtn');
   var hint   = document.getElementById('view-hint');
 
+  var radarBtn = document.getElementById('radarToggleBtn');
   if (_mapMode) {
     svgEl.style.display = 'none';
     mapEl.style.display = 'block';
@@ -1366,6 +1460,7 @@ function toggleMapMode() {
     btn.style.color = '#0ea5e9';
     btn.style.borderColor = '#0ea5e9';
     if (rst)  rst.style.display = 'none';
+    if (radarBtn) radarBtn.style.display = '';
     if (hint) hint.textContent = 'USGS National Map · NHDPlus hydrography · click markers for data';
     if (!_mlMap) _initMaplibreMap();
     else { _mlMap.resize(); renderMaplibreMap(); }
@@ -1376,6 +1471,7 @@ function toggleMapMode() {
     btn.style.color = '';
     btn.style.borderColor = '';
     if (rst)  rst.style.display = '';
+    if (radarBtn) radarBtn.style.display = 'none';
     if (hint) hint.textContent = 'Geographic lat/lon layout · drag nodes to adjust · topology from NLDI';
     _stopDashAnim();
     redrawNetwork();
@@ -1407,6 +1503,62 @@ function _initMaplibreMap() {
     _mlMapReady = true;
     renderMaplibreMap();
   });
+}
+
+// ── Radar overlay toggle ──────────────────────────────────────────────────────
+// RainViewer free tier (no API key) only serves tiles up to zoom 6.
+// RV_TILE_MAXZOOM tells MapLibre to overzoom from z6 tiles rather than
+// requesting z7+ tiles that return "Zoom Level Not Supported" images.
+// RV_MAP_MAX is the map interaction limit — keeps the view in a range where
+// the overzoomed tiles still look reasonable.
+var RV_MIN_ZOOM      = 3;
+var RV_MAP_MAX       = 8;
+var RV_TILE_MAXZOOM  = 6;
+
+async function toggleRadarLayer() {
+  _radarOn = !_radarOn;
+  var btn = document.getElementById('radarToggleBtn');
+  if (_radarOn) {
+    btn.style.color = '#38bdf8';
+    btn.style.borderColor = '#0ea5e9';
+    btn.textContent = '🌧 Radar ON';
+    // Lock zoom BEFORE adding the source so MapLibre never requests out-of-range tiles
+    _mlMap.setMinZoom(RV_MIN_ZOOM);
+    _mlMap.setMaxZoom(RV_MAP_MAX);
+    var cur = _mlMap.getZoom();
+    if (cur > RV_MAP_MAX)       _mlMap.easeTo({ zoom: RV_MAP_MAX, duration: 400 });
+    else if (cur < RV_MIN_ZOOM) _mlMap.easeTo({ zoom: RV_MIN_ZOOM, duration: 400 });
+    await _addRadarLayer();
+  } else {
+    btn.style.color = '';
+    btn.style.borderColor = '';
+    btn.textContent = '🌧 Radar';
+    _removeRadarLayer();
+    _mlMap.setMinZoom(0);
+    _mlMap.setMaxZoom(22);
+  }
+}
+
+async function _addRadarLayer() {
+  if (!_mlMap || !_mlMapReady) return;
+  try {
+    var r    = await fetch('https://api.rainviewer.com/public/weather-maps.json');
+    var data = await r.json();
+    _rvHost = data.host;
+    var past = data.radar.past || [];
+    if (!past.length) return;
+    _rvLatestPath = past[past.length - 1].path;
+    var tileUrl = _rvHost + _rvLatestPath + '/256/{z}/{x}/{y}/2/1_1.png';
+    _removeRadarLayer();
+    _mlMap.addSource('fn-radar', { type: 'raster', tiles: [tileUrl], tileSize: 256, maxzoom: RV_TILE_MAXZOOM, attribution: 'RainViewer' });
+    _mlMap.addLayer({ id: 'fn-radar', type: 'raster', source: 'fn-radar', paint: { 'raster-opacity': 0.65 } });
+  } catch(e) { console.warn('[Radar] Failed to load RainViewer:', e.message); }
+}
+
+function _removeRadarLayer() {
+  if (!_mlMap) return;
+  try { if (_mlMap.getLayer('fn-radar')) _mlMap.removeLayer('fn-radar'); } catch(_) {}
+  try { if (_mlMap.getSource('fn-radar')) _mlMap.removeSource('fn-radar'); } catch(_) {}
 }
 
 // Returns compass bearing (degrees clockwise from north) between two lat/lon points

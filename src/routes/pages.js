@@ -102,4 +102,16 @@ router.get('/sites', (req, res) => {
   res.render('sites', { ...locals, activePage: 'sites' });
 });
 
+router.get('/radar', (req, res) => {
+  const sites = db.getAllSites();
+  const { ...locals } = baseLocals(req);
+  res.render('radar', { ...locals, sites, activePage: 'radar' });
+});
+
+router.get('/groups', (req, res) => {
+  const sites = db.getAllSites();
+  const { ...locals } = baseLocals(req);
+  res.render('groups', { ...locals, sites, activePage: 'groups' });
+});
+
 module.exports = router;

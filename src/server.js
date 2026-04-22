@@ -3,6 +3,7 @@ const path         = require('path');
 const cookieParser = require('cookie-parser');
 const db           = require('./db/database');
 const { startScheduler, drainWaterwayPairs } = require('./services/scheduler');
+const { detectAndPairSites } = require('./services/pairing');
 const { ensureMigrated, applySeedFile, getDatasourcesConfig } = require('./services/config');
 
 const pagesRouter       = require('./routes/pages');
@@ -17,6 +18,8 @@ const settingsRouter    = require('./routes/api/settings');
 const sitesRouter       = require('./routes/api/sites');
 const usersRouter       = require('./routes/api/users');
 const { router: basinsRouter } = require('./routes/api/basins');
+const radarRouter       = require('./routes/api/radar');
+const groupsRouter      = require('./routes/api/groups');
 
 const app = express();
 
@@ -90,6 +93,8 @@ app.use('/api/settings',     settingsRouter);
 app.use('/api/sites',        sitesRouter);
 app.use('/api/users',        usersRouter);
 app.use('/api/basins',       basinsRouter);
+app.use('/api/radar',        radarRouter);
+app.use('/api/groups',       groupsRouter);
 
 // ── 404 / Error handlers ─────────────────────────────────────────────────────
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
@@ -110,6 +115,7 @@ async function boot() {
   const PORT  = process.env.PORT || (dsCfg.server && dsCfg.server.port) || 3000;
   const HOST  = process.env.HOST || (dsCfg.server && dsCfg.server.host) || '0.0.0.0';
 
+  detectAndPairSites();
   startScheduler();
   app.listen(PORT, HOST, () => {
     console.log(`[HydroScope] Listening on http://${HOST}:${PORT}`);

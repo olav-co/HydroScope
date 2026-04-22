@@ -178,6 +178,11 @@
         <button id="drawModeBtn" class="icon-btn" onclick="toggleDrawMode()" style="font-size:12px;padding:5px 11px;">
           ⬚ Draw Box
         </button>
+        <button id="clearBboxBtn" onclick="clearDiscovery()"
+          style="display:none;padding:5px 11px;border-radius:6px;border:1px solid #ef4444;
+                 background:none;color:#ef4444;font-size:12px;cursor:pointer;white-space:nowrap;">
+          ✕ Clear Box
+        </button>
         <span id="drawHint" style="font-size:11px;color:#64748b;margin-left:4px;">Drag a box — discovers USGS + CWMS sites in that area</span>
         <div style="flex:1;"></div>
         <!-- Source filter pills -->
@@ -188,6 +193,9 @@
           </button>
           <button id="filterCwmsBtn" class="src-filter-btn active" data-src="cwms" onclick="toggleSourceFilter('cwms')">
             <span class="src-dot" style="background:#f59e0b;"></span>CWMS
+          </button>
+          <button id="filterCombinedBtn" class="src-filter-btn active" data-src="combined" onclick="toggleSourceFilter('combined')" title="Combined CWMS+USGS sites">
+            <span class="src-dot" style="background:#a78bfa;box-shadow:0 0 0 2px #f59e0b;"></span>Combined
           </button>
         </div>
         <div style="width:1px;height:20px;background:#1e293b;margin:0 4px;"></div>
@@ -277,6 +285,14 @@
             <div style="display:flex;align-items:center;gap:6px;">
               <svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#f59e0b"/></svg>
               <span style="color:#cbd5e1;">CWMS — in DB</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <svg width="18" height="18">
+                <circle cx="9" cy="9" r="8" fill="none" stroke="#f59e0b" stroke-width="2.5"/>
+                <circle cx="9" cy="9" r="5.5" fill="none" stroke="#38bdf8" stroke-width="1.5"/>
+                <circle cx="9" cy="9" r="3" fill="#c4b5fd"/>
+              </svg>
+              <span style="color:#cbd5e1;">CWMS+USGS — combined</span>
             </div>
             <div style="display:flex;align-items:center;gap:6px;">
               <svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="none" stroke="#38bdf8" stroke-width="2"/></svg>
@@ -633,7 +649,7 @@ let _mapInited  = false;
 let _drawMode   = false;
 let _drawStart  = null;
 let _mapPopup   = null;
-let _srcVisible = { usgs: true, cwms: true };
+let _srcVisible = { usgs: true, cwms: true, combined: true };
 
 const SRC_EXISTING  = 'existing-sites';
 const SRC_DISC_USGS = 'disc-usgs';
@@ -646,7 +662,8 @@ function emptyGeo() { return { type: 'FeatureCollection', features: [] }; }
 function sitesToGeo(sites) {
   return {
     type: 'FeatureCollection',
-    features: sites.filter(s => s.latitude && s.longitude).map(s => ({
+    // Exclude child sites (parent_site_id set) — they're represented by their combined parent
+    features: sites.filter(s => s.latitude && s.longitude && !s.parent_site_id).map(s => ({
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [s.longitude, s.latitude] },
       properties: {
@@ -721,20 +738,50 @@ function initMap() {
 
     // ── Existing sites — filled circles, USGS blue / CWMS amber ──────────────
     _map.addSource(SRC_EXISTING, { type: 'geojson', data: sitesToGeo(_allSites) });
+
+    // Shadow — larger for combined sites
     _map.addLayer({ id: 'existing-shadow', type: 'circle', source: SRC_EXISTING,
-      paint: { 'circle-radius': 9, 'circle-color': 'rgba(0,0,0,0.25)', 'circle-blur': 1 }
+      paint: {
+        'circle-radius': ['match', ['get', 'source'], 'combined', 14, 9],
+        'circle-color': 'rgba(0,0,0,0.25)', 'circle-blur': 1,
+      }
     });
+
+    // Base fill — USGS blue / CWMS amber / combined violet center
     _map.addLayer({ id: 'existing-fill', type: 'circle', source: SRC_EXISTING,
       paint: {
-        'circle-radius': 6,
-        'circle-color': ['match', ['get', 'source'], 'cwms', '#f59e0b', '#38bdf8'],
+        'circle-radius': ['match', ['get', 'source'], 'combined', 7, 6],
+        'circle-color': ['match', ['get', 'source'], 'cwms', '#f59e0b', 'combined', '#c4b5fd', '#38bdf8'],
         'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5,
         'circle-opacity': ['case', ['==', ['get', 'enabled'], 1], 1, 0.35],
       }
     });
 
+    // ── Combined sites: amber CWMS outer ring + blue USGS inner ring ──────────
+    // These two extra layers make the dual-source nature visually unambiguous.
+    _map.addLayer({ id: 'existing-combined-cwms', type: 'circle', source: SRC_EXISTING,
+      filter: ['==', ['get', 'source'], 'combined'],
+      paint: {
+        'circle-radius': 12,
+        'circle-color': 'rgba(0,0,0,0)',
+        'circle-stroke-color': '#f59e0b',   // amber = CWMS
+        'circle-stroke-width': 3,
+        'circle-opacity': ['case', ['==', ['get', 'enabled'], 1], 1, 0.35],
+      }
+    });
+    _map.addLayer({ id: 'existing-combined-usgs', type: 'circle', source: SRC_EXISTING,
+      filter: ['==', ['get', 'source'], 'combined'],
+      paint: {
+        'circle-radius': 9,
+        'circle-color': 'rgba(0,0,0,0)',
+        'circle-stroke-color': '#38bdf8',   // blue = USGS
+        'circle-stroke-width': 1.5,
+        'circle-opacity': ['case', ['==', ['get', 'enabled'], 1], 0.8, 0.3],
+      }
+    });
+
     // ── Click handlers ────────────────────────────────────────────────────────
-    const clickableLayers = ['existing-fill', 'disc-usgs-ring', 'disc-cwms-ring'];
+    const clickableLayers = ['existing-combined-cwms', 'existing-fill', 'disc-usgs-ring', 'disc-cwms-ring'];
     clickableLayers.forEach(layer => {
       _map.on('mouseenter', layer, () => {
         if (!_drawMode) _map.getCanvas().style.cursor = 'pointer';
@@ -782,6 +829,11 @@ function initMap() {
     _map.on('moveend', renderDiscCards);
     _map.on('move',    updateBboxOverlay);
     _map.on('moveend', updateBboxOverlay);
+
+    // Keep basin dropdown in-area section current as user navigates the map
+    _map.on('moveend', _onMapViewChanged);
+    _map.on('zoomend', _onMapViewChanged);
+    _refreshBasinSections(); // seed immediately on map load
   });
 }
 
@@ -987,8 +1039,10 @@ function toggleSourceFilter(src) {
   btn.classList.toggle('active', _srcVisible[src]);
   if (!_mapInited) return;
   const vis = v => v ? 'visible' : 'none';
-  _map.setLayoutProperty('disc-usgs-ring', 'visibility', vis(_srcVisible.usgs));
-  _map.setLayoutProperty('disc-cwms-ring', 'visibility', vis(_srcVisible.cwms));
+  _map.setLayoutProperty('disc-usgs-ring',          'visibility', vis(_srcVisible.usgs));
+  _map.setLayoutProperty('disc-cwms-ring',          'visibility', vis(_srcVisible.cwms));
+  _map.setLayoutProperty('existing-combined-cwms',  'visibility', vis(_srcVisible.combined));
+  _map.setLayoutProperty('existing-combined-usgs',  'visibility', vis(_srcVisible.combined));
   applySearchMapFilter();
   // Re-run active query so source toggle actually changes what's fetched
   if (_discSearchActive) {
@@ -1136,13 +1190,37 @@ function clearBbox() {
   updateBboxOverlay();
 }
 
+function clearDiscovery() {
+  clearBbox();
+  _discUsgs = [];
+  _discCwms = [];
+  if (_discSearchActive) {
+    // bbox cleared — re-run text search without spatial constraint
+    discoverByText();
+  } else {
+    _discSearchActive = false;
+    renderDiscoveryRings();
+    renderDiscCards();
+  }
+  document.getElementById('drawHint').textContent = 'Drag a box — discovers USGS + CWMS sites in that area';
+}
+
 // Position (or hide) the floating "Add All" button anchored to the active area corner.
 function updateBboxOverlay() {
-  const btn = document.getElementById('bboxAddAllBtn');
+  const btn      = document.getElementById('bboxAddAllBtn');
+  const clearBtn = document.getElementById('clearBboxBtn');
+  if (clearBtn) clearBtn.style.display = _discActiveBbox ? '' : 'none';
   if (!btn || !_map) { if (btn) btn.style.display = 'none'; return; }
 
-  const dbIds    = new Set(_allSites.map(s => s.site_id));
-  const newCount = [..._discUsgs, ..._discCwms].filter(s => !dbIds.has(s.id)).length;
+  const dbIds = new Set(_allSites.map(s => s.site_id));
+  const b     = _map.getBounds();
+  const inVP  = (lat, lon) => lat != null && lon != null &&
+    lat >= b.getSouth() && lat <= b.getNorth() &&
+    lon >= b.getWest()  && lon <= b.getEast();
+  const newCount = [
+    ...(_srcVisible.usgs ? _discUsgs : []),
+    ...(_srcVisible.cwms ? _discCwms : []),
+  ].filter(s => !dbIds.has(s.id) && inVP(s.lat, s.lon)).length;
   if (newCount === 0 || (!_discActiveBbox && !_discActiveBasin)) {
     btn.style.display = 'none'; return;
   }
@@ -1177,7 +1255,14 @@ async function bboxAddAll() {
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
 
   const dbIds = new Set(_allSites.map(s => s.site_id));
-  const toAdd = [..._discUsgs, ..._discCwms].filter(s => !dbIds.has(s.id));
+  const b     = _map ? _map.getBounds() : null;
+  const inVP  = (lat, lon) => b && lat != null && lon != null &&
+    lat >= b.getSouth() && lat <= b.getNorth() &&
+    lon >= b.getWest()  && lon <= b.getEast();
+  const toAdd = [
+    ...(_srcVisible.usgs ? _discUsgs : []),
+    ...(_srcVisible.cwms ? _discCwms : []),
+  ].filter(s => !dbIds.has(s.id) && inVP(s.lat, s.lon));
   for (const s of toAdd) {
     await fetch('/api/sites', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1412,49 +1497,162 @@ function renderDiscoveryRings() {
 }
 
 
-// ── Basin (HUC8) discovery ────────────────────────────────────────────────────
+// ── Basin (HUC8) dropdown — three permanent sections ─────────────────────────
+// 1. Active in use   — basins that have active monitoring sites
+// 2. Suggestions     — related basins (HUC hierarchy + AI), updates with map
+// 3. In this area    — all basins whose centroids are in the current viewport
+// Typing replaces all three with search results.
 
-let _basinOptions  = [];   // [{ huc8_code, display }]
-let _basinLocked   = false; // true while a basin is actively selected
-let _basinHiIdx    = -1;    // keyboard-highlighted row index
+let _basinActive    = [];  // section 1
+let _basinSuggest   = [];  // section 2 — local recs, patched by AI when ready
+let _basinViewport  = [];  // section 3
+let _basinResults   = [];  // search mode
+let _basinLocked    = false;
+let _basinHiIdx     = -1;
+let _basinSearchTimer   = null;
+let _basinViewportTimer = null;
+let _basinAiTimer       = null;
+
+const _toOpt = b => ({
+  huc8_code: b.huc8_code,
+  display: b.huc8_name ? `${b.huc8_name} (${b.huc8_code})` : b.huc8_code,
+});
 
 async function loadBasinDropdown() {
   try {
-    const r = await fetch('/api/basins');
-    const basins = await r.json();
-    if (!Array.isArray(basins)) return;
-    _basinOptions = basins.map(b => ({
-      huc8_code: b.huc8_code,
-      display: b.huc8_name ? `${b.huc8_name} (${b.huc8_code})` : b.huc8_code,
-    }));
+    const r    = await fetch('/api/basins');
+    const data = await r.json();
+    _basinActive = Array.isArray(data) ? data.map(_toOpt) : [];
+    _refreshBasinSections();
   } catch (_) {}
 }
 
-function _basinFiltered(q) {
-  if (!q) return _basinOptions;
-  const lq = q.toLowerCase();
-  return _basinOptions.filter(b => b.display.toLowerCase().includes(lq));
+// Refresh suggestions + viewport whenever the map moves (debounced).
+function _onMapViewChanged() {
+  clearTimeout(_basinViewportTimer);
+  _basinViewportTimer = setTimeout(_refreshBasinSections, 500);
 }
 
-function _renderBasinDropdown(q) {
+async function _refreshBasinSections() {
+  if (!_map) return;
+  const bounds = _map.getBounds();
+
+  // Section 3 — all basins in viewport
+  const params = new URLSearchParams({
+    minLon: bounds.getWest().toFixed(6),
+    minLat: bounds.getSouth().toFixed(6),
+    maxLon: bounds.getEast().toFixed(6),
+    maxLat: bounds.getNorth().toFixed(6),
+  });
+  try {
+    const r    = await fetch('/api/basins/in-bbox?' + params);
+    const data = await r.json();
+    _basinViewport = Array.isArray(data) ? data.map(_toOpt) : [];
+  } catch (_) { _basinViewport = []; }
+
+  // Section 2 — local HUC-hierarchy recommendations
+  const activeCodes  = _basinActive.map(b => b.huc8_code);
+  const excludeCodes = [...new Set([...activeCodes, ..._basinViewport.map(b => b.huc8_code)])];
+  const recParams    = new URLSearchParams({
+    active:  activeCodes.join(','),
+    exclude: excludeCodes.join(','),
+  });
+  try {
+    const r    = await fetch('/api/basins/recommendations?' + recParams);
+    const data = await r.json();
+    _basinSuggest = Array.isArray(data) ? data.map(_toOpt) : [];
+  } catch (_) { _basinSuggest = []; }
+
+  _renderBasinDropdown(false);
+
+  // Fire AI enhancement in the background — patches suggestions when it arrives
+  clearTimeout(_basinAiTimer);
+  if (activeCodes.length) {
+    _basinAiTimer = setTimeout(() => _fetchAiSuggestions(activeCodes, excludeCodes, bounds), 800);
+  }
+}
+
+async function _fetchAiSuggestions(activeCodes, excludeCodes, bounds) {
+  const center   = bounds.getCenter();
+  const viewport = `${center.lat.toFixed(2)}°N ${Math.abs(center.lng).toFixed(2)}°${center.lng < 0 ? 'W' : 'E'}`;
+  const aiParams = new URLSearchParams({
+    active:   activeCodes.join(','),
+    exclude:  excludeCodes.join(','),
+    viewport,
+  });
+  try {
+    const r    = await fetch('/api/basins/ai-suggestions?' + aiParams);
+    const data = await r.json();
+    if (Array.isArray(data) && data.length) {
+      // Merge AI picks into suggestions, keeping local recs that aren't duplicated
+      const aiOpts   = data.map(_toOpt);
+      const aiCodes  = new Set(aiOpts.map(b => b.huc8_code));
+      const merged   = [...aiOpts, ..._basinSuggest.filter(b => !aiCodes.has(b.huc8_code))];
+      _basinSuggest  = merged.slice(0, 8);
+      _renderBasinDropdown(false);
+    }
+  } catch (_) {}
+}
+
+function _basinRow(b, i) {
+  return `<div class="_basin-opt" data-code="${esc(b.huc8_code)}" data-display="${esc(b.display)}"
+    onclick="_pickBasin('${esc(b.huc8_code)}','${esc(b.display)}')"
+    onmouseenter="_basinHover(${i})"
+    style="padding:7px 12px;font-size:12px;color:#94a3b8;cursor:pointer;transition:background .08s;">
+    ${esc(b.display)}
+  </div>`;
+}
+
+function _basinSectionLabel(text, sub) {
+  const subtitle = sub ? `<span style="font-weight:400;text-transform:none;letter-spacing:0;color:#334155;margin-left:4px;">${sub}</span>` : '';
+  return `<div style="padding:6px 12px 3px;font-size:10px;font-weight:600;color:#475569;
+    text-transform:uppercase;letter-spacing:.07em;border-top:1px solid #1e293b;margin-top:2px;">${text}${subtitle}</div>`;
+}
+
+function _renderBasinDropdown(loading) {
   const dd = document.getElementById('basinDropdown');
   if (!dd) return;
-  const items = _basinFiltered(q);
   _basinHiIdx = -1;
-  if (!items.length) {
-    dd.innerHTML = `<div style="padding:9px 12px;font-size:12px;color:#475569;">
-      ${q ? 'No matching basins' : 'No basins yet — add sites and run Basin Geometry sync'}
-    </div>`;
+
+  if (loading) {
+    dd.innerHTML = `<div style="padding:9px 12px;font-size:12px;color:#475569;">Searching…</div>`;
     return;
   }
-  dd.innerHTML = items.slice(0, 60).map((b, i) =>
-    `<div class="_basin-opt" data-code="${esc(b.huc8_code)}" data-display="${esc(b.display)}"
-      onclick="_pickBasin('${esc(b.huc8_code)}','${esc(b.display)}')"
-      onmouseenter="_basinHover(${i})"
-      style="padding:7px 12px;font-size:12px;color:#94a3b8;cursor:pointer;transition:background .08s;">
-      ${esc(b.display)}
-    </div>`
-  ).join('');
+
+  const q = (document.getElementById('basinInput')?.value || '').trim();
+  if (q) {
+    dd.innerHTML = _basinResults.length
+      ? _basinResults.map(_basinRow).join('')
+      : `<div style="padding:9px 12px;font-size:12px;color:#475569;">No matching basins found</div>`;
+    return;
+  }
+
+  let html = '';
+  let idx  = 0;
+
+  // Section 1
+  html += _basinSectionLabel('Active in use');
+  html += _basinActive.length
+    ? _basinActive.map(b => _basinRow(b, idx++)).join('')
+    : `<div style="padding:5px 12px 6px;font-size:12px;color:#334155;">No active sites with a watershed assigned</div>`;
+
+  // Section 2
+  html += _basinSectionLabel('Suggestions', _basinSuggest.length ? '' : '');
+  html += _basinSuggest.length
+    ? _basinSuggest.map(b => _basinRow(b, idx++)).join('')
+    : `<div style="padding:5px 12px 6px;font-size:12px;color:#334155;">Sync the basin catalog in Settings to enable suggestions</div>`;
+
+  // Section 3
+  html += _basinSectionLabel('In this area');
+  html += _basinViewport.length
+    ? _basinViewport.map(b => _basinRow(b, idx++)).join('')
+    : `<div style="padding:5px 12px 6px;font-size:12px;color:#334155;">Pan the map to see basins in view</div>`;
+
+  html += `<div style="padding:5px 12px 7px;font-size:11px;color:#334155;border-top:1px solid #1e293b;margin-top:2px;">
+    Type to search all watersheds
+  </div>`;
+
+  dd.innerHTML = html;
 }
 
 function _basinHover(i) {
@@ -1467,9 +1665,9 @@ function _basinHover(i) {
 
 function _openBasinDropdown() {
   if (_basinLocked) return;
-  const input = document.getElementById('basinInput');
-  const q = input ? input.value.trim() : '';
-  _renderBasinDropdown(q);
+  const q = (document.getElementById('basinInput')?.value || '').trim();
+  if (q) _searchBasinsLocal(q);
+  else   _renderBasinDropdown(false);
   const dd = document.getElementById('basinDropdown');
   if (dd) dd.style.display = '';
 }
@@ -1482,11 +1680,31 @@ function _closeBasinDropdown() {
 
 function _onBasinInput(val) {
   if (_basinLocked) return;
-  _renderBasinDropdown(val.trim());
+  const q = val.trim();
   const dd = document.getElementById('basinDropdown');
   if (dd) dd.style.display = '';
-  const input = document.getElementById('basinInput');
-  if (input) input.style.borderColor = '#334155';
+  clearTimeout(_basinSearchTimer);
+  if (!q) {
+    _basinResults = [];
+    _renderBasinDropdown(false);
+    return;
+  }
+  _renderBasinDropdown(true);
+  _basinSearchTimer = setTimeout(() => _searchBasinsLocal(q), 300);
+}
+
+async function _searchBasinsLocal(q) {
+  try {
+    const r    = await fetch('/api/basins/search?q=' + encodeURIComponent(q));
+    const data = await r.json();
+    _basinResults = Array.isArray(data) ? data.map(_toOpt) : [];
+    const dd = document.getElementById('basinDropdown');
+    if (dd) dd.style.display = '';
+    _renderBasinDropdown(false);
+  } catch (_) {
+    _basinResults = [];
+    _renderBasinDropdown(false);
+  }
 }
 
 function _basinKeydown(e) {
