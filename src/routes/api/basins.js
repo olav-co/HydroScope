@@ -61,10 +61,11 @@ async function fetchHuc8Polygon(huc8Code) {
 }
 
 // ── GET /api/basins ───────────────────────────────────────────────────────────
-// Returns distinct HUC8 units from sites already in the DB.
+// Returns distinct HUC8 units from sites in the DB, with is_favorite per user.
 router.get('/', (req, res) => {
   try {
-    res.json(db.getDistinctBasins());
+    const userId = req.user ? req.user.id : null;
+    res.json(db.getDistinctBasinsForUser(userId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

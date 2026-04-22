@@ -75,27 +75,26 @@
         <button class="dash-filter" data-param="ph"        onclick="toggleParamFilter('ph',this)"        title="Sites with pH data">pH</button>
       </div>
 
-      <!-- Basin filter -->
-      <div style="position:relative;min-width:200px;max-width:300px;flex:1;">
-        <input id="dashBasinInput" type="text" autocomplete="off"
-          placeholder="Filter by basin…"
-          oninput="_dashBasinInput(this.value)"
-          onfocus="_dashOpenBasin()"
-          onkeydown="_dashBasinKeydown(event)"
-          style="width:100%;padding:4px 28px 4px 10px;background:#1e293b;border:1px solid #334155;
-                 border-radius:20px;color:#e2e8f0;font-size:12px;box-sizing:border-box;
-                 outline:none;transition:border-color .15s;"
-          onblur="if(!_basinFilter)this.style.borderColor='#334155'"/>
-        <span style="position:absolute;right:9px;top:50%;transform:translateY(-50%);color:#475569;font-size:11px;pointer-events:none;">▾</span>
-        <div id="dashBasinDropdown"
-          style="display:none;position:absolute;top:calc(100% + 3px);left:0;right:0;z-index:200;
-                 background:#0f172a;border:1px solid #334155;border-radius:7px;
-                 max-height:200px;overflow-y:auto;box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+      <!-- Basin filter (multi) -->
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;flex:1;min-width:160px;">
+        <div id="dash-basin-tags" style="display:contents;"></div>
+        <div style="position:relative;">
+          <input id="dashBasinInput" type="text" autocomplete="off"
+            placeholder="Filter by basin…"
+            oninput="_dashBasinInput(this.value)"
+            onfocus="_dashOpenBasin()"
+            onkeydown="_dashBasinKeydown(event)"
+            style="padding:4px 24px 4px 10px;background:#1e293b;border:1px solid #334155;
+                   border-radius:20px;color:#e2e8f0;font-size:12px;width:160px;
+                   outline:none;transition:border-color .15s;"/>
+          <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);color:#475569;font-size:11px;pointer-events:none;">▾</span>
+          <div id="dashBasinDropdown"
+            style="display:none;position:absolute;top:calc(100% + 3px);left:0;min-width:240px;z-index:200;
+                   background:#0f172a;border:1px solid #334155;border-radius:7px;
+                   max-height:220px;overflow-y:auto;box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+          </div>
         </div>
       </div>
-      <button id="dashBasinClear" onclick="_dashClearBasin()"
-        style="display:none;padding:3px 9px;background:none;border:1px solid #334155;
-               border-radius:20px;color:#94a3b8;font-size:12px;cursor:pointer;">✕ Basin</button>
 
       <!-- Sort -->
       <div class="flex items-center gap-2 ml-auto">
@@ -507,7 +506,7 @@ var ALERT_LEVEL_STYLES = {
 var _currentFilter = 'all';
 var _sourceFilter  = 'all';
 var _activeParams  = {};
-var _basinFilter   = '';
+var _dashActiveBasins = [];  // [{code, display, name, color, is_favorite}]
 
 function setSrcFilter(src) {
   _sourceFilter = src;
@@ -542,9 +541,11 @@ function applyFiltersAndSort() {
   cards.forEach(function(card) {
     var show = true;
 
-    // 0. Basin filter
-    if (_basinFilter) {
-      if (card.getAttribute('data-huc8') !== _basinFilter) show = false;
+    // 0. Basin filter (multi)
+    if (_dashActiveBasins.length) {
+      var cardHuc = card.getAttribute('data-huc8') || '';
+      var inAny = _dashActiveBasins.some(function(b) { return b.code === cardHuc; });
+      if (!inAny) show = false;
     }
 
     // 0b. Source filter
@@ -605,8 +606,9 @@ function applyFiltersAndSort() {
 }
 
 // ── Basin combobox ────────────────────────────────────────────────────────────
-var _dashBasinOpts = [];
-var _dashBasinHiIdx = -1;
+var _dashBasinOpts   = [];
+var _dashBasinHiIdx  = -1;
+var _DASH_BASIN_COLORS = ['#38bdf8','#a78bfa','#34d399','#fb923c','#f472b6','#facc15','#22d3ee','#4ade80'];
 
 (async function _loadDashBasins() {
   try {
@@ -614,28 +616,141 @@ var _dashBasinHiIdx = -1;
     var basins = await r.json();
     if (!Array.isArray(basins)) return;
     _dashBasinOpts = basins.map(function(b) {
-      return { code: b.huc8_code, display: b.huc8_name ? b.huc8_name + ' (' + b.huc8_code + ')' : b.huc8_code };
+      return { code: b.huc8_code,
+               display: b.huc8_name ? b.huc8_name + ' (' + b.huc8_code + ')' : b.huc8_code,
+               name: b.huc8_name || b.huc8_code, is_favorite: !!b.is_favorite };
     });
   } catch (_) {}
 })();
 
-function _dashBasinFiltered(q) {
-  if (!q) return _dashBasinOpts;
-  var lq = q.toLowerCase();
-  return _dashBasinOpts.filter(function(b) { return b.display.toLowerCase().indexOf(lq) !== -1; });
+// ── Centroid / distance helpers (mirrors flow-network logic) ──────────────────
+function _dashBasinCentroid(code) {
+  var pts = SITES.filter(function(s) { return s.huc8_code === code && s.latitude && s.longitude; });
+  if (!pts.length) return null;
+  return {
+    lat: pts.reduce(function(a,s){ return a + s.latitude;  }, 0) / pts.length,
+    lon: pts.reduce(function(a,s){ return a + s.longitude; }, 0) / pts.length
+  };
+}
+function _dashBasinDist(codeA, codeB) {
+  var a = _dashBasinCentroid(codeA), b = _dashBasinCentroid(codeB);
+  if (!a || !b) return Infinity;
+  var dlat = a.lat - b.lat, dlon = a.lon - b.lon;
+  return Math.sqrt(dlat*dlat + dlon*dlon);
+}
+function _dashGetRecommended(limit) {
+  if (!_dashActiveBasins.length) return [];
+  var activeCodes = _dashActiveBasins.map(function(b){ return b.code; });
+  return _dashBasinOpts
+    .filter(function(b){ return activeCodes.indexOf(b.code) === -1 && !b.is_favorite; })
+    .map(function(b){
+      var d = Math.min.apply(null, _dashActiveBasins.map(function(ab){ return _dashBasinDist(ab.code, b.code); }));
+      return { code:b.code, display:b.display, name:b.name, is_favorite:b.is_favorite, dist:d };
+    })
+    .filter(function(b){ return isFinite(b.dist); })
+    .sort(function(a,b){ return a.dist - b.dist; })
+    .slice(0, limit || 5);
+}
+
+async function _dashToggleFavorite(code, name, ev) {
+  if (ev) ev.stopPropagation();
+  var opt = _dashBasinOpts.find(function(b){ return b.code === code; });
+  if (!opt) return;
+  var wasFav = opt.is_favorite;
+  opt.is_favorite = !wasFav;
+  try {
+    if (wasFav) {
+      await fetch('/api/users/favorites/' + code, { method: 'DELETE' });
+    } else {
+      await fetch('/api/users/favorites/' + code, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ huc8_name: name }) });
+    }
+  } catch (_) { opt.is_favorite = wasFav; }
+  _dashRenderBasinTags();
+  _dashRenderBasin(document.getElementById('dashBasinInput').value);
+}
+
+function _dashBasinItem(b, i) {
+  var star = b.is_favorite
+    ? '<span style="color:#facc15;font-size:13px;margin-right:4px;flex-shrink:0;" title="Remove favorite" onclick="_dashToggleFavorite(\''+b.code+'\',\''+b.name.replace(/'/g,"&#39;")+'\',event)">★</span>'
+    : '<span style="color:#334155;font-size:13px;margin-right:4px;flex-shrink:0;" title="Add to favorites" onclick="_dashToggleFavorite(\''+b.code+'\',\''+b.name.replace(/'/g,"&#39;")+'\',event)">☆</span>';
+  return '<div class="_db-opt" data-code="'+b.code+'"'
+    +' onclick="_dashPickBasin(\''+b.code+'\',\''+b.display.replace(/'/g,"&#39;")+'\')"'
+    +' onmouseenter="_dashBasinHover('+i+')"'
+    +' style="display:flex;align-items:center;padding:7px 12px;font-size:12px;color:#94a3b8;cursor:pointer;">'
+    + star + '<span>'+b.display+'</span></div>';
+}
+
+function _dashSectionLabel(text) {
+  return '<div style="padding:4px 12px 2px;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#334155;">'+text+'</div>';
 }
 
 function _dashRenderBasin(q) {
   var dd = document.getElementById('dashBasinDropdown');
   if (!dd) return;
-  var items = _dashBasinFiltered(q || '');
   _dashBasinHiIdx = -1;
-  if (!items.length) {
-    dd.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#475569;">' + (q ? 'No matching basins' : 'No basins — run Basin Geometry sync') + '</div>';
+  var activeCodes = _dashActiveBasins.map(function(b){ return b.code; });
+  var available = _dashBasinOpts.filter(function(b){ return activeCodes.indexOf(b.code) === -1; });
+
+  if (q) {
+    var lq = q.toLowerCase();
+    var hits = available.filter(function(b){ return b.display.toLowerCase().indexOf(lq) !== -1; });
+    dd.innerHTML = hits.length
+      ? hits.slice(0,50).map(_dashBasinItem).join('')
+      : '<div style="padding:8px 12px;font-size:12px;color:#475569;">No matching basins</div>';
     return;
   }
-  dd.innerHTML = items.slice(0, 50).map(function(b, i) {
-    return '<div class="_db-opt" data-code="' + b.code + '" onclick="_dashPickBasin(\'' + b.code + '\',\'' + b.display.replace(/'/g,"&#39;") + '\')" onmouseenter="_dashBasinHover(' + i + ')" style="padding:7px 12px;font-size:12px;color:#94a3b8;cursor:pointer;">' + b.display + '</div>';
+
+  // No query: favorites → recommended → all
+  var favs  = available.filter(function(b){ return b.is_favorite; });
+  var rec   = _dashGetRecommended(5);
+  var recCodes = rec.map(function(b){ return b.code; });
+  var rest  = available.filter(function(b){ return !b.is_favorite && recCodes.indexOf(b.code) === -1; });
+
+  if (!available.length) {
+    dd.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#475569;">'
+      + (_dashBasinOpts.length ? 'All basins already added' : 'No basins — run Basin Geometry sync') + '</div>';
+    return;
+  }
+
+  var html = ''; var idx = 0;
+  if (favs.length) {
+    html += _dashSectionLabel('★ Favorites');
+    html += favs.map(function(b){ return _dashBasinItem(b, idx++); }).join('');
+    html += '<div style="height:1px;background:#1e293b;margin:3px 0;"></div>';
+  }
+  if (rec.length) {
+    html += _dashSectionLabel('Suggested nearby');
+    html += rec.map(function(b){ return _dashBasinItem(b, idx++); }).join('');
+    if (rest.length) html += '<div style="height:1px;background:#1e293b;margin:3px 0;"></div>';
+  }
+  if (rest.length || (!favs.length && !rec.length)) {
+    if (favs.length || rec.length) html += _dashSectionLabel('All basins');
+    html += rest.slice(0,50).map(function(b){ return _dashBasinItem(b, idx++); }).join('');
+  }
+  dd.innerHTML = html;
+}
+
+function _dashRenderBasinTags() {
+  var container = document.getElementById('dash-basin-tags');
+  if (!container) return;
+  container.innerHTML = _dashActiveBasins.map(function(b) {
+    var opt = _dashBasinOpts.find(function(o){ return o.code === b.code; });
+    var isFav = opt && opt.is_favorite;
+    var starBtn = '<button onclick="_dashToggleFavorite(\''+b.code+'\',\''+b.name.replace(/'/g,"&#39;")+'\',event)" '
+      +'title="'+(isFav?'Remove favorite':'Add to favorites')+'" '
+      +'style="background:none;border:none;cursor:pointer;padding:0;font-size:12px;line-height:1;'
+      +'color:'+(isFav?'#facc15':b.color)+';opacity:'+(isFav?'1':'0.4')+';">'
+      +(isFav?'★':'☆')+'</button>';
+    return '<span style="display:inline-flex;align-items:center;gap:3px;padding:3px 7px 3px 9px;'
+      +'border-radius:20px;border:1px solid '+b.color+'44;background:'+b.color+'18;'
+      +'color:'+b.color+';font-size:11px;font-weight:500;white-space:nowrap;">'
+      +b.name+starBtn
+      +'<button onclick="_dashRemoveBasin(\''+b.code+'\')" '
+      +'style="background:none;border:none;color:'+b.color+';cursor:pointer;padding:0;font-size:13px;line-height:1;opacity:0.7;"'
+      +' onmouseover="this.style.opacity=\'1\'" onmouseout="this.style.opacity=\'0.7\'">×</button>'
+      +'</span>';
   }).join('');
 }
 
@@ -643,15 +758,14 @@ function _dashBasinHover(i) {
   _dashBasinHiIdx = i;
   document.querySelectorAll('._db-opt').forEach(function(el, j) {
     el.style.background = j === i ? '#1e293b' : '';
-    el.style.color = j === i ? '#e2e8f0' : '#94a3b8';
+    el.style.color      = j === i ? '#e2e8f0' : '#94a3b8';
   });
 }
 
 function _dashOpenBasin() {
   var dd = document.getElementById('dashBasinDropdown');
   if (!dd) return;
-  var inp = document.getElementById('dashBasinInput');
-  _dashRenderBasin(inp ? inp.value : '');
+  _dashRenderBasin(document.getElementById('dashBasinInput').value);
   dd.style.display = 'block';
 }
 
@@ -665,26 +779,27 @@ function _dashBasinKeydown(e) {
   if (!dd || dd.style.display === 'none') return;
   var opts = dd.querySelectorAll('._db-opt');
   if (!opts.length) return;
-  if (e.key === 'ArrowDown') { e.preventDefault(); _dashBasinHover(Math.min(_dashBasinHiIdx + 1, opts.length - 1)); opts[_dashBasinHiIdx] && opts[_dashBasinHiIdx].scrollIntoView({ block: 'nearest' }); }
-  else if (e.key === 'ArrowUp') { e.preventDefault(); _dashBasinHover(Math.max(_dashBasinHiIdx - 1, 0)); opts[_dashBasinHiIdx] && opts[_dashBasinHiIdx].scrollIntoView({ block: 'nearest' }); }
-  else if (e.key === 'Enter') { e.preventDefault(); var t = _dashBasinHiIdx >= 0 ? opts[_dashBasinHiIdx] : opts[0]; if (t) _dashPickBasin(t.dataset.code, t.textContent.trim()); }
+  if (e.key === 'ArrowDown') { e.preventDefault(); _dashBasinHover(Math.min(_dashBasinHiIdx+1, opts.length-1)); opts[_dashBasinHiIdx] && opts[_dashBasinHiIdx].scrollIntoView({block:'nearest'}); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); _dashBasinHover(Math.max(_dashBasinHiIdx-1, 0)); opts[_dashBasinHiIdx] && opts[_dashBasinHiIdx].scrollIntoView({block:'nearest'}); }
+  else if (e.key === 'Enter') { e.preventDefault(); var t = _dashBasinHiIdx >= 0 ? opts[_dashBasinHiIdx] : opts[0]; if (t) _dashPickBasin(t.dataset.code, t.querySelector('span') ? t.querySelector('span').textContent : t.textContent.trim()); }
   else if (e.key === 'Escape') { document.getElementById('dashBasinDropdown').style.display = 'none'; }
 }
 
 function _dashPickBasin(code, display) {
   document.getElementById('dashBasinDropdown').style.display = 'none';
-  var inp = document.getElementById('dashBasinInput');
-  if (inp) { inp.value = display; inp.style.borderColor = '#34d399'; }
-  document.getElementById('dashBasinClear').style.display = '';
-  _basinFilter = code;
+  document.getElementById('dashBasinInput').value = '';
+  if (_dashActiveBasins.some(function(b){ return b.code === code; })) return;
+  var opt = _dashBasinOpts.find(function(b){ return b.code === code; });
+  var color = _DASH_BASIN_COLORS[_dashActiveBasins.length % _DASH_BASIN_COLORS.length];
+  _dashActiveBasins.push({ code: code, display: display,
+    name: opt ? opt.name : code, color: color, is_favorite: opt ? opt.is_favorite : false });
+  _dashRenderBasinTags();
   applyFiltersAndSort();
 }
 
-function _dashClearBasin() {
-  _basinFilter = '';
-  var inp = document.getElementById('dashBasinInput');
-  if (inp) { inp.value = ''; inp.style.borderColor = ''; }
-  document.getElementById('dashBasinClear').style.display = 'none';
+function _dashRemoveBasin(code) {
+  _dashActiveBasins = _dashActiveBasins.filter(function(b){ return b.code !== code; });
+  _dashRenderBasinTags();
   applyFiltersAndSort();
 }
 

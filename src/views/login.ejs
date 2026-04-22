@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>HydroScope — Sign In</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    * { font-family: 'Inter', sans-serif; box-sizing: border-box; }
+    body { background: #020617; color: #e2e8f0; margin: 0; min-height: 100vh;
+           display: flex; align-items: center; justify-content: center; }
+    .card {
+      background: #0f172a; border: 1px solid #1e293b; border-radius: 16px;
+      padding: 40px 44px; width: 100%; max-width: 400px;
+      box-shadow: 0 25px 50px rgba(0,0,0,0.5);
+    }
+    .logo { width:40px;height:40px;border-radius:10px;background:#0369a1;
+            display:flex;align-items:center;justify-content:center;
+            font-weight:700;font-size:15px;color:#fff;flex-shrink:0; }
+    label { display:block; font-size:12px; font-weight:500; color:#94a3b8;
+            text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }
+    input[type=text] {
+      width:100%; padding:10px 14px; border-radius:8px;
+      border:1px solid #1e293b; background:#0a1628; color:#e2e8f0;
+      font-size:14px; outline:none; transition:border-color .15s;
+    }
+    input[type=text]:focus { border-color:#0ea5e9; }
+    input[type=text]::placeholder { color:#334155; }
+    button[type=submit] {
+      width:100%; padding:11px; border-radius:8px; border:none;
+      background:#0369a1; color:#fff; font-size:14px; font-weight:600;
+      cursor:pointer; transition:background .15s; margin-top:20px;
+    }
+    button[type=submit]:hover { background:#0284c7; }
+    .err { background:rgba(239,68,68,.1); border:1px solid rgba(239,68,68,.3);
+           color:#fca5a5; border-radius:8px; padding:10px 14px;
+           font-size:13px; margin-bottom:18px; }
+    .users-list { margin-top:28px; border-top:1px solid #1e293b; padding-top:20px; }
+    .users-list p { font-size:11px; color:#475569; text-transform:uppercase;
+                    letter-spacing:.06em; margin-bottom:10px; }
+    .user-btn {
+      display:flex; align-items:center; gap:9px; width:100%;
+      padding:8px 12px; border-radius:8px; border:1px solid #1e293b;
+      background:rgba(30,41,59,0.3); color:#94a3b8; font-size:13px;
+      cursor:pointer; transition:all .15s; margin-bottom:6px; text-align:left;
+    }
+    .user-btn:hover { border-color:#334155; background:rgba(30,41,59,0.6); color:#e2e8f0; }
+    .avatar { width:26px;height:26px;border-radius:6px;background:#0369a1;
+              flex-shrink:0;display:flex;align-items:center;justify-content:center;
+              font-size:11px;font-weight:700;color:#fff; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <!-- Logo -->
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:32px;">
+      <div class="logo">HS</div>
+      <div>
+        <div style="font-weight:700;font-size:16px;color:#fff;">HydroScope</div>
+        <div style="font-size:11px;color:#475569;">Portland Region</div>
+      </div>
+    </div>
+
+    <% if (error) { %>
+    <div class="err"><%= error %></div>
+    <% } %>
+
+    <form method="POST" action="/login" autocomplete="off">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" placeholder="Enter your name"
+             autofocus autocomplete="off" required maxlength="64"/>
+      <button type="submit">Sign In</button>
+    </form>
+
+    <% if (existingUsers && existingUsers.length) { %>
+    <div class="users-list">
+      <p>Recent Users</p>
+      <% for (const u of existingUsers) { %>
+      <form method="POST" action="/login" style="margin:0;">
+        <input type="hidden" name="username" value="<%= u.username %>"/>
+        <button type="submit" class="user-btn">
+          <div class="avatar"><%= u.username[0].toUpperCase() %></div>
+          <span style="font-weight:500;color:#e2e8f0;"><%= u.username %></span>
+          <% if (u.last_login) { %>
+          <span style="margin-left:auto;font-size:11px;color:#334155;">
+            <%= new Date(u.last_login).toLocaleDateString() %>
+          </span>
+          <% } %>
+        </button>
+      </form>
+      <% } %>
+    </div>
+    <% } %>
+  </div>
+</body>
+</html>

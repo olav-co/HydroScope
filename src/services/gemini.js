@@ -65,6 +65,24 @@ const SUB_ROLE_ADDENDA = {
 };
 
 /**
+ * Build the combined sub-role context string for a profile.
+ * sub_role may be a JSON array (new) or a bare string (legacy).
+ */
+function getSubRoleContext(profile) {
+  let ids = profile.sub_role;
+  if (!ids) return '';
+  if (typeof ids === 'string') {
+    try { ids = JSON.parse(ids); } catch (_) { ids = [ids]; }
+  }
+  if (!Array.isArray(ids)) ids = [ids];
+  return ids
+    .filter(Boolean)
+    .map(id => SUB_ROLE_ADDENDA[id] || '')
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
  * Build a SHA-256 hash of a query string for cache keying.
  */
 function hashQuery(str) {
@@ -214,7 +232,7 @@ async function generateInsight(profile, query, opts = {}) {
   const recentRows = targetSiteIds.length ? db.getRecentForAI(targetSiteIds, 72) : [];
 
   const dataContext = buildDataContext(recentRows, allSites);
-  const cacheKey = hashQuery(`${profile.role}|${profile.sub_role}|${query}|${dataContext.slice(0, 200)}`);
+  const cacheKey = hashQuery(`${profile.role}|${getSubRoleContext(profile)}|${query}|${dataContext.slice(0, 200)}`);
 
   if (useCache) {
     const cached = db.getCachedInsight(cacheKey, 20);
@@ -223,7 +241,7 @@ async function generateInsight(profile, query, opts = {}) {
 
   // Build system prompt
   const roleCtx = ROLE_CONTEXT[profile.role] || ROLE_CONTEXT.general;
-  const subRoleCtx = SUB_ROLE_ADDENDA[profile.sub_role] || '';
+  const subRoleCtx = getSubRoleContext(profile) || '';
   const userBio = profile.bio ? `\nUser context: ${profile.bio}` : '';
   const interests = profile.interests
     ? (() => { try { const arr = JSON.parse(profile.interests); return arr.length ? `\nUser interests: ${arr.join(', ')}` : ''; } catch { return ''; } })()
@@ -754,7 +772,7 @@ async function generateChat(profile, history, query, pageContext, requestedMode)
   var modeConfig = CHAT_MODE_CONFIGS[mode] || CHAT_MODE_CONFIGS.general;
 
   var roleCtx = (profile.role && profile.role !== 'general') ? (ROLE_CONTEXT[profile.role] || '') : '';
-  var subCtx  = SUB_ROLE_ADDENDA[profile.sub_role] || '';
+  var subCtx  = getSubRoleContext(profile) || '';
   var bioCtx  = profile.bio ? 'User context: ' + profile.bio : '';
 
   var pageCtxLine = '';
@@ -928,7 +946,7 @@ async function generateEnrichment(profile, pageType, contextData) {
   }
 
   var roleCtx = ROLE_CONTEXT[profile.role] || ROLE_CONTEXT.general;
-  var subCtx = SUB_ROLE_ADDENDA[profile.sub_role] || '';
+  var subCtx = getSubRoleContext(profile) || '';
   var bioCtx = profile.bio ? 'User context: ' + profile.bio : '';
 
   var systemPrompt = [
@@ -1010,7 +1028,7 @@ async function generateNetworkAnalysis(profile, nodes, edges, hours) {
   });
 
   var roleCtx = ROLE_CONTEXT[profile.role] || ROLE_CONTEXT.general;
-  var subCtx  = SUB_ROLE_ADDENDA[profile.sub_role] || '';
+  var subCtx  = getSubRoleContext(profile) || '';
 
   var systemPrompt = [
     roleCtx, subCtx,

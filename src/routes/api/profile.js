@@ -70,9 +70,14 @@ const INTEREST_OPTIONS = [
 
 // GET /api/profile
 router.get('/', (req, res) => {
-  const profile = db.getProfile();
+  const profile = db.getProfile(req.user ? req.user.id : null);
   try { profile.interests = JSON.parse(profile.interests || '[]'); } catch { profile.interests = []; }
   try { profile.preferred_sites = JSON.parse(profile.preferred_sites || '[]'); } catch { profile.preferred_sites = []; }
+  // sub_role: stored as JSON array; fall back gracefully for old single-string values
+  try {
+    const parsed = JSON.parse(profile.sub_role || '[]');
+    profile.sub_role = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+  } catch { profile.sub_role = profile.sub_role ? [profile.sub_role] : []; }
   res.json({ ok: true, profile, roles: ROLES, interests: INTEREST_OPTIONS });
 });
 
@@ -89,13 +94,13 @@ router.put('/', (req, res) => {
   if (name         !== undefined) fields.name         = name;
   if (organization !== undefined) fields.organization = organization;
   if (role         !== undefined) fields.role         = role;
-  if (sub_role     !== undefined) fields.sub_role     = sub_role;
+  if (sub_role     !== undefined) fields.sub_role     = JSON.stringify(Array.isArray(sub_role) ? sub_role.slice(0, 3) : (sub_role ? [sub_role] : []));
   if (interests    !== undefined) fields.interests    = JSON.stringify(Array.isArray(interests) ? interests : []);
   if (preferred_sites !== undefined) fields.preferred_sites = JSON.stringify(Array.isArray(preferred_sites) ? preferred_sites : []);
   if (bio          !== undefined) fields.bio          = bio;
   if (notify_thresholds !== undefined) fields.notify_thresholds = JSON.stringify(notify_thresholds);
 
-  db.updateProfile(fields);
+  db.updateProfile(req.user ? req.user.id : null, fields);
   res.json({ ok: true, message: 'Profile updated.' });
 });
 

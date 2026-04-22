@@ -4,7 +4,8 @@ const db = require('../db/database');
 
 // Shared view locals
 function baseLocals(req) {
-  const profile = db.getProfile();
+  const userId = req.user ? req.user.id : null;
+  const profile = db.getProfile(userId);
   const lastFetch = db.getLastFetch();
   return { profile, lastFetch, activePage: '' };
 }
@@ -13,7 +14,7 @@ router.get('/', (req, res) => {
   try {
     const sites = db.getAllSites();
     const latest = db.getLatestReadings();
-    const profile = db.getProfile();
+    const profile = db.getProfile(req.user ? req.user.id : null);
     const lastFetch = db.getLastFetch();
 
     // Group latest readings by site

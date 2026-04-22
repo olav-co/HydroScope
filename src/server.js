@@ -1,6 +1,7 @@
-const express = require('express');
-const path = require('path');
-const db = require('./db/database');
+const express      = require('express');
+const path         = require('path');
+const cookieParser = require('cookie-parser');
+const db           = require('./db/database');
 const { startScheduler, drainWaterwayPairs } = require('./services/scheduler');
 const { ensureMigrated, applySeedFile, getDatasourcesConfig } = require('./services/config');
 
@@ -14,6 +15,7 @@ const wqRouter          = require('./routes/api/wq');
 const connectionsRouter = require('./routes/api/connections');
 const settingsRouter    = require('./routes/api/settings');
 const sitesRouter       = require('./routes/api/sites');
+const usersRouter       = require('./routes/api/users');
 const { router: basinsRouter } = require('./routes/api/basins');
 
 const app = express();
@@ -21,11 +23,59 @@ const app = express();
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── View Engine ───────────────────────────────────────────────────────────────
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
+
+// ── Login / Logout ────────────────────────────────────────────────────────────
+app.get('/login', (req, res) => {
+  if (req.cookies.hydro_uid) {
+    const u = db.getUserById(parseInt(req.cookies.hydro_uid, 10));
+    if (u) return res.redirect('/');
+  }
+  const existingUsers = db.getAllUsers();
+  res.render('login', { error: null, existingUsers });
+});
+
+app.post('/login', (req, res) => {
+  const username = (req.body.username || '').trim();
+  if (!username) {
+    return res.render('login', { error: 'Please enter a username.', existingUsers: db.getAllUsers() });
+  }
+  try {
+    const user = db.findOrCreateUser(username);
+    res.cookie('hydro_uid', String(user.id), { httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 30 });
+    res.redirect('/');
+  } catch (err) {
+    res.render('login', { error: err.message, existingUsers: db.getAllUsers() });
+  }
+});
+
+app.get('/logout', (req, res) => {
+  res.clearCookie('hydro_uid');
+  res.redirect('/login');
+});
+
+// ── Auth middleware ───────────────────────────────────────────────────────────
+app.use((req, res, next) => {
+  const uid = req.cookies.hydro_uid;
+  if (!uid) {
+    if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not authenticated' });
+    return res.redirect('/login');
+  }
+  const user = db.getUserById(parseInt(uid, 10));
+  if (!user) {
+    res.clearCookie('hydro_uid');
+    if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not authenticated' });
+    return res.redirect('/login');
+  }
+  req.user = user;
+  res.locals.user = user;
+  next();
+});
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.use('/',                 pagesRouter);
@@ -38,6 +88,7 @@ app.use('/api/wq',           wqRouter);
 app.use('/api/connections',  connectionsRouter);
 app.use('/api/settings',     settingsRouter);
 app.use('/api/sites',        sitesRouter);
+app.use('/api/users',        usersRouter);
 app.use('/api/basins',       basinsRouter);
 
 // ── 404 / Error handlers ─────────────────────────────────────────────────────
@@ -52,7 +103,6 @@ async function boot() {
   db.initDatabase();
   console.log('[DB] Initialized.');
 
-  // Migrate legacy config.json → split files; seed sites on first run
   ensureMigrated(db);
   applySeedFile(db);
 
@@ -63,9 +113,6 @@ async function boot() {
   startScheduler();
   app.listen(PORT, HOST, () => {
     console.log(`[HydroScope] Listening on http://${HOST}:${PORT}`);
-    // Drain any pending waterway pairs 3s after boot (handles already-known pairs).
-    // Topology discovery also triggers its own drain when it completes, so new
-    // CWMS connections get geometry fetched without waiting for the next cron tick.
     setTimeout(drainWaterwayPairs, 3000);
   });
 }

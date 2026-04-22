@@ -105,6 +105,15 @@ router.get('/', (req, res) => {
       activeModel = providerState[activeProvider].model;
     }
 
+    // Overlay per-user AI preference (if user has saved one)
+    if (req.user) {
+      const userAi = db.getUserAiSettings(req.user.id);
+      if (userAi) {
+        if (userAi.provider && providerState[userAi.provider]) activeProvider = userAi.provider;
+        if (userAi.model) activeModel = userAi.model;
+      }
+    }
+
     // ── Scheduler ──────────────────────────────────────────────────────────────
     const globalEnabled  = (dsCfg.scheduler && dsCfg.scheduler.enabled) !== false;
     const serviceConfigs = getAllServiceConfigs();
@@ -164,7 +173,18 @@ router.put('/', (req, res) => {
         }
       }
 
-      if (aiChanged) saveAiConfig(aiCfg);
+      if (aiChanged) {
+        saveAiConfig(aiCfg);
+        // Also persist per-user preference
+        if (req.user) {
+          db.upsertUserAiSettings(req.user.id, {
+            provider: ai.activeProvider || aiCfg.activeProvider,
+            model: ai.providers
+              ? (ai.providers[ai.activeProvider || aiCfg.activeProvider] || {}).model || activeModel
+              : activeModel,
+          });
+        }
+      }
     }
 
     // ── Scheduler settings ─────────────────────────────────────────────────────

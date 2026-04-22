@@ -439,10 +439,33 @@ var _FN_BASIN_COLORS = ['#38bdf8','#a78bfa','#34d399','#fb923c','#f472b6','#facc
     var basins = await r.json();
     if (!Array.isArray(basins)) return;
     _fnBasinOpts = basins.map(function(b) {
-      return { code: b.huc8_code, display: b.huc8_name ? b.huc8_name + ' (' + b.huc8_code + ')' : b.huc8_code };
+      return { code: b.huc8_code,
+               display: b.huc8_name ? b.huc8_name + ' (' + b.huc8_code + ')' : b.huc8_code,
+               name: b.huc8_name || b.huc8_code,
+               is_favorite: !!b.is_favorite };
     });
   } catch (_) {}
 })();
+
+async function _fnToggleFavorite(code, name, ev) {
+  if (ev) ev.stopPropagation();
+  var opt = _fnBasinOpts.find(function(b) { return b.code === code; });
+  if (!opt) return;
+  var wasFav = opt.is_favorite;
+  opt.is_favorite = !wasFav;
+  try {
+    if (wasFav) {
+      await fetch('/api/users/favorites/' + code, { method: 'DELETE' });
+    } else {
+      await fetch('/api/users/favorites/' + code, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ huc8_name: name }) });
+    }
+  } catch (_) { opt.is_favorite = wasFav; }
+  // Refresh the tag for the active basin if it's selected
+  _fnRenderBasinTags();
+  _fnRenderBasinDropdown(document.getElementById('fnBasinInput') ? document.getElementById('fnBasinInput').value : '');
+}
 
 // Return degree-distance between two basin centroids (uses SITES lat/lon).
 function _fnBasinCentroid(code) {
@@ -469,7 +492,7 @@ function _fnGetRecommended(limit) {
     .filter(function(b) { return activeCodes.indexOf(b.code) === -1; })
     .map(function(b) {
       var d = Math.min.apply(null, _fnActiveBasins.map(function(ab) { return _fnBasinDist(ab.code, b.code); }));
-      return { code: b.code, display: b.display, dist: d };
+      return { code: b.code, display: b.display, name: b.name, is_favorite: b.is_favorite, dist: d };
     })
     .filter(function(b) { return isFinite(b.dist); })
     .sort(function(a, b) { return a.dist - b.dist; })
@@ -485,11 +508,14 @@ function _fnBasinFiltered(q) {
 }
 
 function _fnMakeOpt(b, idx) {
+  var star = b.is_favorite
+    ? '<span style="color:#facc15;font-size:13px;margin-right:5px;flex-shrink:0;" title="Remove from favorites" onclick="_fnToggleFavorite(\''+b.code+'\',\''+b.name.replace(/'/g,'&#39;')+'\',event)">★</span>'
+    : '<span style="color:#334155;font-size:13px;margin-right:5px;flex-shrink:0;" title="Add to favorites" onclick="_fnToggleFavorite(\''+b.code+'\',\''+b.name.replace(/'/g,'&#39;')+'\',event)">☆</span>';
   return '<div class="_fn-bopt" data-code="' + b.code + '"'
     + ' onclick="_fnPickBasin(\'' + b.code + '\',\'' + b.display.replace(/'/g, '&#39;') + '\')"'
     + ' onmouseenter="_fnBasinHover(' + idx + ')"'
-    + ' style="padding:7px 12px;font-size:12px;color:#94a3b8;cursor:pointer;">'
-    + b.display + '</div>';
+    + ' style="display:flex;align-items:center;padding:7px 12px;font-size:12px;color:#94a3b8;cursor:pointer;">'
+    + star + '<span>' + b.display + '</span></div>';
 }
 
 function _fnSectionLabel(text) {
@@ -503,7 +529,6 @@ function _fnRenderBasinDropdown(q) {
   _fnBasinHiIdx = -1;
 
   if (q) {
-    // Search mode — flat filtered list
     var hits = _fnBasinFiltered(q);
     if (!hits.length) {
       dd.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#475569;">No matching basins</div>';
@@ -513,15 +538,17 @@ function _fnRenderBasinDropdown(q) {
     return;
   }
 
-  // Empty query — show recommended (if any active) then the rest
-  var recommended = _fnGetRecommended(5);
-  var recCodes    = recommended.map(function(b) { return b.code; });
+  // Empty query — favorites first, then recommended nearby, then all
   var activeCodes = _fnActiveBasins.map(function(b) { return b.code; });
-  var rest        = _fnBasinOpts.filter(function(b) {
-    return activeCodes.indexOf(b.code) === -1 && recCodes.indexOf(b.code) === -1;
-  });
+  var available   = _fnBasinOpts.filter(function(b) { return activeCodes.indexOf(b.code) === -1; });
+  var favs        = available.filter(function(b) { return b.is_favorite; });
+  var nonFavs     = available.filter(function(b) { return !b.is_favorite; });
 
-  if (!recommended.length && !rest.length) {
+  var recommended = _fnGetRecommended(5).filter(function(b) { return !b.is_favorite; });
+  var recCodes    = recommended.map(function(b) { return b.code; });
+  var rest        = nonFavs.filter(function(b) { return recCodes.indexOf(b.code) === -1; });
+
+  if (!available.length) {
     dd.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#475569;">'
       + (_fnBasinOpts.length ? 'All basins already added' : 'No basins — run Basin Geometry sync')
       + '</div>';
@@ -530,6 +557,11 @@ function _fnRenderBasinDropdown(q) {
 
   var html = '';
   var idx  = 0;
+  if (favs.length) {
+    html += _fnSectionLabel('★ Favorites');
+    html += favs.map(function(b) { return _fnMakeOpt(b, idx++); }).join('');
+    html += '<div style="height:1px;background:#1e293b;margin:3px 0;"></div>';
+  }
   if (recommended.length) {
     html += _fnSectionLabel('Suggested nearby');
     html += recommended.map(function(b) { return _fnMakeOpt(b, idx++); }).join('');
@@ -537,6 +569,8 @@ function _fnRenderBasinDropdown(q) {
       html += '<div style="height:1px;background:#1e293b;margin:3px 0;"></div>';
       html += _fnSectionLabel('All basins');
     }
+  } else if (rest.length) {
+    html += _fnSectionLabel('All basins');
   }
   html += rest.slice(0, 60).map(function(b) { return _fnMakeOpt(b, idx++); }).join('');
   dd.innerHTML = html;
@@ -619,11 +653,18 @@ function _fnRenderBasinTags() {
   var container = document.getElementById('fn-basin-tags');
   if (!container) return;
   container.innerHTML = _fnActiveBasins.map(function(b) {
-    var name = b.display.replace(/ \(\d{8}\)$/, '');  // strip code suffix for brevity
-    return '<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 10px;'
+    var name = b.display.replace(/ \(\d{8}\)$/, '');
+    var opt  = _fnBasinOpts.find(function(o) { return o.code === b.code; });
+    var isFav = opt && opt.is_favorite;
+    var starBtn = '<button onclick="_fnToggleFavorite(\'' + b.code + '\',\'' + (opt ? opt.name.replace(/'/g,"&#39;") : b.code) + '\',event)" '
+      + 'title="' + (isFav ? 'Remove favorite' : 'Add to favorites') + '" '
+      + 'style="background:none;border:none;cursor:pointer;padding:0;font-size:12px;line-height:1;'
+      + 'color:' + (isFav ? '#facc15' : b.color) + ';opacity:' + (isFav ? '1' : '0.45') + ';">'
+      + (isFav ? '★' : '☆') + '</button>';
+    return '<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px 3px 10px;'
       + 'border-radius:20px;border:1px solid ' + b.color + '44;background:' + b.color + '18;'
       + 'color:' + b.color + ';font-size:11px;font-weight:500;white-space:nowrap;">'
-      + name
+      + name + starBtn
       + '<button onclick="_fnRemoveBasin(\'' + b.code + '\')" '
       + 'style="background:none;border:none;color:' + b.color + ';cursor:pointer;padding:0;'
       + 'font-size:13px;line-height:1;opacity:0.7;" onmouseover="this.style.opacity=\'1\'" onmouseout="this.style.opacity=\'0.7\'">'

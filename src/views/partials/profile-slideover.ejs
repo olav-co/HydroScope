@@ -146,7 +146,8 @@ var profileSO = (function() {
     if (nameEl) nameEl.textContent = _data.name || 'Profile';
     if (hdrNameEl) hdrNameEl.textContent = _data.name || 'User Profile';
     var roleLbl = (_data.role || '').replace(/_/g,' ');
-    var subLbl  = (_data.sub_role || '').replace(/_/g,' ');
+    var subs    = Array.isArray(_data.sub_role) ? _data.sub_role : (_data.sub_role ? [_data.sub_role] : []);
+    var subLbl  = subs.map(function(s){ return s.replace(/_/g,' '); }).join(', ');
     var fullLbl = subLbl ? roleLbl + ' · ' + subLbl : roleLbl;
     var roleEls = [document.getElementById('profile-so-role'), document.getElementById('pso-hdr-role')];
     roleEls.forEach(function(el){ if(el) el.textContent = fullLbl; });
@@ -193,22 +194,32 @@ function _tabRole() {
         + '</div>';
       // Sub-specializations expand inline when this role is active
       if (active && r.sub_roles && r.sub_roles.length) {
-        html += '<div style="border-top:1px solid rgba(14,165,233,0.15);padding:10px 12px 12px;display:flex;flex-direction:column;gap:6px;" onclick="event.stopPropagation();">';
+        var activeSubs = Array.isArray(_data.sub_role) ? _data.sub_role : (_data.sub_role ? [_data.sub_role] : []);
+        var atMax = activeSubs.length >= 3;
+        html += '<div style="border-top:1px solid rgba(14,165,233,0.15);padding:10px 12px 12px;" onclick="event.stopPropagation();">';
+        html += '<div style="font-size:10px;color:#475569;margin-bottom:8px;">Pick up to 3 specializations'
+          + (atMax ? ' <span style="color:#f59e0b;">(max reached)</span>' : '')
+          + '</div>';
+        html += '<div style="display:flex;flex-direction:column;gap:6px;">';
         r.sub_roles.forEach(function(sr) {
-          var srActive = (_data.sub_role === sr.id);
-          html += '<div onclick="profileSO._selectSubRole(\''+sr.id+'\')" '
-            + 'style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;cursor:pointer;'
+          var srActive = activeSubs.indexOf(sr.id) !== -1;
+          var disabled = !srActive && atMax;
+          html += '<div onclick="'+(disabled?'':'profileSO._selectSubRole(\''+sr.id+'\')')+'" '
+            + 'style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;'
+            + 'cursor:'+(disabled?'default':'pointer')+';'
+            + 'opacity:'+(disabled?'0.38':'1')+';'
             + 'background:'+(srActive?'rgba(14,165,233,0.12)':'rgba(255,255,255,0.02)')+';'
             + 'border:1px solid '+(srActive?'rgba(14,165,233,0.35)':'rgba(255,255,255,0.04)')+';'
             + 'transition:background 0.12s;">'
-            + '<div style="width:8px;height:8px;border-radius:50%;flex-shrink:0;'
+            + '<div style="width:8px;height:8px;border-radius:2px;flex-shrink:0;'
             + 'background:'+(srActive?'#0ea5e9':'transparent')+';'
             + 'border:1.5px solid '+(srActive?'#0ea5e9':'#334155')+';">'
+            + (srActive ? '<svg width="6" height="6" viewBox="0 0 6 6" style="display:block;margin:0 auto;"><polyline points="1,3 2.5,4.5 5,1.5" stroke="#fff" stroke-width="1.2" fill="none"/></svg>' : '')
             + '</div>'
             + '<span style="font-size:11px;color:'+(srActive?'#e2e8f0':'#94a3b8')+';">'+_esc(sr.label)+'</span>'
             + '</div>';
         });
-        html += '</div>';
+        html += '</div></div>';
       }
       html += '</div>';
     });
@@ -260,14 +271,21 @@ function _tabRole() {
   function _selectRole(key) {
     if (_data.role !== key) {
       _data.role     = key;
-      _data.sub_role = '';
+      _data.sub_role = [];
       _scheduleSave();
     }
     _render();
   }
 
   function _selectSubRole(id) {
-    _data.sub_role = (_data.sub_role === id) ? '' : id; // toggle off if clicked again
+    var arr = Array.isArray(_data.sub_role) ? _data.sub_role.slice() : (_data.sub_role ? [_data.sub_role] : []);
+    var idx = arr.indexOf(id);
+    if (idx !== -1) {
+      arr.splice(idx, 1);  // deselect
+    } else if (arr.length < 3) {
+      arr.push(id);        // select (max 3)
+    }
+    _data.sub_role = arr;
     _scheduleSave();
     _render();
   }
@@ -320,7 +338,7 @@ function _tabRole() {
         name:              _data.name         || '',
         organization:      _data.organization || '',
         role:              _data.role         || 'general',
-        sub_role:          _data.sub_role     || '',
+        sub_role:          Array.isArray(_data.sub_role) ? _data.sub_role : (_data.sub_role ? [_data.sub_role] : []),
         interests:         Array.isArray(_data.interests) ? _data.interests : [],
         preferred_sites:   Array.isArray(_data.preferred_sites) ? _data.preferred_sites : [],
         bio:               _data.bio          || '',

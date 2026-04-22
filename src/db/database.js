@@ -26,6 +26,7 @@ function initDatabase() {
   try { db.exec(`ALTER TABLE fetch_log ADD COLUMN source TEXT NOT NULL DEFAULT 'usgs'`); } catch (_) {}
   try { db.exec(`ALTER TABLE sites ADD COLUMN huc8_code TEXT`); } catch (_) {}
   try { db.exec(`ALTER TABLE sites ADD COLUMN huc8_name TEXT`); } catch (_) {}
+  try { db.exec(`ALTER TABLE user_profile ADD COLUMN user_id INTEGER`); } catch (_) {}
 
   // ── Phase 2: apply schema (CREATE TABLE/INDEX IF NOT EXISTS — safe on existing DB)
   const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
@@ -590,11 +591,22 @@ function deleteWQPermitLimit(id) {
 
 // ── User Profile ─────────────────────────────────────────────────────────────
 
-function getProfile() {
-  return getDb().prepare('SELECT * FROM user_profile WHERE id = 1').get();
+function getProfile(userId) {
+  const db = getDb();
+  if (userId) {
+    let row = db.prepare('SELECT * FROM user_profile WHERE user_id = ?').get(userId);
+    if (!row) {
+      // Create a fresh profile row for this user
+      db.prepare(`INSERT INTO user_profile (user_id, role) VALUES (?, 'general')`).run(userId);
+      row = db.prepare('SELECT * FROM user_profile WHERE user_id = ?').get(userId);
+    }
+    return row;
+  }
+  // Fallback for legacy callers: return row with id=1
+  return db.prepare('SELECT * FROM user_profile WHERE id = 1').get();
 }
 
-function updateProfile(fields) {
+function updateProfile(userId, fields) {
   const db = getDb();
   const allowed = ['name', 'organization', 'role', 'sub_role', 'interests',
                    'preferred_sites', 'bio', 'notify_thresholds'];
@@ -603,8 +615,15 @@ function updateProfile(fields) {
     .map(k => `${k} = @${k}`)
     .join(', ');
   if (!updates) return;
-  db.prepare(`UPDATE user_profile SET ${updates}, updated_at = CURRENT_TIMESTAMP WHERE id = 1`)
-    .run(fields);
+  if (userId) {
+    // Ensure the row exists first
+    getProfile(userId);
+    db.prepare(`UPDATE user_profile SET ${updates}, updated_at = CURRENT_TIMESTAMP WHERE user_id = @_uid`)
+      .run({ ...fields, _uid: userId });
+  } else {
+    db.prepare(`UPDATE user_profile SET ${updates}, updated_at = CURRENT_TIMESTAMP WHERE id = 1`)
+      .run(fields);
+  }
 }
 
 // ── Insights Cache ────────────────────────────────────────────────────────────
@@ -763,6 +782,80 @@ function getSitesMissingHuc() {
   `).all();
 }
 
+// ── Users ─────────────────────────────────────────────────────────────────────
+
+function findOrCreateUser(username) {
+  const db = getDb();
+  const trimmed = (username || '').trim();
+  if (!trimmed) throw new Error('Username cannot be empty');
+  let user = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(trimmed);
+  if (!user) {
+    const info = db.prepare('INSERT INTO users (username) VALUES (?)').run(trimmed);
+    user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+  }
+  db.prepare('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?').run(user.id);
+  return user;
+}
+
+function getUserById(id) {
+  return getDb().prepare('SELECT * FROM users WHERE id = ?').get(id);
+}
+
+function getAllUsers() {
+  return getDb().prepare('SELECT id, username, created_at, last_login FROM users ORDER BY username').all();
+}
+
+// ── User AI Settings ──────────────────────────────────────────────────────────
+
+function getUserAiSettings(userId) {
+  return getDb().prepare('SELECT * FROM user_ai_settings WHERE user_id = ?').get(userId);
+}
+
+function upsertUserAiSettings(userId, { provider, model }) {
+  getDb().prepare(`
+    INSERT INTO user_ai_settings (user_id, provider, model, updated_at)
+    VALUES (@user_id, @provider, @model, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id) DO UPDATE SET
+      provider   = excluded.provider,
+      model      = excluded.model,
+      updated_at = CURRENT_TIMESTAMP
+  `).run({ user_id: userId, provider: provider || null, model: model || null });
+}
+
+// ── User Favorite Basins ──────────────────────────────────────────────────────
+
+function getUserFavoriteBasins(userId) {
+  return getDb().prepare(`
+    SELECT huc8_code, huc8_name, added_at FROM user_favorite_basins
+    WHERE user_id = ? ORDER BY huc8_name
+  `).all(userId);
+}
+
+function addUserFavoriteBasin(userId, huc8Code, huc8Name) {
+  getDb().prepare(`
+    INSERT OR IGNORE INTO user_favorite_basins (user_id, huc8_code, huc8_name)
+    VALUES (?, ?, ?)
+  `).run(userId, huc8Code, huc8Name || null);
+}
+
+function removeUserFavoriteBasin(userId, huc8Code) {
+  getDb().prepare('DELETE FROM user_favorite_basins WHERE user_id = ? AND huc8_code = ?').run(userId, huc8Code);
+}
+
+function getDistinctBasinsForUser(userId) {
+  const db = getDb();
+  const basins = db.prepare(`
+    SELECT DISTINCT huc8_code, huc8_name, COUNT(*) AS site_count
+    FROM sites WHERE huc8_code IS NOT NULL
+    GROUP BY huc8_code ORDER BY huc8_name
+  `).all();
+  if (!userId) return basins.map(b => ({ ...b, is_favorite: false }));
+  const favSet = new Set(
+    db.prepare('SELECT huc8_code FROM user_favorite_basins WHERE user_id = ?').all(userId).map(r => r.huc8_code)
+  );
+  return basins.map(b => ({ ...b, is_favorite: favSet.has(b.huc8_code) }));
+}
+
 module.exports = {
   initDatabase, getDb,
   upsertSite, getAllSites, getSiteById, getActiveSites, setSiteEnabled, deleteSite,
@@ -780,5 +873,8 @@ module.exports = {
   getProfile, updateProfile,
   getCachedInsight, saveInsight, getRecentInsights,
   logFetch, getLastFetch, getFetchHistory, getSystemStatus,
-  getDistinctBasins, getCachedBasinPolygon, upsertBasinPolygon, updateSiteHuc, getSitesMissingHuc,
+  getDistinctBasins, getDistinctBasinsForUser, getCachedBasinPolygon, upsertBasinPolygon, updateSiteHuc, getSitesMissingHuc,
+  findOrCreateUser, getUserById, getAllUsers,
+  getUserAiSettings, upsertUserAiSettings,
+  getUserFavoriteBasins, addUserFavoriteBasin, removeUserFavoriteBasin,
 };

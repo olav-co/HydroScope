@@ -175,6 +175,33 @@ CREATE TABLE IF NOT EXISTS waterway_paths (
 CREATE INDEX IF NOT EXISTS idx_wp_from ON waterway_paths(from_site_id);
 CREATE INDEX IF NOT EXISTS idx_wp_to   ON waterway_paths(to_site_id);
 
+-- Users (username-only, no passwords)
+CREATE TABLE IF NOT EXISTS users (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  username    TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  last_login  DATETIME
+);
+
+-- Per-user AI provider + model preference
+CREATE TABLE IF NOT EXISTS user_ai_settings (
+  user_id    INTEGER NOT NULL PRIMARY KEY,
+  provider   TEXT,
+  model      TEXT,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Per-user favorite basins
+CREATE TABLE IF NOT EXISTS user_favorite_basins (
+  user_id    INTEGER NOT NULL,
+  huc8_code  TEXT    NOT NULL,
+  huc8_name  TEXT,
+  added_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, huc8_code),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- App metadata / migration version tracking
 CREATE TABLE IF NOT EXISTS app_meta (
   key   TEXT PRIMARY KEY,
