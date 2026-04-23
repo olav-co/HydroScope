@@ -72,7 +72,7 @@
   <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);flex-shrink:0;">
     <div>
       <h1 class="text-lg font-semibold text-white">Doppler Radar</h1>
-      <p class="text-xs text-slate-400 mt-0.5">RainViewer precipitation radar — Portland watershed · updated every 10 min</p>
+      <p class="text-xs text-slate-400 mt-0.5">RainViewer precipitation radar — your monitoring region · updated every 10 min</p>
     </div>
     <div class="flex items-center gap-3">
       <label class="flex items-center gap-2 text-xs text-slate-400 select-none">
@@ -430,7 +430,7 @@ async function runAiAnalysis() {
     var isNow  = _rvIdx >= _pastCount;
     radarNote  = 'Viewing ' + (isNow ? 'nowcast' : 'past radar') + ' frame from ' + fmtTs(frame.time) + '. ';
     radarNote += 'Total frames available: ' + _rvFrames.length + ' (' + _pastCount + ' past, ' + (_rvFrames.length - _pastCount) + ' nowcast). ';
-    radarNote += 'Region: Portland/Willamette Valley watershed, Pacific Northwest, Oregon.';
+    radarNote += 'The radar covers the geographic area of the configured monitoring sites.';
   } else {
     radarNote = 'Radar imagery currently unavailable — analyze stream gauge data only and note the radar data gap.';
   }

@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS sites (
   latitude    REAL,
   longitude   REAL,
   description TEXT,
+  comid       TEXT,                              -- NHD COMID for NLDI-based pairing
+  office      TEXT,                              -- Corps district code for CWMS sites (e.g. "LRN")
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_sites_source_enabled ON sites(source, enabled);
@@ -144,6 +146,26 @@ CREATE INDEX IF NOT EXISTS idx_ann_site     ON event_annotations(site_id, annota
 CREATE INDEX IF NOT EXISTS idx_ann_time     ON event_annotations(annotated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ann_category ON event_annotations(category);
 
+-- Official thresholds cached from USGS WaterWatch, USGS Statistics, and other authoritative sources
+CREATE TABLE IF NOT EXISTS site_thresholds (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  site_id      TEXT    NOT NULL,
+  param_code   TEXT    NOT NULL,
+  threshold_id TEXT    NOT NULL,
+  label        TEXT    NOT NULL,
+  value        REAL    NOT NULL,
+  unit         TEXT,
+  source       TEXT    NOT NULL,           -- e.g. 'USGS WaterWatch', 'USGS Statistics'
+  source_label TEXT,                       -- human-readable source note for tooltip
+  type         TEXT    NOT NULL DEFAULT 'max_advisory',
+  color        TEXT    DEFAULT '#ef4444',
+  category     TEXT    NOT NULL DEFAULT 'official',  -- 'official' | 'seasonal'
+  fetched_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(site_id, param_code, threshold_id),
+  FOREIGN KEY (site_id) REFERENCES sites(site_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_site_thresholds ON site_thresholds(site_id, param_code);
+
 -- Water quality permit limits (configurable per site/parameter)
 CREATE TABLE IF NOT EXISTS wq_permit_limits (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -242,6 +264,24 @@ CREATE TABLE IF NOT EXISTS site_group_members (
   FOREIGN KEY (site_id)  REFERENCES sites(site_id)  ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sgm_site ON site_group_members(site_id);
+
+-- CWMS → USGS station number aliases from CDA Agency Aliases location group.
+-- Populated at boot and when new CWMS offices are discovered.
+CREATE TABLE IF NOT EXISTS cwms_usgs_aliases (
+  cwms_id    TEXT    PRIMARY KEY,   -- CDA location-id (e.g. "Cheatham-TW")
+  usgs_id    TEXT    NOT NULL,      -- USGS station number (e.g. "03431500")
+  office     TEXT,                  -- Corps district (e.g. "LRN")
+  fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_alias_usgs   ON cwms_usgs_aliases(usgs_id);
+CREATE INDEX IF NOT EXISTS idx_alias_office ON cwms_usgs_aliases(office);
+
+-- Tracks which Corps offices have had their aliases fetched and when.
+CREATE TABLE IF NOT EXISTS cwms_alias_offices (
+  office       TEXT    PRIMARY KEY,
+  fetched_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+  alias_count  INTEGER DEFAULT 0
+);
 
 -- App metadata / migration version tracking
 CREATE TABLE IF NOT EXISTS app_meta (

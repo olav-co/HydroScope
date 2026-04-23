@@ -2,21 +2,55 @@
  * Open-Meteo weather service.
  * No API key required. https://open-meteo.com/
  *
- * Three locations give watershed coverage for the Portland region:
- *   portland  — general regional conditions, urban core
- *   mt_hood   — upper Cascades snowpack/melt; drives Sandy & Clackamas
- *   bull_run  — Bull Run watershed; Portland's drinking water source
+ * Weather monitoring locations are derived dynamically from the active sites
+ * configured in the database. Sites within ~1.5 degrees of each other are
+ * clustered into a single fetch location to avoid redundant API calls.
  */
 
 const axios = require('axios');
 
 const BASE_URL = 'https://api.open-meteo.com/v1/forecast';
 
-var WEATHER_LOCATIONS = [
-  { id: 'portland', name: 'Portland',              lat: 45.5231, lon: -122.6765 },
-  { id: 'mt_hood',  name: 'Mt. Hood / Upper Cascades', lat: 45.3735, lon: -121.6960 },
-  { id: 'bull_run', name: 'Bull Run Watershed',    lat: 45.4748, lon: -122.1515 },
-];
+/**
+ * Build weather fetch locations from active sites in the DB.
+ * Clusters sites within 1.5 degrees (roughly 100 miles) into one location.
+ * Returns [{id, name, lat, lon}].
+ */
+function deriveWeatherLocations() {
+  try {
+    var db = require('../db/database');
+    var sites = db.getActiveSites().filter(function(s) { return s.latitude && s.longitude; });
+    if (!sites.length) return [];
+
+    var clusters = [];
+    sites.forEach(function(site) {
+      var placed = false;
+      for (var ci = 0; ci < clusters.length; ci++) {
+        var c = clusters[ci];
+        var d = Math.sqrt(Math.pow(site.latitude - c.lat, 2) + Math.pow(site.longitude - c.lon, 2));
+        if (d < 1.5) {
+          c.members.push(site);
+          c.lat = c.members.reduce(function(s, x) { return s + x.latitude; },  0) / c.members.length;
+          c.lon = c.members.reduce(function(s, x) { return s + x.longitude; }, 0) / c.members.length;
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) clusters.push({ lat: site.latitude, lon: site.longitude, members: [site] });
+    });
+
+    return clusters.map(function(c) {
+      // Prefer basin name → site name → generic fallback
+      var named = c.members.find(function(s) { return s.huc8_name; });
+      var name  = (named && named.huc8_name) || c.members[0].name || 'Monitoring Region';
+      // Stable ID from rounded centroid (sign-aware so east/west don't collide)
+      var id = 'wx_' + Math.round(c.lat * 10) + '_' + Math.round(c.lon * 10);
+      return { id: id, name: name, lat: c.lat, lon: c.lon };
+    });
+  } catch (_) {
+    return [];
+  }
+}
 
 // Convert Open-Meteo hourly timestamp "2024-04-15T10:00" → "2024-04-15 10:00:00"
 function fmtHour(t) { return t.replace('T', ' ') + ':00'; }
@@ -31,10 +65,14 @@ function isNullish(v) { return v === null || v === undefined; }
  */
 async function fetchWeatherData() {
   var rows = [];
-  var now = new Date().toISOString();
+  var locations = deriveWeatherLocations();
+  if (!locations.length) {
+    console.log('[Weather] No active sites with coordinates — skipping weather fetch.');
+    return rows;
+  }
 
-  for (var i = 0; i < WEATHER_LOCATIONS.length; i++) {
-    var loc = WEATHER_LOCATIONS[i];
+  for (var i = 0; i < locations.length; i++) {
+    var loc = locations[i];
     try {
       var resp = await axios.get(BASE_URL, {
         params: {
@@ -44,7 +82,7 @@ async function fetchWeatherData() {
           daily:              'precipitation_sum,temperature_2m_max,temperature_2m_min,snowfall_sum',
           forecast_days:      7,
           past_days:          7,
-          timezone:           'America/Los_Angeles',
+          timezone:           'auto',
           temperature_unit:   'fahrenheit',
           precipitation_unit: 'inch',
         },
@@ -169,16 +207,21 @@ function buildWeatherContext(weatherRows) {
     }
   });
 
-  // Current Portland temp
-  var portlandRows = byLoc['portland'] && byLoc['portland'].rows || [];
-  var tempRows = portlandRows.filter(function(r) { return r.parameter === 'temperature' && !r.is_forecast; });
-  if (tempRows.length) {
-    tempRows.sort(function(a, b) { return b.recorded_at.localeCompare(a.recorded_at); });
-    ctx += '\nCurrent Portland air temp: ' + tempRows[0].value.toFixed(1) + '°F\n';
+  // Current air temp — use whichever location has the most recent reading
+  var allTempRows = [];
+  Object.keys(byLoc).forEach(function(locId) {
+    byLoc[locId].rows.forEach(function(r) {
+      if (r.parameter === 'temperature' && !r.is_forecast) allTempRows.push(r);
+    });
+  });
+  if (allTempRows.length) {
+    allTempRows.sort(function(a, b) { return b.recorded_at.localeCompare(a.recorded_at); });
+    var latestTemp = allTempRows[0];
+    ctx += '\nCurrent air temp (' + latestTemp.location_name + '): ' + latestTemp.value.toFixed(1) + '°F\n';
   }
 
   ctx += '---\n';
   return ctx;
 }
 
-module.exports = { fetchWeatherData, buildWeatherContext, WEATHER_LOCATIONS };
+module.exports = { fetchWeatherData, buildWeatherContext, deriveWeatherLocations };

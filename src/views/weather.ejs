@@ -5,7 +5,7 @@
   <header class="flex items-center justify-between px-6 py-4 border-b border-slate-800" style="background:rgba(15,23,42,0.6);">
     <div>
       <h1 class="text-lg font-semibold text-white">Weather Data</h1>
-      <p class="text-xs text-slate-400 mt-0.5">Open-Meteo upstream precipitation &amp; temperature — Portland watershed</p>
+      <p class="text-xs text-slate-400 mt-0.5">Open-Meteo precipitation &amp; temperature — locations derived from your monitored sites</p>
     </div>
     <div class="flex items-center gap-2">
       <span class="text-xs px-2 py-1 rounded" style="background:rgba(14,165,233,0.1);color:#38bdf8;border:1px solid rgba(14,165,233,0.2);">Open-Meteo · No API key</span>
@@ -20,9 +20,7 @@
         <div style="flex:1;min-width:160px;">
           <label class="label">Location</label>
           <select id="locSelect" class="input">
-            <option value="portland">Portland</option>
-            <option value="bull_run">Bull Run Watershed</option>
-            <option value="mt_hood">Mt. Hood / Upper Cascades</option>
+            <option value="">Loading locations…</option>
           </select>
         </div>
         <div style="flex:1;min-width:200px;">
@@ -354,8 +352,21 @@ async function loadChart() {
   document.getElementById('tableCard').style.display = 'block';
 }
 
-// Auto-load on open
-window.addEventListener('DOMContentLoaded', loadChart);
+// Populate location dropdown from DB, then auto-load
+window.addEventListener('DOMContentLoaded', async function() {
+  var sel = document.getElementById('locSelect');
+  try {
+    var r = await fetch('/api/data/weather/locations');
+    var j = await r.json();
+    var locs = (j.ok && j.locations) || [];
+    sel.innerHTML = locs.length
+      ? locs.map(function(l) { return '<option value="' + l.location_id + '">' + l.location_name + '</option>'; }).join('')
+      : '<option value="">No weather data yet</option>';
+  } catch (_) {
+    sel.innerHTML = '<option value="">Could not load locations</option>';
+  }
+  if (sel.value) loadChart();
+});
 </script>
 
 <%- include('partials/foot') %>

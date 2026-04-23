@@ -28,6 +28,9 @@ function initDatabase() {
   try { db.exec(`ALTER TABLE sites ADD COLUMN huc8_name TEXT`); } catch (_) {}
   try { db.exec(`ALTER TABLE user_profile ADD COLUMN user_id INTEGER`); } catch (_) {}
   try { db.exec(`ALTER TABLE sites ADD COLUMN parent_site_id TEXT`); } catch (_) {}
+  try { db.exec(`ALTER TABLE sites ADD COLUMN comid TEXT`); } catch (_) {}
+  try { db.exec(`ALTER TABLE sites ADD COLUMN office TEXT`); } catch (_) {}
+  // cwms_usgs_aliases and cwms_alias_offices created via schema.sql (IF NOT EXISTS)
   try { db.exec(`ALTER TABLE basins ADD COLUMN centroid_lat REAL`); } catch (_) {}
   try { db.exec(`ALTER TABLE basins ADD COLUMN centroid_lon REAL`); } catch (_) {}
   try { db.exec(`ALTER TABLE basins ADD COLUMN bbox_minlon REAL`); } catch (_) {}
@@ -85,13 +88,13 @@ function initDatabase() {
 
 // ── Sites ────────────────────────────────────────────────────────────────────
 
-function upsertSite({ site_id, name, type, source, latitude, longitude, description, huc8_code, huc8_name }) {
+function upsertSite({ site_id, name, type, source, latitude, longitude, description, huc8_code, huc8_name, office }) {
   const db = getDb();
   // NOTE: `enabled` is intentionally excluded from the ON CONFLICT update —
   // we never want an automated re-seed to re-enable a site the user disabled.
   db.prepare(`
-    INSERT INTO sites (site_id, name, type, source, latitude, longitude, description, huc8_code, huc8_name, enabled)
-    VALUES (@site_id, @name, @type, @source, @latitude, @longitude, @description, @huc8_code, @huc8_name, 1)
+    INSERT INTO sites (site_id, name, type, source, latitude, longitude, description, huc8_code, huc8_name, office, enabled)
+    VALUES (@site_id, @name, @type, @source, @latitude, @longitude, @description, @huc8_code, @huc8_name, @office, 1)
     ON CONFLICT(site_id) DO UPDATE SET
       name        = excluded.name,
       type        = excluded.type,
@@ -100,12 +103,14 @@ function upsertSite({ site_id, name, type, source, latitude, longitude, descript
       longitude   = excluded.longitude,
       description = excluded.description,
       huc8_code   = COALESCE(excluded.huc8_code, sites.huc8_code),
-      huc8_name   = COALESCE(excluded.huc8_name, sites.huc8_name)
+      huc8_name   = COALESCE(excluded.huc8_name, sites.huc8_name),
+      office      = COALESCE(excluded.office, sites.office)
   `).run({
     site_id, name, type: type || 'river', source: source || 'usgs',
     latitude: latitude || null, longitude: longitude || null,
     description: description || null,
     huc8_code: huc8_code || null, huc8_name: huc8_name || null,
+    office: office || null,
   });
 }
 
@@ -132,6 +137,49 @@ function setSiteEnabled(siteId, enabled) {
 
 function deleteSite(siteId) {
   getDb().prepare('DELETE FROM sites WHERE site_id = ?').run(siteId);
+}
+
+function setSiteComid(siteId, comid) {
+  getDb().prepare('UPDATE sites SET comid = ? WHERE site_id = ?').run(comid || null, siteId);
+}
+
+function updateSiteCoords(siteId, lat, lon) {
+  getDb().prepare('UPDATE sites SET latitude = ?, longitude = ? WHERE site_id = ?').run(lat, lon, siteId);
+}
+
+// ── CWMS ↔ USGS alias table ───────────────────────────────────────────────────
+
+function upsertCwmsUsgsAliases(rows) {
+  // rows: [{ cwmsId, usgsId, office }]
+  const stmt = getDb().prepare(`
+    INSERT OR REPLACE INTO cwms_usgs_aliases (cwms_id, usgs_id, office, fetched_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+  `);
+  const tx = getDb().transaction(rows => { for (const r of rows) stmt.run(r.cwmsId, r.usgsId, r.office || null); });
+  tx(rows);
+}
+
+function getCwmsUsgsAlias(cwmsId) {
+  return getDb().prepare('SELECT usgs_id FROM cwms_usgs_aliases WHERE cwms_id = ?').get(cwmsId)?.usgs_id || null;
+}
+
+function getAllCwmsUsgsAliases() {
+  return getDb().prepare('SELECT cwms_id, usgs_id, office FROM cwms_usgs_aliases').all();
+}
+
+function getAliasFetchedAt(office) {
+  return getDb().prepare('SELECT fetched_at FROM cwms_alias_offices WHERE office = ?').get(office)?.fetched_at || null;
+}
+
+function markAliasFetched(office, count) {
+  getDb().prepare(`
+    INSERT OR REPLACE INTO cwms_alias_offices (office, fetched_at, alias_count)
+    VALUES (?, CURRENT_TIMESTAMP, ?)
+  `).run(office, count);
+}
+
+function getDistinctCwmsOffices() {
+  return getDb().prepare(`SELECT DISTINCT office FROM cwms_usgs_aliases`).all().map(r => r.office).filter(Boolean);
 }
 
 // ── Site Timeseries (CWMS CDA fetch scheduling) ───────────────────────────────
@@ -270,6 +318,13 @@ function insertWeatherReadings(rows) {
     return count;
   });
   return insertMany(rows);
+}
+
+function getDistinctWeatherLocations() {
+  return getDb().prepare(
+    `SELECT DISTINCT location_id, location_name, latitude, longitude
+     FROM weather_readings ORDER BY location_name`
+  ).all();
 }
 
 function getRecentWeather(hours = 72) {
@@ -571,6 +626,45 @@ function updateAnnotation(id, { category, label, note, annotated_at }) {
 
 function deleteAnnotation(id) {
   return getDb().prepare('DELETE FROM event_annotations WHERE id = ?').run(id).changes;
+}
+
+// ── Official / Seasonal Thresholds ───────────────────────────────────────────
+
+function getOfficialThresholds(siteId, paramCode) {
+  return getDb().prepare(`
+    SELECT * FROM site_thresholds
+    WHERE site_id = ? AND param_code = ?
+    ORDER BY category DESC, value DESC
+  `).all(siteId, paramCode);
+}
+
+function upsertOfficialThreshold(siteId, paramCode, t) {
+  getDb().prepare(`
+    INSERT INTO site_thresholds
+      (site_id, param_code, threshold_id, label, value, unit, source, source_label, type, color, category, fetched_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(site_id, param_code, threshold_id) DO UPDATE SET
+      label=excluded.label, value=excluded.value, unit=excluded.unit,
+      source=excluded.source, source_label=excluded.source_label,
+      type=excluded.type, color=excluded.color, category=excluded.category,
+      fetched_at=CURRENT_TIMESTAMP
+  `).run(
+    siteId, paramCode, t.threshold_id, t.label, t.value,
+    t.unit || null, t.source, t.source_label || null,
+    t.type, t.color, t.category || 'official'
+  );
+}
+
+function clearOfficialThresholds(siteId, paramCode) {
+  getDb().prepare('DELETE FROM site_thresholds WHERE site_id = ? AND param_code = ?').run(siteId, paramCode);
+}
+
+// ── Site param codes (what parameters actually have recorded data) ─────────────
+
+function getSiteParamCodes(siteId) {
+  return getDb().prepare(
+    `SELECT DISTINCT parameter_code, parameter_name FROM measurements WHERE site_id = ? ORDER BY parameter_code`
+  ).all(siteId);
 }
 
 // ── WQ Permit Limits ──────────────────────────────────────────────────────────
@@ -1241,17 +1335,18 @@ function getTimeSeriesForSites(siteIds, parameterCode, hours = 168) {
 
 module.exports = {
   initDatabase, getDb,
-  upsertSite, getAllSites, getSiteById, getActiveSites, setSiteEnabled, deleteSite,
+  upsertSite, getAllSites, getSiteById, getActiveSites, setSiteEnabled, deleteSite, setSiteComid, updateSiteCoords,
   getSiteTimeseries, replaceSiteTimeseries, getAllSitesWithTimeseries,
   getSeedApplied, markSeedApplied,
-  insertMeasurements, getLatestReadings, getTimeSeriesForSite,
+  insertMeasurements, getLatestReadings, getTimeSeriesForSite, getSiteParamCodes,
   getRecentForAI, getCompareData,
-  insertWeatherReadings, getRecentWeather, getWeatherForecast, getWeatherForChart,
+  insertWeatherReadings, getDistinctWeatherLocations, getRecentWeather, getWeatherForecast, getWeatherForChart,
   getMeasurementRecords, getWeatherRecords,
   getMeasurementSeries, getWeatherSeries,
   getSiteConnections, createSiteConnection, deleteSiteConnection, syncNLDIConnections, syncCWMSConnections, getLastNLDISync,
   getWaterwayPaths, upsertWaterwayPath, getPendingWaterwayPairs, getAllWaterwayConnectionPairs,
   getAnnotations, createAnnotation, updateAnnotation, deleteAnnotation,
+  getOfficialThresholds, upsertOfficialThreshold, clearOfficialThresholds,
   getWQPermitLimits, upsertWQPermitLimit, deleteWQPermitLimit,
   getProfile, updateProfile,
   getCachedInsight, saveInsight, getRecentInsights,
@@ -1264,6 +1359,8 @@ module.exports = {
   getUserFavoriteBasins, addUserFavoriteBasin, removeUserFavoriteBasin,
   createCombinedSite, clearCombinedSites, addSiteSource, setParentSite,
   getSiteChildren, setSiteSourceEnabled, getTimeSeriesForSites,
+  upsertCwmsUsgsAliases, getCwmsUsgsAlias, getAllCwmsUsgsAliases,
+  getAliasFetchedAt, markAliasFetched, getDistinctCwmsOffices,
   getGroupsForUser, getGroupById, getGroupMembers, createGroup, updateGroup, deleteGroup, setGroupMembers,
   publishGroup, getPublishedGroups, saveGroupCopy, syncGroupFromSource,
 };

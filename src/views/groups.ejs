@@ -265,7 +265,7 @@
     <input id="modal-name" type="text"
       class="w-full rounded-lg px-3 py-2 text-sm mb-4"
       style="background:#0f172a;border:1px solid #334155;color:#e2e8f0;outline:none;"
-      placeholder="e.g. Sandy Watershed" maxlength="80"
+      placeholder="e.g. Upper Watershed Sites" maxlength="80"
       onkeydown="if(event.key==='Enter')createGroup()"/>
     <label class="text-xs text-slate-400 block mb-2">Color</label>
     <div id="modal-color-picker" class="flex flex-wrap gap-2 mb-5"></div>
@@ -317,7 +317,7 @@ function initMap() {
     container: 'grp-map',
     style: {
       version: 8,
-      glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+      glyphs: 'https://fonts.openmaptiles.org/{fontstack}/{range}.pbf',
       sources: {
         'base': {
           type: 'raster',
@@ -427,9 +427,30 @@ function onMapLoad() {
   _map.on('mouseleave','sites-dim', hideMapTip);
   _map.on('mouseleave','sites-in',  hideMapTip);
 
-  // click to toggle
-  _map.on('click', 'sites-dim', function(e) { toggleSite(e.features[0].properties.id); });
-  _map.on('click', 'sites-in',  function(e) { toggleSite(e.features[0].properties.id); });
+  // click to toggle — single dedup guard prevents MapLibre firing both layer
+  // handlers in one tick (after setData updates the source mid-event sequence)
+  var _lastClickId = '', _lastClickAt = 0;
+  function _onSiteClick(e) {
+    if (!e.features || !e.features.length) return;
+    var rawId = e.features[0].properties.id;
+    // MapLibre's internal MVT serialisation can coerce numeric-string site IDs
+    // (e.g. "03431790") into JS numbers (3431790), breaking strict Set equality
+    // and the dedup guard below.  Recover the canonical site_id from SITES:
+    // first try exact match, then numeric match for digit-only IDs.
+    var site = SITES.find(function(s) {
+      return s.site_id === rawId ||
+             (typeof rawId === 'number' && /^\d+$/.test(s.site_id) &&
+              Number(s.site_id) === rawId);
+    });
+    var id  = site ? site.site_id : String(rawId);
+    var now = Date.now();
+    if (id === _lastClickId && now - _lastClickAt < 200) return;
+    _lastClickId = id;
+    _lastClickAt = now;
+    toggleSite(id);
+  }
+  _map.on('click', 'sites-dim', _onSiteClick);
+  _map.on('click', 'sites-in',  _onSiteClick);
 
   _map.getCanvas().style.cursor = '';
   _map.on('mouseenter','sites-dim', function() { _map.getCanvas().style.cursor='pointer'; });
@@ -513,7 +534,9 @@ function selectGroup(id) {
   var g = _groups.find(function(x) { return x.id === id; });
   if (!g) return;
   _activeGroup = g;
-  _dirty = false;
+  _dirty       = false;
+  _memberSet   = new Set();
+  _savedSet    = new Set();
   renderGroupList();
   showCenterPanel();
   loadMembers(id);
@@ -531,6 +554,8 @@ function loadMembers(groupId) {
   fetch('/api/groups/' + groupId + '/members')
     .then(r => r.json())
     .then(function(siteIds) {
+      // Discard stale responses if the user switched groups before this resolved
+      if (!_activeGroup || _activeGroup.id !== groupId) return;
       _memberSet  = new Set(siteIds);
       _savedSet   = new Set(siteIds);
       _dirty      = false;
@@ -558,20 +583,37 @@ function renderSiteList() {
   document.getElementById('member-lbl').textContent =
     inCount + ' site' + (inCount === 1 ? '' : 's') + ' in group';
 
-  var html = '';
-  vis.forEach(function(s) {
-    var inG  = _memberSet.has(s.site_id);
+  var inGroup    = vis.filter(function(s) { return  _memberSet.has(s.site_id); });
+  var notInGroup = vis.filter(function(s) { return !_memberSet.has(s.site_id); });
+
+  function siteRow(s, inG) {
     var type = (s.type || 'river').toLowerCase().replace(/[^a-z]/g,'');
-    html +=
-      '<div class="site-row' + (inG ? ' in-group' : '') + '" onclick="toggleSite(\'' + s.site_id.replace(/'/g,"\\'") + '\')" style="' + (inG ? 'border-left:3px solid ' + _activeGroup.color + ';padding-left:11px;' : '') + '">' +
-        '<div style="width:16px;height:16px;border-radius:4px;border:1.5px solid ' + (inG ? _activeGroup.color : '#334155') + ';background:' + (inG ? _activeGroup.color : 'transparent') + ';flex-shrink:0;display:flex;align-items:center;justify-content:center;">' +
-          (inG ? '<svg width="9" height="9" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#fff;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>' : '') +
-        '</div>' +
-        '<span class="flex-1 truncate text-xs" style="color:' + (inG ? '#e2e8f0' : '#94a3b8') + ';">' + escHtml(s.name) + '</span>' +
-        '<span class="type-badge badge-' + type + '">' + type + '</span>' +
-      '</div>';
-  });
-  document.getElementById('site-list').innerHTML = html || '<p class="text-xs py-6 text-center" style="color:#475569;">No sites match</p>';
+    return '<div class="site-row' + (inG ? ' in-group' : '') + '" onclick="toggleSite(\'' + s.site_id.replace(/'/g,"\\'") + '\')" style="' + (inG ? 'border-left:3px solid ' + _activeGroup.color + ';padding-left:11px;' : '') + '">' +
+      '<div style="width:16px;height:16px;border-radius:4px;border:1.5px solid ' + (inG ? _activeGroup.color : '#334155') + ';background:' + (inG ? _activeGroup.color : 'transparent') + ';flex-shrink:0;display:flex;align-items:center;justify-content:center;">' +
+        (inG ? '<svg width="9" height="9" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#fff;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>' : '') +
+      '</div>' +
+      '<span class="flex-1 truncate text-xs" style="color:' + (inG ? '#e2e8f0' : '#94a3b8') + ';">' + escHtml(s.name) + '</span>' +
+      '<span class="type-badge badge-' + type + '">' + type + '</span>' +
+    '</div>';
+  }
+
+  var html = '';
+
+  if (inGroup.length) {
+    html += '<div style="padding:5px 14px 4px;font-size:10px;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:.07em;background:rgba(14,165,233,0.06);border-bottom:1px solid rgba(14,165,233,0.12);">In this group · ' + inGroup.length + '</div>';
+    inGroup.forEach(function(s) { html += siteRow(s, true); });
+    if (notInGroup.length) {
+      html += '<div style="padding:5px 14px 4px;font-size:10px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.07em;border-bottom:1px solid #1e293b;">Available · ' + notInGroup.length + '</div>';
+    }
+  }
+
+  notInGroup.forEach(function(s) { html += siteRow(s, false); });
+
+  if (!vis.length) {
+    html = '<p class="text-xs py-6 text-center" style="color:#475569;">No sites match</p>';
+  }
+
+  document.getElementById('site-list').innerHTML = html;
 }
 
 function toggleSite(siteId) {

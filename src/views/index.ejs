@@ -335,9 +335,7 @@
       <!-- 7-day precip forecast chart -->
       <div style="height:160px;"><canvas id="precipChart"></canvas></div>
       <div class="flex items-center gap-4 mt-2 text-xs text-slate-500">
-        <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#0ea5e9;display:inline-block;"></span>Portland</span>
-        <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#a78bfa;display:inline-block;"></span>Bull Run</span>
-        <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#34d399;display:inline-block;"></span>Mt. Hood</span>
+        <span id="wx-legend" class="flex items-center gap-4"></span>
         <span class="ml-auto text-slate-600">inches/day · shaded = forecast</span>
       </div>
     </div>
@@ -376,8 +374,14 @@ var map = new maplibregl.Map({
     },
     layers: [{ id: 'basemap', type: 'raster', source: 'carto' }],
   },
-  center: [-122.68, 45.52],
-  zoom: 9,
+  center: (function() {
+    var pts = SITES.filter(function(s) { return s.latitude && s.longitude; });
+    if (!pts.length) return [-98, 38]; // US geographic center fallback
+    var lat = pts.reduce(function(a, s) { return a + s.latitude; },  0) / pts.length;
+    var lon = pts.reduce(function(a, s) { return a + s.longitude; }, 0) / pts.length;
+    return [lon, lat];
+  })(),
+  zoom: 7,
 });
 
 map.addControl(new maplibregl.NavigationControl(), 'top-right');
@@ -438,18 +442,26 @@ var precipChart = null;
     var rows = json.data || [];
     if (!rows.length) { document.getElementById('wx-conditions').innerHTML = '<div class="text-xs text-slate-600">No weather data yet — fetching on startup.</div>'; return; }
 
-    // Current conditions: latest hourly temp + precip for Portland
-    var portlandRows = rows.filter(function(r) { return r.location_id === 'portland' && !r.is_forecast; });
-    var tempRows  = portlandRows.filter(function(r) { return r.parameter === 'temperature'; }).sort(function(a,b){ return b.recorded_at.localeCompare(a.recorded_at); });
+    // Derive distinct locations from the data itself
+    var locMap = {};
+    rows.forEach(function(r) {
+      if (!locMap[r.location_id]) locMap[r.location_id] = r.location_name;
+    });
+    var locs = Object.keys(locMap);
+    var PALETTE = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15','#22d3ee','#4ade80'];
+    var locColors = {};
+    locs.forEach(function(id, i) { locColors[id] = PALETTE[i % PALETTE.length]; });
+
+    // Current conditions: latest temp + 24h precip per location
     var recentRows = rows.filter(function(r) { return !r.is_forecast && r.parameter === 'precipitation' && r.interval === 'hourly'; });
     var cutoff24 = new Date(Date.now() - 24*3600*1000).toISOString().replace('T',' ').slice(0,19);
-
-    var locs = ['portland','bull_run','mt_hood'];
-    var locNames = { portland:'Portland', bull_run:'Bull Run', mt_hood:'Mt. Hood' };
     var conditions = '';
 
+    // Show latest temp from whichever location has it
+    var tempRows = rows.filter(function(r) { return r.parameter === 'temperature' && !r.is_forecast; })
+      .sort(function(a, b) { return b.recorded_at.localeCompare(a.recorded_at); });
     if (tempRows.length) {
-      conditions += '<div class="flex items-center gap-2 px-3 py-2 rounded-lg" style="background:rgba(30,41,59,0.5);"><span class="text-xs text-slate-400">Portland</span><span class="text-sm font-semibold text-slate-200">' + tempRows[0].value.toFixed(1) + '°F</span></div>';
+      conditions += '<div class="flex items-center gap-2 px-3 py-2 rounded-lg" style="background:rgba(30,41,59,0.5);"><span class="text-xs text-slate-400">' + tempRows[0].location_name + '</span><span class="text-sm font-semibold text-slate-200">' + tempRows[0].value.toFixed(1) + '°F</span></div>';
     }
 
     locs.forEach(function(locId) {
@@ -457,12 +469,20 @@ var precipChart = null;
       var total24 = locPrecip.reduce(function(s,r){ return s + r.value; }, 0);
       var color = total24 > 0.5 ? '#38bdf8' : total24 > 0 ? '#94a3b8' : '#475569';
       conditions += '<div class="flex flex-col gap-0.5 px-3 py-2 rounded-lg" style="background:rgba(30,41,59,0.5);">' +
-        '<span class="text-xs text-slate-400">' + locNames[locId] + ' (24h)</span>' +
+        '<span class="text-xs text-slate-400">' + locMap[locId] + ' (24h)</span>' +
         '<span class="text-sm font-semibold" style="color:' + color + ';">' + total24.toFixed(2) + '"</span>' +
       '</div>';
     });
 
     document.getElementById('wx-conditions').innerHTML = conditions;
+
+    // Dynamic legend
+    var legendEl = document.getElementById('wx-legend');
+    if (legendEl) {
+      legendEl.innerHTML = locs.map(function(id) {
+        return '<span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:' + locColors[id] + ';display:inline-block;"></span>' + locMap[id] + '</span>';
+      }).join('');
+    }
 
     // 7-day daily forecast bar chart — group by location
     var dailyForecast = rows.filter(function(r) { return r.parameter === 'precip_daily' && r.interval === 'daily'; });
@@ -473,16 +493,15 @@ var precipChart = null;
       forecastDays.push(d.toISOString().slice(0,10));
     }
 
-    var locColors = { portland:'#0ea5e9', bull_run:'#a78bfa', mt_hood:'#34d399' };
     var datasets = locs.map(function(locId) {
       var vals = forecastDays.map(function(day) {
         var match = dailyForecast.find(function(r) { return r.location_id === locId && r.recorded_at.slice(0,10) === day; });
         return match ? match.value : 0;
       });
       return {
-        label: locNames[locId],
+        label: locMap[locId],
         data: vals,
-        backgroundColor: forecastDays.map(function(day, i) {
+        backgroundColor: forecastDays.map(function(day) {
           return (day >= today) ? locColors[locId] + 'aa' : locColors[locId] + '44';
         }),
         borderColor: locColors[locId],

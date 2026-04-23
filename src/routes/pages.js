@@ -31,7 +31,7 @@ router.get('/', (req, res) => {
 });
 
 router.get('/visualize', (req, res) => {
-  const sites = db.getAllSites();
+  const sites = db.getActiveSites();
   const { ...locals } = baseLocals(req);
   res.render('visualize', { ...locals, sites, activePage: 'visualize' });
 });
@@ -109,7 +109,7 @@ router.get('/radar', (req, res) => {
 });
 
 router.get('/groups', (req, res) => {
-  const sites = db.getAllSites();
+  const sites = db.getActiveSites();
   const { ...locals } = baseLocals(req);
   res.render('groups', { ...locals, sites, activePage: 'groups' });
 });

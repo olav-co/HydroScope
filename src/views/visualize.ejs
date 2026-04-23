@@ -14,8 +14,6 @@ var ROLE_RECOMMENDED = {
 };
 var recommended = ROLE_RECOMMENDED[profile && profile.role] || ROLE_RECOMMENDED.general;
 
-var usgsSites = sites.filter(function(s){ return s.source !== 'cwms'; });
-var cwmsSites = sites.filter(function(s){ return s.source === 'cwms'; });
 %>
 
 <style>
@@ -66,24 +64,30 @@ body.light .t-tooltip { background: #fff; border-color: #e2e8f0; color: #475569;
 
     <!-- Controls -->
     <div class="card mb-5">
+
+      <!-- Optional filters (group + basin) -->
+      <div class="flex flex-wrap gap-3 items-end mb-4 pb-3" style="border-bottom:1px solid #1e293b;">
+        <div style="flex:0 0 180px;">
+          <label class="label">Group filter</label>
+          <select id="vizGroupFilter" class="input" onchange="onVizGroupFilter(this.value)" style="font-size:12px;">
+            <option value="">All groups</option>
+          </select>
+        </div>
+        <div style="flex:0 0 180px;">
+          <label class="label">Basin filter</label>
+          <select id="vizBasinFilter" class="input" onchange="onVizBasinFilter(this.value)" style="font-size:12px;">
+            <option value="">All basins</option>
+          </select>
+        </div>
+        <button id="vizClearFilters" onclick="clearVizFilters()" class="btn-secondary text-xs py-1.5 px-3" style="display:none;">✕ Clear</button>
+        <span id="vizFilterCount" class="text-xs self-center" style="color:#475569;display:none;"></span>
+      </div>
+
       <div class="flex flex-wrap gap-4 items-end">
         <div style="flex:1;min-width:180px;">
           <label class="label">Site</label>
           <select id="siteSelect" class="input" onchange="onVizSiteChange()">
-            <% if (usgsSites.length) { %>
-            <optgroup label="USGS Stream Gauges">
-              <% usgsSites.forEach(function(s) { %>
-                <option value="<%= s.site_id %>" data-name="<%= s.name %>" data-source="usgs"><%= s.name %></option>
-              <% }); %>
-            </optgroup>
-            <% } %>
-            <% if (cwmsSites.length) { %>
-            <optgroup label="CWMS Dam Operations">
-              <% cwmsSites.forEach(function(s) { %>
-                <option value="<%= s.site_id %>" data-name="<%= s.name %>" data-source="cwms">⬡ <%= s.name %></option>
-              <% }); %>
-            </optgroup>
-            <% } %>
+            <!-- populated by buildSiteSelect() -->
           </select>
         </div>
 
@@ -178,7 +182,7 @@ body.light .t-tooltip { background: #fff; border-color: #e2e8f0; color: #475569;
         <h2 class="text-sm font-semibold text-slate-300">Thresholds &amp; Reference Lines</h2>
         <span id="threshold-loading" class="hidden flex items-center gap-1.5 text-xs text-slate-500">
           <svg class="animate-spin" style="width:11px;height:11px;color:#0ea5e9;" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
-          Loading AI thresholds...
+          Loading thresholds...
         </span>
         <button onclick="toggleAddForm()" class="ml-auto btn-secondary text-xs py-1 px-2">+ Add Custom</button>
       </div>
@@ -223,6 +227,10 @@ var chart = null;
 var _currentSiteId = null, _currentSiteName = '', _currentParamCode = null, _currentParamName = null, _currentHours = 168, _currentUnit = '';
 var _currentSiteSource = 'usgs';  // 'usgs' or 'cwms'
 
+// ── Site filter state ─────────────────────────────────────────────────────────
+var _vizGroupSiteIds = null;  // null = no group filter; Set of site_ids when active
+var _vizBasinCode    = '';    // '' = no basin filter
+
 // ── Parameter definitions by source ─────────────────────────────────────────
 var ROLE_RECOMMENDED_JS = <%- JSON.stringify(recommended) %>;
 
@@ -256,15 +264,23 @@ var CWMS_PARAMS = [
 var CWMS_PARAM_GROUPS = ['level','flow','storage','quality','precip','power'];
 var CWMS_GROUP_LABELS = { level:'Level & Elevation', flow:'Flow', storage:'Storage', quality:'Water Quality', precip:'Precipitation', power:'Power' };
 
-function buildParamSelect(source) {
+// Build param select from full static lists, optionally filtered to knownCodes.
+// knownCodes: array of {parameter_code, parameter_name} from /api/data/site-params, or null.
+function buildParamSelect(source, knownCodes) {
   var sel = document.getElementById('paramSelect');
   var prevVal = sel.value;
   sel.innerHTML = '';
 
+  // Helper: should this param be included?
+  function allowed(code) {
+    if (!knownCodes || !knownCodes.length) return true;
+    return knownCodes.some(function(k) { return k.parameter_code === code; });
+  }
+
   if (source === 'cwms') {
     document.getElementById('paramLabel').textContent = 'Parameter';
     CWMS_PARAM_GROUPS.forEach(function(grp) {
-      var params = CWMS_PARAMS.filter(function(p){ return p.group === grp; });
+      var params = CWMS_PARAMS.filter(function(p){ return p.group === grp && allowed(p.code); });
       if (!params.length) return;
       var og = document.createElement('optgroup');
       og.label = CWMS_GROUP_LABELS[grp] || grp;
@@ -277,21 +293,37 @@ function buildParamSelect(source) {
       });
       sel.appendChild(og);
     });
+    // If filtering left the select empty (site has unusual codes), add raw entries
+    if (!sel.options.length && knownCodes && knownCodes.length) {
+      var og = document.createElement('optgroup');
+      og.label = 'Available';
+      knownCodes.forEach(function(k) {
+        var o = document.createElement('option');
+        o.value = k.parameter_code;
+        o.setAttribute('data-name', k.parameter_name || k.parameter_code);
+        o.textContent = k.parameter_name || k.parameter_code;
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    }
   } else {
     var roleName = (<%- JSON.stringify((profile && profile.role) || 'general') %>).replace('_',' ');
-    var recParams = USGS_PARAMS.filter(function(p){ return p.recommended; });
-    var otherFlow = USGS_PARAMS.filter(function(p){ return p.group === 'flow'    && !p.recommended; });
-    var otherQual = USGS_PARAMS.filter(function(p){ return p.group === 'quality' && !p.recommended; });
-    document.getElementById('paramLabel').innerHTML = 'Parameter <span style="font-size:10px;margin-left:4px;color:#0ea5e9;">★ = for your role</span>';
+    var recParams  = USGS_PARAMS.filter(function(p){ return p.recommended && allowed(p.code); });
+    var otherFlow  = USGS_PARAMS.filter(function(p){ return p.group === 'flow'    && !p.recommended && allowed(p.code); });
+    var otherQual  = USGS_PARAMS.filter(function(p){ return p.group === 'quality' && !p.recommended && allowed(p.code); });
+    var hasFilter  = knownCodes && knownCodes.length > 0;
+    document.getElementById('paramLabel').innerHTML = 'Parameter'
+      + (hasFilter ? ' <span style="font-size:10px;margin-left:4px;color:#34d399;">· actual data</span>' : '')
+      + (!hasFilter ? ' <span style="font-size:10px;margin-left:4px;color:#0ea5e9;">★ = for your role</span>' : '');
 
     if (recParams.length) {
       var og = document.createElement('optgroup');
-      og.label = '★ Recommended for ' + roleName;
+      og.label = hasFilter ? 'Available (recommended first)' : ('★ Recommended for ' + roleName);
       recParams.forEach(function(p) {
         var o = document.createElement('option');
         o.value = p.code;
-        o.setAttribute('data-name', '★ ' + p.label + (p.unit ? ' (' + p.unit + ')' : ''));
-        o.textContent = '★ ' + p.label + (p.unit ? ' (' + p.unit + ')' : '');
+        o.setAttribute('data-name', (hasFilter ? '' : '★ ') + p.label + (p.unit ? ' (' + p.unit + ')' : ''));
+        o.textContent = (hasFilter ? '' : '★ ') + p.label + (p.unit ? ' (' + p.unit + ')' : '');
         og.appendChild(o);
       });
       sel.appendChild(og);
@@ -320,6 +352,24 @@ function buildParamSelect(source) {
       });
       sel.appendChild(og3);
     }
+    // Unknown USGS param codes the site actually has
+    if (knownCodes && knownCodes.length) {
+      var known = knownCodes.filter(function(k) {
+        return !USGS_PARAMS.some(function(p) { return p.code === k.parameter_code; });
+      });
+      if (known.length) {
+        var og4 = document.createElement('optgroup');
+        og4.label = 'Other';
+        known.forEach(function(k) {
+          var o = document.createElement('option');
+          o.value = k.parameter_code;
+          o.setAttribute('data-name', k.parameter_name || k.parameter_code);
+          o.textContent = k.parameter_name || k.parameter_code;
+          og4.appendChild(o);
+        });
+        sel.appendChild(og4);
+      }
+    }
   }
 
   // Restore previous selection if still valid
@@ -328,13 +378,163 @@ function buildParamSelect(source) {
   }
 }
 
+// Rebuild the site <select> honoring group + basin filters.
+function buildSiteSelect() {
+  var sel    = document.getElementById('siteSelect');
+  var prevId = sel.value;
+  sel.innerHTML = '';
+
+  var filtered = SITES_DATA.filter(function(s) {
+    var inGrp = !_vizGroupSiteIds || _vizGroupSiteIds.has(s.site_id);
+    var inBas = !_vizBasinCode   || s.huc8_code === _vizBasinCode;
+    return inGrp && inBas;
+  });
+
+  var usgs = filtered.filter(function(s){ return s.source !== 'cwms'; });
+  var cwms = filtered.filter(function(s){ return s.source === 'cwms'; });
+
+  if (usgs.length) {
+    var og = document.createElement('optgroup');
+    og.label = 'USGS Stream Gauges';
+    usgs.forEach(function(s) {
+      var o = document.createElement('option');
+      o.value = s.site_id;
+      o.setAttribute('data-source', 'usgs');
+      o.setAttribute('data-name', s.name);
+      o.textContent = s.name;
+      og.appendChild(o);
+    });
+    sel.appendChild(og);
+  }
+  if (cwms.length) {
+    var og2 = document.createElement('optgroup');
+    og2.label = 'CWMS Dam Operations';
+    cwms.forEach(function(s) {
+      var o = document.createElement('option');
+      o.value = s.site_id;
+      o.setAttribute('data-source', 'cwms');
+      o.setAttribute('data-name', s.name);
+      o.textContent = '⬡ ' + s.name;
+      og2.appendChild(o);
+    });
+    sel.appendChild(og2);
+  }
+
+  if (!sel.options.length) {
+    var placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'No sites match filter';
+    sel.appendChild(placeholder);
+  }
+
+  // Restore previous selection if it's still in the list
+  if (prevId && sel.querySelector('option[value="' + CSS.escape(prevId) + '"]')) {
+    sel.value = prevId;
+  }
+
+  var countEl = document.getElementById('vizFilterCount');
+  var total   = SITES_DATA.length;
+  if (filtered.length < total) {
+    countEl.textContent = filtered.length + ' of ' + total + ' sites shown';
+    countEl.style.display = '';
+  } else {
+    countEl.style.display = 'none';
+  }
+}
+
+// ── Group + Basin filter controls ────────────────────────────────────────────
+
+(function _loadVizGroups() {
+  fetch('/api/groups')
+    .then(function(r){ return r.json(); })
+    .then(function(groups) {
+      var sel = document.getElementById('vizGroupFilter');
+      if (!sel || !groups.length) return;
+      groups.forEach(function(g) {
+        var o = document.createElement('option');
+        o.value = g.id;
+        o.textContent = g.name + ' (' + g.member_count + ')';
+        sel.appendChild(o);
+      });
+    }).catch(function(){});
+}());
+
+(function _loadVizBasins() {
+  fetch('/api/basins')
+    .then(function(r){ return r.json(); })
+    .then(function(basins) {
+      var sel = document.getElementById('vizBasinFilter');
+      if (!sel || !Array.isArray(basins)) return;
+      basins.forEach(function(b) {
+        var o = document.createElement('option');
+        o.value = b.huc8_code;
+        o.textContent = (b.huc8_name || b.huc8_code) + ' (' + b.huc8_code + ')';
+        sel.appendChild(o);
+      });
+    }).catch(function(){});
+}());
+
+function onVizGroupFilter(groupId) {
+  if (!groupId) {
+    _vizGroupSiteIds = null;
+    _updateVizFilterClear();
+    buildSiteSelect();
+    return;
+  }
+  fetch('/api/groups/' + groupId + '/members')
+    .then(function(r){ return r.json(); })
+    .then(function(ids) {
+      _vizGroupSiteIds = new Set(ids);
+      _updateVizFilterClear();
+      buildSiteSelect();
+    }).catch(function(){});
+}
+
+function onVizBasinFilter(code) {
+  _vizBasinCode = code || '';
+  _updateVizFilterClear();
+  buildSiteSelect();
+}
+
+function clearVizFilters() {
+  _vizGroupSiteIds = null;
+  _vizBasinCode    = '';
+  document.getElementById('vizGroupFilter').value = '';
+  document.getElementById('vizBasinFilter').value = '';
+  _updateVizFilterClear();
+  buildSiteSelect();
+}
+
+function _updateVizFilterClear() {
+  var active = _vizGroupSiteIds !== null || _vizBasinCode !== '';
+  document.getElementById('vizClearFilters').style.display = active ? '' : 'none';
+}
+
+var _lastVizSiteId = null;
+
 function onVizSiteChange() {
   var siteEl = document.getElementById('siteSelect');
-  var opt = siteEl.selectedOptions[0];
+  var opt    = siteEl.selectedOptions[0];
   var newSource = (opt && opt.getAttribute('data-source')) || 'usgs';
+  var newSiteId = siteEl.value;
+
   if (newSource !== _currentSiteSource) {
     _currentSiteSource = newSource;
-    buildParamSelect(newSource);
+    buildParamSelect(newSource, null);
+  }
+
+  // Site actually changed — reset AI chat and fetch real param list
+  if (newSiteId !== _lastVizSiteId && newSiteId) {
+    _lastVizSiteId = newSiteId;
+    clearVizChat();
+    // Fetch actual params recorded for this site, then rebuild param select
+    fetch('/api/data/site-params?site=' + encodeURIComponent(newSiteId))
+      .then(function(r){ return r.json(); })
+      .then(function(json) {
+        if (json.ok && json.params && json.params.length) {
+          buildParamSelect(newSource, json.params);
+        }
+      }).catch(function(){});
   }
 }
 
@@ -350,29 +550,46 @@ var TYPE_STYLES   = {
 
 // Threshold state
 var thresholdState = {
-  ai:     [],     // from AI
-  custom: [],     // user-added
-  active: {}      // id -> bool
+  official: [],   // from USGS WaterWatch / USGS Statistics (authoritative)
+  ai:       [],   // from AI analytical
+  custom:   [],   // user-added
+  active:   {}    // id -> bool
 };
 
-// Initialize param select based on first site in list
+// Initialize site select and param select on page load
 (function initVizPage() {
+  var urlP = new URLSearchParams(location.search);
+
+  // Build the site select from SITES_DATA (no filters yet)
+  buildSiteSelect();
+
   var siteEl = document.getElementById('siteSelect');
-  var urlP   = new URLSearchParams(location.search);
+  // If ?site= in URL, select it
+  if (urlP.get('site') && siteEl.querySelector('option[value="' + CSS.escape(urlP.get('site')) + '"]')) {
+    siteEl.value = urlP.get('site');
+  }
 
-  // If ?site= in URL, select it first
-  if (urlP.get('site')) siteEl.value = urlP.get('site');
-
-  // Bootstrap source & param list
   var opt = siteEl.selectedOptions[0];
   _currentSiteSource = (opt && opt.getAttribute('data-source')) || 'usgs';
-  buildParamSelect(_currentSiteSource);
+  _lastVizSiteId     = siteEl.value;
 
-  // If ?param= in URL, apply it
-  if (urlP.get('param')) document.getElementById('paramSelect').value = urlP.get('param');
-
-  // Auto-load chart
-  if (urlP.get('site')) loadChart();
+  var siteId = siteEl.value;
+  if (siteId) {
+    // Try to fetch actual params for the first selected site; fall back to full list
+    fetch('/api/data/site-params?site=' + encodeURIComponent(siteId))
+      .then(function(r){ return r.json(); })
+      .then(function(json) {
+        buildParamSelect(_currentSiteSource, (json.ok && json.params && json.params.length) ? json.params : null);
+        if (urlP.get('param')) document.getElementById('paramSelect').value = urlP.get('param');
+        if (urlP.get('site')) loadChart();
+      }).catch(function() {
+        buildParamSelect(_currentSiteSource, null);
+        if (urlP.get('param')) document.getElementById('paramSelect').value = urlP.get('param');
+        if (urlP.get('site')) loadChart();
+      });
+  } else {
+    buildParamSelect(_currentSiteSource, null);
+  }
 })();
 
 function getIsLight() { return document.body.classList.contains('light'); }
@@ -450,6 +667,7 @@ async function loadChart() {
   document.getElementById('statsRow').style.display = 'grid';
 
   // Reset threshold state for new chart load
+  thresholdState.official = [];
   thresholdState.ai = [];
   thresholdState.active = {};
   thresholdState.custom.forEach(function(t) { thresholdState.active[t.id] = true; });
@@ -579,13 +797,15 @@ function clearVizChat() {
   document.getElementById('viz-thread').innerHTML = '';
 }
 
-// Called when chart loads — shows the panel and updates the context label
+// Called when chart loads — shows the panel and updates the context label.
+// The AI chat history was already cleared by onVizSiteChange when the site changed.
 function loadAnalysis() {
   if (!_currentSiteId) return;
   var card = document.getElementById('ai-analysis-card');
   card.style.display = 'flex';
-  document.getElementById('ai-ctx-label').textContent = _currentSiteName + ' · ' + (_currentParamName || '').replace(/\s*\(.*\)/, '');
-  document.getElementById('viz-input').placeholder = 'Ask about ' + _currentSiteName + '...';
+  var paramShort = (_currentParamName || '').replace(/\s*\(.*\)/, '');
+  document.getElementById('ai-ctx-label').textContent = _currentSiteName + ' · ' + paramShort;
+  document.getElementById('viz-input').placeholder = 'Ask about ' + _currentSiteName + ' ' + paramShort + '...';
 }
 
 // ── Thresholds ────────────────────────────────────────────
@@ -597,42 +817,62 @@ async function loadThresholds() {
   panel.style.display = 'block';
   spinner.classList.remove('hidden');
 
-  try {
-    var resp = await fetch('/api/insights/enrich', {
-      method: 'POST',
+  // Fire official + AI fetches in parallel
+  var [officialRes, aiRes] = await Promise.allSettled([
+    fetch('/api/data/official-thresholds?site_id=' + encodeURIComponent(_currentSiteId) +
+          '&param_code=' + encodeURIComponent(_currentParamCode)).then(function(r) { return r.json(); }),
+    fetch('/api/insights/enrich', {
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ page: 'thresholds', context: { site_id: _currentSiteId, site_name: _currentSiteName, param_code: _currentParamCode, param_name: _currentParamName } })
+      body:    JSON.stringify({ page: 'thresholds', context: {
+        site_id: _currentSiteId, site_name: _currentSiteName,
+        param_code: _currentParamCode, param_name: _currentParamName
+      }})
+    }).then(function(r) { return r.json(); })
+  ]);
+
+  spinner.classList.add('hidden');
+
+  // ── Official thresholds ──────────────────────────────────────────────────
+  if (officialRes.status === 'fulfilled' && officialRes.value.ok) {
+    thresholdState.official = (officialRes.value.thresholds || []).map(function(t) {
+      return {
+        id:          'off_' + t.threshold_id,
+        label:       t.label,
+        value:       t.value,
+        color:       t.color,
+        type:        t.type,
+        description: t.source_label || t.source,
+        source:      t.source,
+        category:    t.category,
+        official:    true,
+      };
     });
-    var json = await resp.json();
-    var d = json.data || {};
-    spinner.classList.add('hidden');
-
-    if (d.note) {
-      document.getElementById('threshold-note').textContent = d.note;
-      document.getElementById('threshold-note').classList.remove('hidden');
-    }
-
-    // Only chart thresholds whose values are in the same unit as the current parameter
-    var newThresholds = (d.thresholds || []).filter(function(t) { return t.id && typeof t.value === 'number'; });
-    thresholdState.ai = newThresholds;
-    newThresholds.forEach(function(t) {
+    thresholdState.official.forEach(function(t) {
       if (thresholdState.active[t.id] === undefined) thresholdState.active[t.id] = true;
     });
-
-    // Render contextual insights (different unit/domain) as text notes, not chart lines
-    var insights = d.insights || [];
-    renderInsights(insights);
-
-    renderThresholdRows();
-    updateAnnotations();
-  } catch(e) {
-    spinner.classList.add('hidden');
-    console.warn('Threshold load error:', e.message);
-    document.getElementById('threshold-rows').innerHTML =
-      '<div class="text-xs py-1" style="color:#f87171;">⚠ AI thresholds unavailable. ' +
-      '<button onclick="loadThresholds()" style="background:rgba(14,165,233,0.1);border:1px solid rgba(14,165,233,0.25);border-radius:5px;cursor:pointer;color:#38bdf8;font-size:11px;padding:2px 10px;margin-left:4px;">↻ Retry</button>' +
-      '</div>';
   }
+
+  // ── AI thresholds ────────────────────────────────────────────────────────
+  if (aiRes.status === 'fulfilled') {
+    var d = aiRes.value.data || {};
+    if (d.note) {
+      document.getElementById('threshold-note').textContent = '⚠ AI note: ' + d.note;
+      document.getElementById('threshold-note').classList.remove('hidden');
+    }
+    thresholdState.ai = (d.thresholds || [])
+      .filter(function(t) { return t.id && typeof t.value === 'number'; })
+      .map(function(t) { return Object.assign({}, t, { ai: true }); });
+    thresholdState.ai.forEach(function(t) {
+      if (thresholdState.active[t.id] === undefined) thresholdState.active[t.id] = true;
+    });
+    renderInsights(d.insights || []);
+  } else {
+    console.warn('AI threshold load error:', aiRes.reason);
+  }
+
+  renderThresholdRows();
+  updateAnnotations();
 }
 
 function renderInsights(insights) {
@@ -650,22 +890,59 @@ function renderInsights(insights) {
 
 function renderThresholdRows() {
   var container = document.getElementById('threshold-rows');
-  var all = thresholdState.ai.concat(thresholdState.custom);
-  if (!all.length) { container.innerHTML = '<div class="text-xs text-slate-600 py-2">No thresholds loaded yet.</div>'; return; }
+  var official  = thresholdState.official;
+  var ai        = thresholdState.ai;
+  var custom    = thresholdState.custom;
+  if (!official.length && !ai.length && !custom.length) {
+    container.innerHTML = '<div class="text-xs text-slate-600 py-2">No thresholds loaded yet.</div>';
+    return;
+  }
 
-  container.innerHTML = all.map(function(t) {
-    var active  = thresholdState.active[t.id] !== false;
-    var ts = TYPE_STYLES[t.type] || TYPE_STYLES.caution;
+  function row(t) {
+    var active = thresholdState.active[t.id] !== false;
+    var ts     = TYPE_STYLES[t.type] || TYPE_STYLES.caution;
+    var srcBadge = '';
+    if (t.official) {
+      var icon = t.category === 'seasonal' ? '📅' : '✓';
+      srcBadge = '<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;' +
+        'background:rgba(52,211,153,0.12);color:#34d399;border:1px solid rgba(52,211,153,0.2);' +
+        'letter-spacing:.03em;flex-shrink:0;white-space:nowrap;">' + icon + ' ' + t.source + '</span>';
+    } else if (t.ai) {
+      srcBadge = '<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;' +
+        'background:rgba(139,92,246,0.12);color:#a78bfa;border:1px solid rgba(139,92,246,0.2);' +
+        'letter-spacing:.03em;flex-shrink:0;white-space:nowrap;">AI Analytical</span>';
+    }
     return '<div class="threshold-row">' +
       '<input type="checkbox" ' + (active ? 'checked' : '') + ' onchange="toggleThreshold(\'' + t.id + '\',this.checked)" style="accent-color:' + t.color + ';cursor:pointer;">' +
       '<span class="t-dot" style="background:' + t.color + ';box-shadow:' + (active ? '0 0 5px ' + t.color + '80' : 'none') + ';"></span>' +
       '<span class="t-label">' + t.label + '</span>' +
       '<span class="t-value">' + (typeof t.value === 'number' ? t.value.toLocaleString() : t.value) + ' ' + _currentUnit + '</span>' +
       '<span class="t-type-badge" style="background:' + ts.bg + ';color:' + ts.color + ';">' + ts.label + '</span>' +
+      srcBadge +
       (t.description ? '<span class="t-info">?<span class="t-tooltip">' + t.description.replace(/</g,'&lt;') + '</span></span>' : '') +
       (t.custom ? '<button onclick="removeCustomThreshold(\'' + t.id + '\')" style="background:none;border:none;color:#475569;cursor:pointer;font-size:14px;line-height:1;padding:0 2px;" title="Remove">×</button>' : '') +
     '</div>';
-  }).join('');
+  }
+
+  function sectionHead(label, color) {
+    return '<div style="font-size:10px;font-weight:700;color:' + color + ';text-transform:uppercase;' +
+      'letter-spacing:.07em;margin:8px 0 5px;padding-top:6px;border-top:1px solid #1e293b;">' + label + '</div>';
+  }
+
+  var html = '';
+  if (official.length) {
+    html += '<div style="font-size:10px;font-weight:700;color:#34d399;text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px;">Official Thresholds</div>';
+    html += official.map(row).join('');
+  }
+  if (ai.length) {
+    html += sectionHead('AI Analytical', '#a78bfa');
+    html += ai.map(row).join('');
+  }
+  if (custom.length) {
+    html += sectionHead('Custom', '#64748b');
+    html += custom.map(row).join('');
+  }
+  container.innerHTML = html;
 }
 
 function toggleThreshold(id, enabled) {
@@ -677,7 +954,7 @@ function toggleThreshold(id, enabled) {
 function updateAnnotations() {
   if (!chart) return;
   var annotations = {};
-  var all = thresholdState.ai.concat(thresholdState.custom);
+  var all = thresholdState.official.concat(thresholdState.ai).concat(thresholdState.custom);
   all.forEach(function(t) {
     if (!thresholdState.active[t.id]) return;
     annotations[t.id] = {

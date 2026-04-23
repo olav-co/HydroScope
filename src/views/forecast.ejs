@@ -71,9 +71,7 @@
         </div>
         <div style="height:150px;"><canvas id="fcPrecipChart"></canvas></div>
         <div class="flex items-center gap-4 mt-2 text-xs text-slate-500">
-          <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#0ea5e9;display:inline-block;"></span>Portland</span>
-          <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#a78bfa;display:inline-block;"></span>Bull Run</span>
-          <span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:#34d399;display:inline-block;"></span>Mt. Hood</span>
+          <span id="fc-wx-legend" class="flex items-center gap-4"></span>
           <span class="ml-auto text-slate-600">shaded = forecast</span>
         </div>
       </div>
@@ -324,9 +322,21 @@ async function loadPrecip() {
       return;
     }
 
+    // Derive distinct locations from the data
+    var locMap = {};
+    rows.forEach(function(r) { if (!locMap[r.location_id]) locMap[r.location_id] = r.location_name; });
+    var locs = Object.keys(locMap);
+    var PALETTE = ['#0ea5e9','#a78bfa','#34d399','#fb923c','#f472b6','#facc15'];
+    var locColors = {};
+    locs.forEach(function(id, i) { locColors[id] = PALETTE[i % PALETTE.length]; });
+
+    // Dynamic legend
+    var legendEl = document.getElementById('fc-wx-legend');
+    if (legendEl) legendEl.innerHTML = locs.map(function(id) {
+      return '<span class="flex items-center gap-1.5"><span style="width:8px;height:8px;border-radius:2px;background:' + locColors[id] + ';display:inline-block;"></span>' + locMap[id] + '</span>';
+    }).join('');
+
     // Past 24h totals strip
-    var locs = ['portland','bull_run','mt_hood'];
-    var locNames = { portland:'Portland', bull_run:'Bull Run', mt_hood:'Mt. Hood' };
     var cutoff24 = new Date(Date.now() - 24*3600*1000).toISOString().replace('T',' ').slice(0,19);
     var recentRows = rows.filter(function(r) { return !r.is_forecast && r.parameter === 'precipitation' && r.interval === 'hourly'; });
     var conditions = '';
@@ -335,7 +345,7 @@ async function loadPrecip() {
       var total = locPrecip.reduce(function(s,r){ return s + r.value; }, 0);
       var color = total > 0.5 ? '#38bdf8' : total > 0 ? '#94a3b8' : '#475569';
       conditions += '<div class="flex flex-col gap-0.5 px-3 py-2 rounded-lg" style="background:rgba(30,41,59,0.5);">' +
-        '<span class="text-xs text-slate-400">' + locNames[locId] + ' (24h)</span>' +
+        '<span class="text-xs text-slate-400">' + locMap[locId] + ' (24h)</span>' +
         '<span class="text-sm font-semibold" style="color:' + color + ';">' + total.toFixed(2) + '"</span>' +
       '</div>';
     });
@@ -348,10 +358,9 @@ async function loadPrecip() {
     for (var i = 0; i < 7; i++) {
       forecastDays.push(new Date(Date.now() + i * 86400000).toISOString().slice(0,10));
     }
-    var locColors = { portland:'#0ea5e9', bull_run:'#a78bfa', mt_hood:'#34d399' };
     var datasets = locs.map(function(locId) {
       return {
-        label: locNames[locId],
+        label: locMap[locId],
         data: forecastDays.map(function(day) {
           var match = dailyForecast.find(function(r) { return r.location_id === locId && r.recorded_at.slice(0,10) === day; });
           return match ? match.value : 0;

@@ -86,10 +86,20 @@ router.get('/weather', (req, res) => {
   }
 });
 
-// GET /api/data/weather/forecast?location=portland
+// GET /api/data/weather/locations — distinct locations that have weather data in DB
+router.get('/weather/locations', (req, res) => {
+  try {
+    const locs = db.getDistinctWeatherLocations();
+    res.json({ ok: true, locations: locs });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/data/weather/forecast?location=...
 router.get('/weather/forecast', (req, res) => {
-  const { location = 'portland' } = req.query;
-  const db = require('../../db/database');
+  const { location } = req.query;
+  if (!location) return res.status(400).json({ error: 'location required' });
   const data = db.getWeatherForecast(location, 7);
   res.json({ ok: true, location, data });
 });
@@ -105,6 +115,14 @@ router.post('/weather/refresh', async (req, res) => {
 });
 
 // GET /api/data/records?source=usgs&group_id=14211720&param_code=00060
+// GET /api/data/site-params?site=...
+router.get('/site-params', (req, res) => {
+  const { site } = req.query;
+  if (!site) return res.status(400).json({ error: 'site required' });
+  const params = db.getSiteParamCodes(site);
+  res.json({ ok: true, params });
+});
+
 // GET /api/data/records?source=cwms&group_id=CEHT1-CENTER_HILL&param_code=Elev-Pool
 // GET /api/data/records?source=weather&group_id=portland&parameter=precipitation&interval=hourly
 router.get('/records', (req, res) => {
@@ -128,11 +146,11 @@ router.get('/records', (req, res) => {
   }
 });
 
-// ── helper: simple https GET → parsed JSON ────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 function httpsGetJSON(url, timeoutMs) {
   const https = require('https');
   return new Promise((resolve, reject) => {
-    const req = https.get(url, (res) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'HydroScope/1.0' } }, (res) => {
       if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
       let raw = '';
       res.on('data', c => raw += c);
@@ -141,6 +159,49 @@ function httpsGetJSON(url, timeoutMs) {
     req.on('error', reject);
     req.setTimeout(timeoutMs || 8000, () => { req.destroy(); reject(new Error('timeout')); });
   });
+}
+
+function httpsGetText(url, timeoutMs) {
+  const https = require('https');
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'HydroScope/1.0' } }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
+      let raw = '';
+      res.on('data', c => raw += c);
+      res.on('end', () => resolve(raw));
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs || 8000, () => { req.destroy(); reject(new Error('timeout')); });
+  });
+}
+
+// Parses USGS Statistics RDB text, returns seasonal percentiles for a given month+day.
+function parseStatsRdb(text, month, day) {
+  const lines = text.split('\n').filter(l => l.trim() && !l.startsWith('#'));
+  if (lines.length < 3) return null;
+  const headers = lines[0].split('\t');
+  // lines[1] = data-type row — skip it
+  const monthIdx = headers.indexOf('month_nu');
+  const dayIdx   = headers.indexOf('day_nu');
+  const countIdx = headers.indexOf('count_nu');
+  const p10Idx   = headers.indexOf('p10_va');
+  const p25Idx   = headers.indexOf('p25_va');
+  const p50Idx   = headers.indexOf('p50_va');
+  const p75Idx   = headers.indexOf('p75_va');
+  const p90Idx   = headers.indexOf('p90_va');
+  if (monthIdx < 0 || dayIdx < 0) return null;
+
+  for (const line of lines.slice(2)) {
+    const c = line.split('\t');
+    if (+c[monthIdx] !== month || +c[dayIdx] !== day) continue;
+    const pick = (i) => (i >= 0 && c[i] && c[i] !== '' && c[i] !== 'e') ? parseFloat(c[i]) : null;
+    return {
+      p10: pick(p10Idx), p25: pick(p25Idx), p50: pick(p50Idx),
+      p75: pick(p75Idx), p90: pick(p90Idx),
+      count: countIdx >= 0 ? +c[countIdx] || 0 : 0,
+    };
+  }
+  return null;
 }
 
 // GET /api/data/flood-stages?sites=14211720,14142500
@@ -165,6 +226,110 @@ router.get('/flood-stages', async (req, res) => {
   } catch (err) {
     console.error('[flood-stages]', err.message);
     res.json({ ok: true, data: {} });   // degrade gracefully
+  }
+});
+
+// GET /api/data/official-thresholds?site_id=14211720&param_code=00065
+// Returns official thresholds (USGS WaterWatch flood stages, USGS Statistics seasonal
+// percentiles) cached in the DB for 24 h. On cache miss, fetches live and stores results.
+router.get('/official-thresholds', async (req, res) => {
+  const { site_id, param_code } = req.query;
+  if (!site_id || !param_code) return res.status(400).json({ error: 'site_id and param_code required' });
+
+  try {
+    // Return cached data if < 24 h old
+    const cached = db.getOfficialThresholds(site_id, param_code);
+    if (cached.length) {
+      const age = Date.now() - new Date(cached[0].fetched_at).getTime();
+      if (age < 24 * 3600 * 1000) return res.json({ ok: true, thresholds: cached });
+    }
+
+    const site = db.getSiteById(site_id);
+    const isUsgs = site && site.source === 'usgs';
+    const thresholds = [];
+
+    // ── 1. USGS WaterWatch flood stages (gage height only) ──────────────────
+    if (param_code === '00065') {
+      try {
+        const wUrl = `https://waterwatch.usgs.gov/webservices/realtime?format=json&site_no=${site_id}`;
+        const wJson = await httpsGetJSON(wUrl, 10000);
+        const s = (wJson.sites || []).find(x => x.site_no === site_id);
+        if (s) {
+          const stages = [
+            { id: 'action_stage',   label: 'Action Stage',         value: s.action_stage,   color: '#f59e0b', type: 'caution'      },
+            { id: 'flood_stage',    label: 'Flood Stage',          value: s.flood_stage,    color: '#f87171', type: 'max_advisory' },
+            { id: 'moderate_flood', label: 'Moderate Flood Stage', value: s.moderate_stage, color: '#ef4444', type: 'max_advisory' },
+            { id: 'major_flood',    label: 'Major Flood Stage',    value: s.major_stage,    color: '#dc2626', type: 'max_advisory' },
+          ];
+          stages.forEach(st => {
+            if (st.value == null) return;
+            thresholds.push({
+              threshold_id: st.id,
+              label:        st.label,
+              value:        +st.value,
+              unit:         'ft',
+              source:       'USGS WaterWatch',
+              source_label: 'Official NWS/USGS flood classification stage for this gage',
+              type:         st.type,
+              color:        st.color,
+              category:     'official',
+            });
+          });
+        }
+      } catch (e) {
+        console.warn('[official-thresholds] WaterWatch:', e.message);
+      }
+    }
+
+    // ── 2. USGS Statistics seasonal percentiles (USGS sites only) ───────────
+    if (isUsgs) {
+      try {
+        const today = new Date();
+        const mm    = today.getMonth() + 1;
+        const dd    = today.getDate();
+        const sUrl  = `https://waterservices.usgs.gov/nwis/stat/?format=rdb&sites=${site_id}` +
+                      `&statReportType=daily&statType=all&parameterCd=${param_code}`;
+        const rdb   = await httpsGetText(sUrl, 14000);
+        const pcts  = parseStatsRdb(rdb, mm, dd);
+
+        if (pcts) {
+          const mmdd  = String(mm).padStart(2,'0') + String(dd).padStart(2,'0');
+          const yrs   = pcts.count ? ` (${pcts.count} yrs of record)` : '';
+          const seasonNote = `Historical seasonal percentile for this calendar date${yrs}. Source: USGS National Water Information System.`;
+          const pMap = [
+            { key: 'p10', label: 'Seasonal Low (10th pct)',   color: '#38bdf8', type: 'min_advisory' },
+            { key: 'p25', label: 'Below Normal (25th pct)',   color: '#7dd3fc', type: 'min_advisory' },
+            { key: 'p75', label: 'Above Normal (75th pct)',   color: '#fb923c', type: 'max_advisory' },
+            { key: 'p90', label: 'Seasonal High (90th pct)',  color: '#f87171', type: 'max_advisory' },
+          ];
+          pMap.forEach(p => {
+            if (pcts[p.key] == null || isNaN(pcts[p.key])) return;
+            thresholds.push({
+              threshold_id: `stats_${p.key}_${mmdd}`,
+              label:        p.label,
+              value:        pcts[p.key],
+              unit:         null,
+              source:       'USGS Statistics',
+              source_label: seasonNote,
+              type:         p.type,
+              color:        p.color,
+              category:     'seasonal',
+            });
+          });
+        }
+      } catch (e) {
+        console.warn('[official-thresholds] Statistics:', e.message);
+      }
+    }
+
+    // Persist to DB (upsert keeps old rows if fetch returned nothing new)
+    thresholds.forEach(t => db.upsertOfficialThreshold(site_id, param_code, t));
+
+    // Re-read from DB so fetched_at and ids are consistent
+    res.json({ ok: true, thresholds: db.getOfficialThresholds(site_id, param_code) });
+  } catch (err) {
+    console.error('[official-thresholds]', err.message);
+    res.json({ ok: true, thresholds: [] });
   }
 });
 

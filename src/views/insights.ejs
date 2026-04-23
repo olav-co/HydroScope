@@ -101,7 +101,7 @@ body.light .msg-ai   { background: #f8fafc; border-color: #e2e8f0; color: #33415
       <div id="thread" class="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-2">
         <!-- Welcome -->
         <div class="msg-ai" id="welcomeMsg">
-          Hey — ask me anything about the Portland watershed monitoring data, or just chat. I'll pull in live readings when you mention flows, sites, or conditions.
+          Hey — ask me anything about your monitored sites and current conditions, or just chat. I'll pull in live readings when you mention flows, sites, or parameters.
         </div>
       </div>
 
@@ -118,7 +118,7 @@ body.light .msg-ai   { background: #f8fafc; border-color: #e2e8f0; color: #33415
         <div class="flex flex-wrap gap-1.5 mb-3" id="quickPrompts">
           <button class="text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-400 hover:border-hydro-600 hover:text-hydro-300 transition-colors" onclick="send('What are current flow conditions across all sites?')">Current flows</button>
           <button class="text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-400 hover:border-hydro-600 hover:text-hydro-300 transition-colors" onclick="send('Any anomalies or unusual readings right now?')">Anomalies</button>
-          <button class="text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-400 hover:border-hydro-600 hover:text-hydro-300 transition-colors" onclick="send('Is it safe to kayak the Willamette this weekend?')">Kayak safety</button>
+          <button class="text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-400 hover:border-hydro-600 hover:text-hydro-300 transition-colors" onclick="send('Is it safe for water recreation at any of the monitored sites this weekend?')">Recreation safety</button>
           <button class="text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-400 hover:border-hydro-600 hover:text-hydro-300 transition-colors" onclick="send('What\\'s the upstream precipitation looking like?')">Upstream precip</button>
           <button class="text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-400 hover:border-hydro-600 hover:text-hydro-300 transition-colors" onclick="send('Any compliance or threshold concerns?')">Compliance</button>
         </div>
@@ -190,7 +190,7 @@ function appendBlocked() {
   var thread = document.getElementById('thread');
   var div = document.createElement('div');
   div.className = 'msg-blocked';
-  div.innerHTML = '<span class="blocked-tag">BLOCKED</span>That\'s outside what I can help with here. I\'m scoped to hydrology, water monitoring, and the Portland watershed.';
+  div.innerHTML = '<span class="blocked-tag">BLOCKED</span>That\'s outside what I can help with here. I\'m scoped to hydrology, water monitoring, and your configured sites.';
   thread.appendChild(div);
 
   var time = document.createElement('div');

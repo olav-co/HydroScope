@@ -1,6 +1,23 @@
 const crypto = require('crypto');
 const db = require('../db/database');
-const { buildWeatherContext } = require('./weather');
+const { buildWeatherContext, deriveWeatherLocations } = require('./weather');
+
+// Returns true if at least one site coordinate is within 2 degrees of any
+// active weather station. Weather stations are now derived from the configured
+// sites themselves, so this guard prevents stale weather data (from a previous
+// site configuration) from leaking into unrelated site contexts.
+function _weatherRelevantForSites(siteLatLons) {
+  const weatherLocs = deriveWeatherLocations();
+  if (!weatherLocs.length) return false;
+  for (const { lat, lon } of siteLatLons) {
+    if (lat == null || lon == null) continue;
+    for (const wl of weatherLocs) {
+      const d = Math.sqrt(Math.pow(lat - wl.lat, 2) + Math.pow(lon - wl.lon, 2));
+      if (d < 2) return true;
+    }
+  }
+  return false;
+}
 const { getProvider } = require('./ai/index');
 const { CWMS_PARAMETER_NAMES } = require('./cwms');
 
@@ -40,15 +57,15 @@ const ROLE_CONTEXT = {
   vacationer: `You are a recreation safety advisor for water users. Focus on: is it safe, is it enjoyable,
     what should visitors know right now? Translate technical readings (cfs, pH, temp) into plain-English safety
     and experience guidance. Be direct: good/caution/avoid and why.`,
-  eco_historian: `You are an ecological historian specializing in Pacific Northwest watersheds. Contextualize current
-    readings against historical baselines, seasonal norms, and long-term ecological trends. Note how current conditions
-    compare to pre-development baselines where relevant. Highlight ecological significance.`,
+  eco_historian: `You are an ecological historian specializing in watershed ecology. Contextualize current
+    readings against historical baselines, seasonal norms, and long-term ecological trends for the monitored region.
+    Note how current conditions compare to pre-development baselines where relevant. Highlight ecological significance.`,
   analyst: `You are a water resources analyst producing decision-support summaries. Structure your response with
     key findings, risk factors, and recommended actions. Suitable for briefings to managers and planners.`,
   operator: `You are a dam and water operations engineer. Focus on operational implications: flow rates, storage levels,
     release schedules, flood risk windows, and infrastructure thresholds. Flag anything requiring immediate attention.`,
   regulator: `You are a water quality and flow compliance specialist. Reference relevant regulatory thresholds (Clean Water Act,
-    Oregon DEQ standards). Flag any exceedances, near-misses, or trends approaching permit limits. Be precise.`,
+    applicable state and federal standards). Flag any exceedances, near-misses, or trends approaching permit limits. Be precise.`,
 };
 
 const SUB_ROLE_ADDENDA = {
@@ -177,11 +194,17 @@ function buildDataContext(recentRows, sites) {
     }
   } catch (_) {}
 
-  // Append weather context from Open-Meteo if available
+  // Append weather context only when sites are geographically near the weather stations
   try {
     const weatherRows = db.getRecentWeather(72);
     if (weatherRows && weatherRows.length) {
-      ctx += buildWeatherContext(weatherRows);
+      const siteLatLons = Object.keys(bySite).map(id => {
+        const s = (sites || []).find(s => s.site_id === id);
+        return s ? { lat: s.latitude, lon: s.longitude } : {};
+      });
+      if (_weatherRelevantForSites(siteLatLons)) {
+        ctx += buildWeatherContext(weatherRows);
+      }
     }
   } catch (_) {}
 
@@ -226,10 +249,14 @@ function buildTimeSeriesContext(rows, siteId, siteName, paramCode, paramName) {
   });
   ctx += '---\n';
 
-  // Also append weather context if available
+  // Append weather context only when this site is near the weather stations
   try {
     var weatherRows = db.getRecentWeather(72);
-    if (weatherRows && weatherRows.length) ctx += buildWeatherContext(weatherRows);
+    if (weatherRows && weatherRows.length) {
+      var siteRow = db.getSiteById(siteId);
+      var latLons = siteRow ? [{ lat: siteRow.latitude, lon: siteRow.longitude }] : [];
+      if (_weatherRelevantForSites(latLons)) ctx += buildWeatherContext(weatherRows);
+    }
   } catch (_) {}
 
   return ctx;
@@ -306,7 +333,7 @@ async function generateInsight(profile, query, opts = {}) {
 // ── Chat Modes ────────────────────────────────────────────────────────────────
 
 const HYDROSCOPE_WIKI = `
-HydroScope is a real-time hydrology dashboard for the Portland, Oregon region.
+HydroScope is a real-time hydrology monitoring dashboard. It tracks any combination of USGS stream gauges and US Army Corps of Engineers (CWMS) dam operations sites configured by the user — there is no fixed geographic region.
 
 PAGES AND HOW TO USE THEM:
 
@@ -316,7 +343,7 @@ Dashboard (/):
 
 Data Visualization (/visualize):
   What it shows: A time-series chart for one site and one parameter over a chosen time window.
-  How to use: Select a site from the dropdown, then a parameter (Discharge, Gage Height, etc.), then a time range (24h, 7d, 30d). The chart renders with AI-suggested threshold bands overlaid. Scroll the chart to zoom; hover for exact values. Click "AI Analysis" for a written interpretation of the current trend.
+  How to use: Select a site from the dropdown, then a parameter (Discharge, Gage Height, etc.), then a time range (24h, 7d, 30d). The chart renders with AI-suggested threshold bands overlaid. Hover for exact values. The AI panel provides written interpretation and contextual thresholds.
 
 Compare (/compare):
   What it shows: Multiple sites plotted together on one chart for the same parameter.
@@ -327,34 +354,34 @@ Forecast (/forecast):
   How to use: Select a site. The page shows precipitation forecast, temperature, and an AI-generated flow outlook. Confidence level is indicated. Useful for planning around expected high or low water.
 
 Weather Data (/weather):
-  What it shows: Raw hourly weather observations and forecast from Open-Meteo for the monitoring region.
-  How to use: Browse past actuals and upcoming forecast. Parameters include precipitation, temperature, wind, and more. This data is also used as context in AI analysis on other pages.
+  What it shows: Raw hourly weather observations and forecast from Open-Meteo for the monitoring region(s).
+  How to use: Browse past actuals and upcoming forecast. Parameters include precipitation, temperature, wind, and more. Weather locations are automatically derived from the configured monitoring sites.
 
 Data Explorer (/data-explorer):
   What it shows: A table of all data series in the database — how many records, earliest and latest timestamps, average measurement interval.
-  How to use: Use this to verify data is flowing and check for gaps. If a site shows 0 records or a stale latest timestamp, data collection may have failed. No interaction required beyond reading.
+  How to use: Use this to verify data is flowing and check for gaps. If a site shows 0 records or a stale latest timestamp, data collection may have failed.
 
 Flow Network (/flow-network):
   What it shows: An auto-discovered stream network diagram. Each site is a node showing live readings. Arrows show upstream-to-downstream flow direction, derived from USGS drainage area and HUC watershed codes — not drawn manually.
-  How to use: Select which sites to display using the chips at the top. Select which parameters to show on each node (Discharge, Gage Height, etc.). The layout auto-arranges by watershed depth. Drag nodes to reposition. Click "Analyze Network" to get an AI cascade analysis of how conditions at upstream sites are likely affecting downstream sites. Click "Discover Topology" to re-query the USGS watershed database if connections look wrong.
+  How to use: Select which sites to display using the chips at the top. Select which parameters to show on each node. The layout auto-arranges by watershed depth. Drag nodes to reposition. Click "Analyze Network" for an AI cascade analysis. Click "Discover Topology" to re-query the USGS watershed database.
   Reading the arrows: Line color = discharge trend (blue rising, orange falling, gray stable). Line thickness = volume. Labels show cfs, distance in km, and % of downstream flow.
   Reading the nodes: Border color is a unique identifier per site only — it does not indicate status.
 
 Water Quality (/water-quality):
   What it shows: Regulatory permit limits per site and parameter, and whether current readings are in compliance.
-  How to use: Click "Add Limit" to define a threshold (max, min, or target) for any site/parameter combination. Give it a label (e.g. "EPA Max DO") and a color. Once set, limits appear as reference lines on charts and trigger compliance badges.
+  How to use: Click "Add Limit" to define a threshold (max, min, or target) for any site/parameter combination. Give it a label and color. Limits appear as reference lines on charts and trigger compliance badges.
 
 Annotations (/annotations):
   What it shows: A log of notable events — dam releases, flood peaks, spills, maintenance windows.
-  How to use: Click "Add Annotation" and select a site, category, label, and timestamp. Annotations appear as vertical markers on time-series charts so you can correlate events with data changes.
+  How to use: Click "Add Annotation" and select a site, category, label, and timestamp. Annotations appear as vertical markers on time-series charts.
 
 Ask AI (/insights):
   What it shows: A full AI analysis interface with longer-form responses, analysis history, and site-specific forecasts.
-  How to use: Type a detailed question or select a site for an automated forecast. Unlike the floating chat, this page supports longer responses and saves your query history. Good for in-depth analysis you want to reference later.
+  How to use: Type a detailed question or select a site for an automated forecast. Supports longer responses and saves your query history.
 
 Profile (/profile):
   What it shows: Your user role and sub-role settings.
-  How to use: Set your role (general, analyst, operator, regulator, etc.) and optionally a sub-role (kayaker, hydrologist, dam operator, etc.). This tunes the tone and focus of all AI responses throughout the app. You can also add a bio for more personalized context.
+  How to use: Set your role (general, analyst, operator, regulator, etc.) and optionally a sub-role (kayaker, hydrologist, dam operator, etc.). This tunes the tone and focus of all AI responses throughout the app.
 
 Settings (/settings):
   What it shows: System configuration — AI provider, model selection, and data fetch schedule.
@@ -365,9 +392,9 @@ HydroScope integrates two independent data sources — both are fully active and
 
 USGS Stream Gauges (source=usgs):
 - Discharge (cfs): Volume of water per second. Primary flood indicator.
-- Gage Height (ft): Water surface elevation (stage). Portland flood stage ≈ 25 ft.
+- Gage Height (ft): Water surface elevation (stage). Flood stage varies by site.
 - Water Temperature (°C): Fish habitat and recreation safety indicator.
-- Dissolved Oxygen (mg/L): Below 5 mg/L stresses salmon. Tualatin is known for summer DO crashes.
+- Dissolved Oxygen (mg/L): Below 5 mg/L stresses aquatic life.
 - pH: Normal 6.5–8.5. Extremes indicate pollution.
 - Updated every 15 minutes from USGS National Water Information System.
 
@@ -386,16 +413,7 @@ CWMS Dam Operations — US Army Corps of Engineers (source=cwms):
 - Data from the public Corps CDA API (cwms-data.usace.army.mil), updated hourly to every 30 min.
 - CWMS parameters use descriptive codes (Elev-Pool, Flow-In, Stor, etc.) not USGS numeric codes.
 
-SITES (upstream to downstream):
-- Bull Run at Bull Run (14138800): Portland's drinking water source. Managed, very clean.
-- Sandy River near Marmot (14142500): Glacier-fed from Mt. Hood. Highly responsive to snowmelt and rain.
-- Willamette at Springfield (14162500): Upstream Willamette reference near Eugene.
-- Willamette at Albany (14174000): Mid-valley Willamette.
-- Willamette at Salem (14191000): Oregon's capital. Significant ag runoff input.
-- Tualatin at Farmington (14206950): Slow lowland tributary. Summer low flows and temperature/DO issues.
-- Clackamas at Oregon City (14211010): Clean, fast tributary joining Willamette at river mile 26.
-- Willamette at Portland (14211720): Main city gauge. Tidal influence, ~11,000 mi² drainage.
-- Columbia at Bonneville (14246900): Below Bonneville Dam. Hydro-operation dominated.
+SITES: The monitored sites are whatever the user has configured. Site details (name, location, parameter availability) are provided in the live data context with each query.
 
 STATUS COLORS (dashboard badges, site cards):
 - Green (ok): Normal, within expected range.
@@ -404,10 +422,9 @@ STATUS COLORS (dashboard badges, site cards):
 - Red (critical): Threshold exceeded, immediate attention.
 
 FLOW NETWORK PAGE COLORS:
-- Node border color: Each site is assigned a unique color from a fixed palette (blue, purple, green, orange, pink, yellow, etc.) purely for visual identification. The color has NO meaning about status or conditions — it just distinguishes one site from another. If two sites appear to share a color it is because the palette cycles when there are more than 12 sites.
+- Node border color: Each site is assigned a unique color from a fixed palette purely for visual identification. The color has NO meaning about status.
 - Connection line color: Blue = upstream discharge is rising. Orange = falling. Gray = stable.
 - Connection line thickness: Proportional to discharge volume (cfs).
-- Connection line labels: Show cfs value + trend arrow, straight-line distance in km, and % contribution to downstream flow.
 
 DATA REFRESH: Stream data every 15 min (USGS). Weather hourly (Open-Meteo). Topology on server restart.
 
@@ -447,143 +464,74 @@ Do not reach for historical context when conditions are ordinary. No preamble.`,
 
 // ── Planner ───────────────────────────────────────────────────────────────────
 
-// Patterns that are unambiguously off-topic — block before any AI call.
+// Only hard-block requests that have zero hydrology interpretation.
 const BLOCK_PATTERNS = [
-  /write (me )?(a |an )?(poem|song|story|essay|novel|lyrics|haiku|sonnet|script|code|function|class|program)/i,
-  /generate (a |an )?(poem|story|image|picture|logo|app|website|code)/i,
-  /draw (me )?a /i,
+  /write (me )?(a |an )?(poem|song|story|essay|novel|lyrics|haiku|sonnet|script)/i,
+  /generate (a |an )?(poem|story|image|picture|logo|app|website)/i,
   /\b(debug|refactor|fix) (my |this )?(code|function|script|bug|error)\b/i,
-  /how (do i|to) (code|program|build|deploy|install|configure) /i,
+  /how (do i|to) (code|program|build|deploy|install) /i,
   /\bin (python|javascript|java|c\+\+|ruby|rust|go|php|swift|kotlin)\b/i,
-  /what (is|are) the capital (of|city)/i,
-  /\bsolve (this |the )?(math|equation|problem)\b/i,
+  /\bsolve (this |the )?(math|equation|algebra)\b/i,
   /\btranslate (this |to )\b/i,
-  /who (is|was) (the )?(president|prime minister|ceo|founder|inventor|author)/i,
   /recommend (me )?(a |some )?(movie|tv show|show|book|song|restaurant|recipe)/i,
   /\btell me a joke\b/i,
   /\bplay (a game|chess|trivia)\b/i,
 ];
 
-// Signals that the query is about live monitoring data
-const DATA_SIGNALS = [
-  // USGS stream gauge parameters
-  'discharge','cfs','gage','gauge','stage','level','flow','streamflow',
-  'dissolved oxygen','turbidity','ph ',
-  // USGS site names
-  'willamette','sandy','clackamas','tualatin','columbia','bull run','bonneville','marmot','springfield','albany','salem','farmington',
-  // CWMS dam operations parameters
-  'pool elevation','forebay','tailwater','inflow','outflow','storage','reservoir storage',
-  'turbine flow','spillway','flood pool','conservation pool','acre-feet','acre feet',
-  'power generation','mwh','dam release','gate opening','spill',
-  'conductance','pool level','reservoir level',
-  // CWMS site names (example config)
-  'center hill','cheatham','barkley','detroit dam','lookout point','cougar','green peter','foster','fall creek','dorena',
-  // General data query terms
-  'reading','readings','right now','today','currently','trending','rising','falling','flood','drought',
-  'statistics','stddev','standard deviation','outlier','anomal','percentile','correlation',
-  // Metric / calculation terms — always analyst-mode territory
-  'minimum','maximum','min ','max ',' min',' max',
-  'mean','average','median','variance','std ','calculate','computation',
-  'domain','range','spread','skew',
-];
-
-
-// Signals that the query is asking for historical comparison or norm context —
-// these should go to research mode, not pure analyst, so aiPlan decides
-const HISTORICAL_SIGNALS = [
-  'normal','unusual','typical','atypical','historic','record','compare','season','seasonal',
-  'pattern','before','ever','usually','expect','average year','time of year',
-  'el ni','la ni','atmospheric river','snowmelt','snowpack','drought year',
-  'high for','low for','above average','below average','above normal','below normal',
-];
-
 /**
- * Parse an explicit time window from a query string.
- * Returns hours as a number, or null if none found.
+ * Scan recent conversation history to surface implicit context.
+ * Returns sites and params recently discussed — used to resolve
+ * pronouns and follow-up references in the planner.
  */
-function extractQueryHours(lower) {
-  var m;
-  if ((m = lower.match(/(?:last|past)\s+(\d+)\s+hour/)))  return parseInt(m[1]);
-  if ((m = lower.match(/(?:last|past)\s+(\d+)\s+day/)))   return parseInt(m[1]) * 24;
-  if ((m = lower.match(/(?:last|past)\s+(\d+)\s+week/)))  return parseInt(m[1]) * 168;
-  if (/(?:last|past)\s+(?:24\s*h|a\s*day|one\s*day)/.test(lower)) return 24;
-  if (/(?:last|past)\s+(?:week|7\s*day)/.test(lower))    return 168;
-  if (/(?:last|past)\s+(?:month|30\s*day)/.test(lower))  return 720;
-  return null;
-}
+function extractConversationContext(history, allSites) {
+  if (!history || !history.length) return { site_ids: [], param_code: null };
 
-/**
- * Fast local pre-classifier. Returns a plan if the case is clear, null if ambiguous.
- */
-function localPlan(query, history, pageContext) {
-  var lower = query.toLowerCase();
+  var recentText = history.slice(-6).map(function(h) { return h.text; }).join(' ').toLowerCase();
 
-  // Unambiguous block
-  if (BLOCK_PATTERNS.some(function(re) { return re.test(query); })) {
-    return { mode: 'general', blocked: true, needs_clarification: null, needs_context: [], data_sources: [], site_ids: null, hours: 48 };
-  }
+  var mentionedSiteIds = allSites.filter(function(s) {
+    return recentText.includes(s.name.toLowerCase()) ||
+           recentText.includes(s.site_id.toLowerCase());
+  }).map(function(s) { return s.site_id; });
 
-  var hasPageCtx        = pageContext && pageContext.current_page;
-  var hasSiteCtx        = pageContext && pageContext.site_id;
-  var hasParamCtx       = pageContext && pageContext.param_code;
-  var isFollowUp        = history.length > 0;
-  var wordCount         = query.trim().split(/\s+/).length;
-  var hasDataSignal     = DATA_SIGNALS.some(function(t) { return lower.includes(t); });
-  var hasHistoricalSignal = HISTORICAL_SIGNALS.some(function(t) { return lower.includes(t); });
-  var queryHours        = extractQueryHours(lower);  // explicit time window in query, e.g. "last 12 hours"
-
-  // Queries that mix live data with historical/norm comparison need research mode —
-  // let aiPlan decide so it can choose research + current_readings instead of pure analyst
-  if (hasDataSignal && hasHistoricalSignal) return null;
-
-  // Clear wiki: short UI question on a known page with no data signals
-  if (hasPageCtx && wordCount <= 10 && !hasDataSignal) {
-    if (/\b(what|how|explain|show|this|mean|does|here|looking at|am i|tell me about)\b/i.test(query)) {
-      return { mode: 'wiki', blocked: false, needs_clarification: null, needs_context: [], data_sources: ['wiki'], site_ids: null, hours: 48 };
+  // Light param detection from conversation text
+  var paramCode = null;
+  var paramHints = [
+    { code: '00060', terms: ['discharge', 'cfs', 'flow', 'streamflow'] },
+    { code: '00065', terms: ['gage height', 'gauge height', 'stage', 'level'] },
+    { code: '00010', terms: ['temperature', 'temp', 'water temp'] },
+    { code: '00300', terms: ['dissolved oxygen', ' do ', 'do level'] },
+    { code: '00400', terms: [' ph ', 'ph level', 'acidity'] },
+  ];
+  for (var i = 0; i < paramHints.length; i++) {
+    if (paramHints[i].terms.some(function(t) { return recentText.includes(t); })) {
+      paramCode = paramHints[i].code;
+      break;
     }
   }
 
-  // Clear analyst: has site+param context and a data signal
-  if (hasSiteCtx && hasParamCtx && hasDataSignal) {
-    return { mode: 'analyst', blocked: false, needs_clarification: null, needs_context: [],
-      data_sources: ['time_series', 'weather'], site_ids: [pageContext.site_id],
-      hours: queryHours || parseInt(pageContext.visible_hours) || 168 };
-  }
+  return { site_ids: mentionedSiteIds, param_code: paramCode };
+}
 
-  // Clear analyst: has site context and a data signal (no param)
-  if (hasSiteCtx && hasDataSignal) {
-    return { mode: 'analyst', blocked: false, needs_clarification: null, needs_context: [],
-      data_sources: ['current_readings', 'weather'], site_ids: [pageContext.site_id],
-      hours: queryHours || 48 };
+/**
+ * Local pre-classifier — ONLY handles hard blocks.
+ * All routing decisions go to the AI planner.
+ */
+function localPlan(query) {
+  if (BLOCK_PATTERNS.some(function(re) { return re.test(query); })) {
+    return { mode: 'general', blocked: true, needs_clarification: null, data_sources: [], site_ids: null, hours: 48 };
   }
-
-  // Clear analyst: data signal, no site context
-  // If an explicit time window was requested, let aiPlan handle it — it can identify the site
-  // from the query text and request time_series with the right site+param+hours.
-  // For current-state questions (no time window), short-circuit to current_readings for all sites.
-  if (hasDataSignal) {
-    if (queryHours) return null; // fall through to aiPlan for windowed/historical queries
-    return { mode: 'analyst', blocked: false, needs_clarification: null, needs_context: [],
-      data_sources: ['current_readings', 'weather'], site_ids: null, hours: 48 };
-  }
-
-  // Too vague AND no conversation history AND no page context — ask for clarification locally
-  if (!isFollowUp && !hasPageCtx && wordCount <= 4 && /\b(what|how|why|show|help|tell)\b/i.test(query)) {
-    return { mode: 'general', blocked: false, needs_clarification: 'What specifically would you like to know? I can analyze current flow data, explain how to use a page, or discuss hydrology topics.', needs_context: [], data_sources: [], site_ids: null, hours: 48 };
-  }
-
-  // Ambiguous — let AI decide
   return null;
 }
 
 /**
- * AI planner — called only when localPlan returns null.
- * Single structured JSON call; decides everything in one shot.
+ * AI planner — smart routing with full conversation context.
+ * Called for every non-blocked query.
  */
 async function aiPlan(query, history, pageContext, profile) {
   var allSites = db.getAllSites();
-  var siteList = allSites.map(function(s) { return s.site_id + '=' + s.name; }).join(', ');
+  var siteList = allSites.map(function(s) { return s.site_id + '=' + s.name + ' (source:' + s.source + ')'; }).join(', ');
 
+  // Page context
   var ctxParts = [];
   if (pageContext) {
     if (pageContext.current_page)  ctxParts.push('page=' + (pageContext.current_page_name || pageContext.current_page));
@@ -592,78 +540,118 @@ async function aiPlan(query, history, pageContext, profile) {
     if (pageContext.visible_hours) ctxParts.push('window=' + pageContext.visible_hours + 'h');
   }
 
+  // Implicit context from conversation history — resolves pronouns and follow-ups
+  var convCtx = extractConversationContext(history, allSites);
+  var convCtxParts = [];
+  if (convCtx.site_ids.length) {
+    var convSiteNames = convCtx.site_ids.map(function(id) {
+      var s = allSites.find(function(x) { return x.site_id === id; });
+      return s ? s.name : id;
+    });
+    convCtxParts.push('recently discussed sites: ' + convSiteNames.join(', '));
+  }
+  if (convCtx.param_code) convCtxParts.push('recently discussed param: ' + convCtx.param_code);
+
+  // Last 3 turns of actual conversation text for follow-up resolution
+  var historySnippet = '';
+  if (history.length) {
+    historySnippet = history.slice(-3).map(function(h) {
+      return (h.role === 'user' ? 'User' : 'Assistant') + ': ' + h.text.slice(0, 300);
+    }).join('\n');
+  }
+
   var PARAM_CODES = [
-    '--- USGS parameter codes ---',
-    '00060=discharge(cfs), 00065=gage height(ft), 00010=water temperature(°C), 00300=dissolved oxygen(mg/L), 00400=pH',
-    '--- CWMS parameter codes (Corps dams) ---',
-    Object.entries(CWMS_PARAMETER_NAMES)
-      .slice(0, 15)
-      .map(([k, v]) => k + '=' + v)
-      .join(', '),
-  ].join(' ');
+    'USGS: 00060=discharge(cfs), 00065=gage height(ft), 00010=water temp(°C), 00300=dissolved oxygen(mg/L), 00400=pH',
+    'CWMS: ' + Object.entries(CWMS_PARAMETER_NAMES).slice(0, 12).map(function(e) { return e[0] + '=' + e[1]; }).join(', '),
+  ].join(' | ');
 
   var prompt = [
-    'You are the query planner for HydroScope, a real-time hydrology dashboard for Oregon watersheds.',
-    'Available USGS sites: ' + siteList,
-    'Available USGS parameter codes: ' + PARAM_CODES,
-    'Frontend context already provided: ' + (ctxParts.join(', ') || 'none'),
-    'Conversation history turns: ' + history.length,
+    'You are the query planner for HydroScope, a real-time hydrology monitoring dashboard.',
+    'Available sites: ' + siteList,
+    'Parameter codes: ' + PARAM_CODES,
+    'Page context: ' + (ctxParts.join(', ') || 'none'),
+    convCtxParts.length ? 'Conversation context: ' + convCtxParts.join(', ') : '',
+    historySnippet ? 'Recent conversation:\n' + historySnippet : '',
     'User role: ' + (profile.role || 'general'),
     '',
-    'Query: "' + query + '"',
+    'Current query: "' + query + '"',
     '',
-    'Return ONLY valid JSON with this exact shape — no prose, no code fences:',
+    '## YOUR JOB',
+    'Decide how to route and fulfill this query. DEFAULT TO ATTEMPTING AN ANSWER.',
+    '',
+    '## CRITICAL RULES',
+    '1. FOLLOW-UP RESOLUTION: If this looks like a follow-up ("what about now?", "and the Sandy?", "is that normal?", "why?", "how does that compare?"), use the recent conversation to resolve the subject. Pronouns (it, that, there, this, the same) refer to what was just discussed.',
+    '2. AMBIGUITY: When the query is short or vague but conversation/page context clarifies intent, USE that context — do not ask for clarification.',
+    '3. DEFAULT ACTION: When in doubt, pull current_readings for the most relevant sites and attempt an answer. Never return empty data_sources for a hydrology question.',
+    '4. CLARIFICATION: Only set needs_clarification if the query has absolutely no hydrology interpretation and no conversation context to draw from. It should be rare.',
+    '',
+    'Return ONLY valid JSON, no prose, no code fences:',
     '{',
     '  "mode": "analyst|wiki|research|general",',
     '  "blocked": false,',
     '  "needs_clarification": null,',
-    '  "needs_context": [],',
     '  "data_sources": [],',
     '  "site_ids": null,',
     '  "param_code": null,',
     '  "hours": 48',
     '}',
     '',
-    'Decision rules:',
-    '- mode "wiki"     → questions about the app, UI, pages, features, what colors/icons mean, how to use things',
-    '- mode "analyst"  → questions about live data, current conditions, statistics, specific sites or readings — pure numbers, no historical comparison needed',
-    '- mode "research" → live data questions that also ask for historical context: is this normal, is this a record, what does this pattern usually mean, how does this compare to a typical year/season, questions about climate drivers (El Niño, atmospheric rivers, snowmelt), why something is happening, what to expect next',
-    '- mode "general"  → greetings, small talk, follow-ups too short to classify otherwise',
-    '- blocked         → true ONLY for clearly unrelated requests (poems, code help, movie recs)',
-    '- needs_clarification → short question string if genuinely too vague; null if page context implies intent; always null for follow-ups',
-    '- needs_context   → ONLY list fields not already in "Frontend context provided" above. Options: "selected_site","selected_param","visible_hours","current_page"',
-    '- data_sources    → what the system needs to fetch to answer this query:',
-    '    "current_readings" = latest snapshot across sites (use for current conditions, network-wide questions)',
-    '    "time_series"      = full timestamped history with stats for ONE site+param (use when query asks for range, min, max, trend, stats, or a specific time window at an identifiable site)',
-    '    "wiki"             = app guide (pages, features, UI explanations)',
-    '    "weather"          = precipitation/temperature forecast context',
-    '    "annotations"      = logged events/releases at sites',
-    '- site_ids   → resolve from query text using the site list above; null means all sites; be specific when the query names a site',
-    '- param_code → USGS code for the parameter the query is about (use list above); null only if truly unspecified (system defaults to discharge)',
-    '- hours      → match the time window the user asked for; 48 if not specified, 168 (weekly), 720 (monthly)',
-  ].join('\n');
+    'mode rules:',
+    '  "analyst"  → live data, current conditions, stats, readings, trends, comparisons between sites',
+    '  "research" → live data + historical context: is this normal, seasonal patterns, climate drivers, why is this happening, what to expect',
+    '  "wiki"     → app UI questions: how to use a page, what does a color/icon mean, feature explanations',
+    '  "general"  → greetings, thanks, small talk with no data angle',
+    '',
+    'data_sources (include all that apply):',
+    '  "current_readings" → latest snapshot; use for current conditions, network-wide, or when site is unclear',
+    '  "time_series"      → full history with stats for a specific site+param; use when stats, trends, or a time window are needed',
+    '  "weather"          → precip/temp forecast; include whenever weather context would help',
+    '  "wiki"             → app guide; only for UI/feature questions',
+    '  "annotations"      → user event log; include when asking about events, releases, or anomalies',
+    '',
+    'site_ids: resolve from query + conversation context; null = all sites',
+    'param_code: infer from query + conversation; null = default to discharge',
+    'hours: explicit window if stated; 48 default, 168 weekly, 720 monthly',
+  ].filter(Boolean).join('\n');
 
   try {
     var text = await withRetry(function() { return getProvider().generateJSON('', prompt); });
-    text = text.trim().replace(/```json\n?|\n?```/g, '');
+    text = text.trim().replace(/^```json\s*/i, '').replace(/\s*```$/i, '');
     var plan = JSON.parse(text);
-    plan.mode          = plan.mode          || 'general';
-    plan.blocked       = plan.blocked       || false;
-    plan.needs_context = plan.needs_context || [];
-    plan.data_sources  = plan.data_sources  || [];
-    plan.hours         = plan.hours         || 48;
-    plan.param_code    = plan.param_code    || null;
+    plan.mode         = plan.mode         || 'analyst';
+    plan.blocked      = plan.blocked      || false;
+    plan.data_sources = plan.data_sources || [];
+    plan.hours        = plan.hours        || 48;
+    plan.param_code   = plan.param_code   || null;
+    // If planner returned no data sources for a non-wiki, non-general query, default to current_readings
+    if (!plan.data_sources.length && plan.mode !== 'wiki' && plan.mode !== 'general') {
+      plan.data_sources = ['current_readings', 'weather'];
+    }
+    // Enrich site_ids with conversation context when planner left it null
+    if (!plan.site_ids && convCtx.site_ids.length && plan.mode !== 'wiki') {
+      plan.site_ids = convCtx.site_ids;
+    }
+    // Same for param_code
+    if (!plan.param_code && convCtx.param_code) {
+      plan.param_code = convCtx.param_code;
+    }
     return plan;
   } catch (_) {
-    return { mode: 'general', blocked: false, needs_clarification: null, needs_context: [], data_sources: [], site_ids: null, hours: 48 };
+    // Safe fallback — attempt with current readings rather than returning nothing
+    return {
+      mode: 'analyst', blocked: false, needs_clarification: null,
+      data_sources: ['current_readings', 'weather'],
+      site_ids: convCtx.site_ids.length ? convCtx.site_ids : null,
+      param_code: convCtx.param_code, hours: 48,
+    };
   }
 }
 
 /**
- * Resolve a plan: local fast path, AI fallback only when ambiguous.
+ * Route a query: block check first, then AI planner.
  */
 async function planQuery(query, history, pageContext, profile) {
-  var fast = localPlan(query, history, pageContext);
+  var fast = localPlan(query);
   if (fast) return fast;
   return await aiPlan(query, history, pageContext, profile);
 }
@@ -710,7 +698,14 @@ async function fulfillPlan(plan, pageContext) {
     } else if (source === 'weather') {
       try {
         var weatherRows = db.getRecentWeather(Math.max(plan.hours || 72, 72));
-        if (weatherRows && weatherRows.length) blocks.push(buildWeatherContext(weatherRows));
+        if (weatherRows && weatherRows.length) {
+          var chatSiteIds = plan.site_ids || (pageContext && pageContext.site_id ? [pageContext.site_id] : []);
+          var chatLatLons = chatSiteIds.map(function(id) {
+            var s = allSites.find(function(s) { return s.site_id === id; });
+            return s ? { lat: s.latitude, lon: s.longitude } : {};
+          });
+          if (_weatherRelevantForSites(chatLatLons)) blocks.push(buildWeatherContext(weatherRows));
+        }
       } catch (_) {}
 
     } else if (source === 'annotations') {
@@ -772,12 +767,21 @@ async function generateChat(profile, history, query, pageContext, requestedMode)
     return { blocked: true, mode: plan.mode };
   }
 
+  // If the planner wants clarification but we have history or page context,
+  // attempt an answer anyway — the context is enough to make a reasonable interpretation.
+  // Only hard-stop clarification when there is genuinely nothing to work with.
   if (plan.needs_clarification) {
-    return { clarification: plan.needs_clarification, mode: plan.mode, modeChanged: plan.mode !== requestedMode };
-  }
-
-  if (plan.needs_context && plan.needs_context.length) {
-    return { needs_context: true, fields: plan.needs_context, mode: plan.mode };
+    var hasEnoughContext = history.length > 0 || (pageContext && pageContext.current_page);
+    if (hasEnoughContext) {
+      // Proceed — note the interpretation assumption in the prompt
+      plan.needs_clarification = null;
+      if (!plan.data_sources.length) plan.data_sources = ['current_readings', 'weather'];
+      if (plan.mode === 'general') plan.mode = 'analyst';
+    } else {
+      // Return needs_context so the client can ask the question, store the original query,
+      // and fold the user's answer back into it on the next request.
+      return { needs_context: true, question: plan.needs_clarification, mode: plan.mode, modeChanged: plan.mode !== requestedMode };
+    }
   }
 
   // ── Step 2: Fulfill ─────────────────────────────────────────────────────────
@@ -810,12 +814,25 @@ async function generateChat(profile, history, query, pageContext, requestedMode)
     }
   }
 
+  // Conversation context note — helps the AI resolve any remaining pronoun/reference ambiguity
+  var allSites = db.getAllSites();
+  var convCtx = extractConversationContext(history, allSites);
+  var convCtxNote = '';
+  if (convCtx.site_ids.length) {
+    var convNames = convCtx.site_ids.map(function(id) {
+      var s = allSites.find(function(x) { return x.site_id === id; });
+      return s ? s.name : id;
+    });
+    convCtxNote = 'Recently discussed in conversation: ' + convNames.join(', ') + '. Treat ambiguous references ("it", "that site", "there", "the same") as referring to these unless otherwise stated.';
+  }
+
   var systemParts = [
     modeConfig.system,
     roleCtx,
     subCtx,
     bioCtx,
     pageCtxLine,
+    convCtxNote,
     'Never start with "Great question", "Certainly", "Of course", or any filler. Never repeat the question. Never use headers.',
     dataIncluded ? 'Live monitoring data is provided — reference actual values, not generics.' : '',
   ].filter(Boolean).join('\n');
