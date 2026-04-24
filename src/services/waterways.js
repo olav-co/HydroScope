@@ -64,26 +64,35 @@ function isUsgsId(siteId) { return /^\d+$/.test(siteId); }
  * CWMS: looks up lat/lon from the DB then snaps via NLDI position endpoint.
  * Results are cached in memory for the lifetime of the process.
  */
-async function getSiteComid(siteId) {
+async function getSiteComid(siteId, overrideLat, overrideLon) {
   if (_comidCache[siteId]) return _comidCache[siteId];
+
+  // Check DB before hitting NLDI
+  const dbSite = db.getSiteById(siteId);
+  if (dbSite?.comid) {
+    _comidCache[siteId] = dbSite.comid;
+    return dbSite.comid;
+  }
 
   let comid = null;
 
   if (isUsgsId(siteId)) {
-    // USGS — NLDI nwissite lookup
     const data = await httpsGet(NLDI_HOST, `${NLDI_BASE}/USGS-${siteId}`);
     const raw = data?.features?.[0]?.properties?.comid;
     if (raw) comid = String(raw);
   } else {
-    // CWMS — snap lat/lon to nearest NHD comid
-    const site = db.getSiteById(siteId);
-    if (site?.latitude && site?.longitude) {
-      comid = await fetchComidForLatLon(site.latitude, site.longitude);
+    // CWMS — snap lat/lon to nearest NHD comid.
+    // overrideLat/Lon lets callers pass coords for sites not yet in DB.
+    const lat = overrideLat ?? dbSite?.latitude;
+    const lon = overrideLon ?? dbSite?.longitude;
+    if (lat != null && lon != null) {
+      comid = await fetchComidForLatLon(lat, lon);
     }
   }
 
   if (comid) {
     _comidCache[siteId] = comid;
+    if (dbSite) db.setSiteComid(siteId, comid); // only persist when site exists in DB
     return comid;
   }
   return null;
@@ -344,4 +353,4 @@ function runBackgroundCrawl() {
     .catch(e  => console.error('[Waterways] startup error:', e.message));
 }
 
-module.exports = { runBackgroundCrawl, processNextPair, refreshAllWaterways, resetAllPairs, isRunning };
+module.exports = { runBackgroundCrawl, processNextPair, refreshAllWaterways, resetAllPairs, isRunning, getSiteComid };

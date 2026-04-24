@@ -11,6 +11,7 @@
  */
 
 const https = require('https');
+const http  = require('http');
 
 // ── Parameter metadata ────────────────────────────────────────────────────────
 // Maps the 2nd dot-segment of a timeseries ID to human-readable name.
@@ -81,20 +82,23 @@ function fetchTimeseries(baseUrl, office, timeseriesName, lookbackHours) {
       end:    endStr,
     }).toString();
 
-    // Strip protocol prefix from baseUrl to get hostname + basePath
+    // Resolve protocol, host, port from baseUrl
     const urlObj  = new URL(baseUrl + '/timeseries?' + qs);
+    const isHttps = urlObj.protocol === 'https:';
+    const client  = isHttps ? https : http;
     const options = {
       hostname: urlObj.hostname,
+      port:     urlObj.port ? parseInt(urlObj.port, 10) : (isHttps ? 443 : 80),
       path:     urlObj.pathname + urlObj.search,
       method:   'GET',
       headers: {
-        'Accept':     'application/json',
+        'Accept':     'application/json;q=0.9,*/*;q=0.8',
         'User-Agent': 'HydroScope/1.0 (hydrology monitoring dashboard)',
       },
       timeout: 20000,
     };
 
-    const req = https.request(options, (res) => {
+    const req = client.request(options, (res) => {
       if (res.statusCode !== 200) {
         res.resume();
         return reject(new Error(`HTTP ${res.statusCode} for ${timeseriesName}`));
@@ -122,27 +126,33 @@ function fetchTimeseries(baseUrl, office, timeseriesName, lookbackHours) {
  * @returns {Array} Flat array of measurement rows ready for insertMeasurements()
  */
 async function fetchCurrentReadingsCWMS(sites, cwmsCfg) {
-  const { baseUrl, office, lookbackHours = 48 } = cwmsCfg;
+  const { baseUrl, office: globalOffice, lookbackHours = 48 } = cwmsCfg;
 
-  // Build a flat list of (siteId, timeseriesName) pairs
+  // Build a flat list of (siteId, office, timeseriesName) pairs.
+  // Use per-site office from DB if set; fall back to global config office.
   const tasks = [];
   for (const site of sites) {
+    const siteOffice = site.office || globalOffice;
     for (const tsName of (site.timeseries || [])) {
-      tasks.push({ siteId: site.locationId, tsName });
+      tasks.push({ siteId: site.locationId, office: siteOffice, tsName });
     }
   }
 
   const rows = [];
   let delay  = 0;
 
-  await Promise.all(tasks.map(({ siteId, tsName }) =>
+  await Promise.all(tasks.map(({ siteId, office, tsName }) =>
     new Promise(resolve => setTimeout(async () => {
       try {
         const data       = await fetchTimeseries(baseUrl, office, tsName, lookbackHours);
         const paramCode  = extractParamCode(tsName);
         const paramName  = CWMS_PARAMETER_NAMES[paramCode] || paramCode;
-        const unit       = data.units || '';
-        const values     = data.values || [];
+        const unit       = data.units || data.unit || '';
+        // Handle both standard CDA shape (values) and older shape (time-series-data, regular-interval-values)
+        const values     = data.values
+          || data['time-series-data']
+          || data['regular-interval-values']
+          || [];
 
         let added = 0;
         for (const entry of values) {
@@ -174,7 +184,10 @@ async function fetchCurrentReadingsCWMS(sites, cwmsCfg) {
         if (added) {
           console.log(`[CWMS] ${tsName}: ${added} values`);
         } else {
-          console.log(`[CWMS] ${tsName}: no data in window`);
+          const total = data.total != null ? data.total : 'n/a';
+          const begin = data.begin || 'n/a';
+          const end   = data.end   || 'n/a';
+          console.log(`[CWMS] ${tsName}: no data (total=${total}, begin=${begin}, end=${end})`);
         }
       } catch (err) {
         console.warn(`[CWMS] Failed to fetch ${tsName}: ${err.message}`);

@@ -118,7 +118,6 @@
   <div style="border-bottom:1px solid #1e293b;background:#0f172a;display:flex;gap:0;padding:0 16px;overflow-x:auto;flex-shrink:0;">
     <button class="tab-btn active" onclick="switchTab('active')"    id="tab-active">Active Sites</button>
     <button class="tab-btn"        onclick="switchTab('map')"       id="tab-map">Map Discovery</button>
-    <button class="tab-btn"        onclick="switchTab('search')"    id="tab-search">Search &amp; Add</button>
     <button class="tab-btn"        onclick="switchTab('cwms')"      id="tab-cwms">CWMS Catalog</button>
     <button class="tab-btn"        onclick="switchTab('import')"    id="tab-import">Import / Export</button>
   </div>
@@ -324,61 +323,12 @@
     </div>
 
     <!-- ══ TAB 3: Search & Add ══════════════════════════════════════════════════ -->
-    <div class="tab-panel" id="panel-search" style="flex-direction:column;gap:16px;overflow-y:auto;">
-
-      <!-- USGS by site ID -->
-      <div class="card">
-        <h3 style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:12px;">USGS — Look up by Site Number</h3>
-        <div style="display:flex;gap:8px;align-items:flex-end;">
-          <div style="flex:1;">
-            <label class="label">Site Number(s)</label>
-            <input id="usgsIdInput" type="text" class="input" placeholder="e.g. 14162500  or  14162500,14174000" style="font-family:monospace;" />
-          </div>
-          <button onclick="searchUsgsByIds()" class="btn-primary" style="white-space:nowrap;">Look up</button>
-        </div>
-        <div id="usgsIdResults" style="margin-top:12px;"></div>
-      </div>
-
-      <!-- USGS by name -->
-      <div class="card">
-        <h3 style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:12px;">USGS — Search by Station Name</h3>
-        <div style="display:flex;gap:8px;align-items:flex-end;">
-          <div style="flex:1;">
-            <label class="label">Station name contains</label>
-            <input id="usgsNameInput" type="text" class="input" placeholder="e.g. Willamette" />
-          </div>
-          <button onclick="searchUsgsByName()" class="btn-primary" style="white-space:nowrap;">Search</button>
-        </div>
-        <div id="usgsNameResults" style="margin-top:12px;"></div>
-      </div>
-
-      <!-- CWMS by location ID -->
-      <div class="card">
-        <h3 style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:12px;">CWMS — Add by Location ID</h3>
-        <p style="font-size:12px;color:#64748b;margin-bottom:12px;">
-          Enter a CWMS location ID (e.g. <code style="font-family:monospace;color:#94a3b8;">CEHT1-CENTER_HILL</code>). Timeseries will load automatically.
-        </p>
-        <div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:12px;">
-          <div style="flex:1;">
-            <label class="label">Location ID</label>
-            <input id="cwmsLocInput" type="text" class="input" placeholder="e.g. CEHT1-CENTER_HILL" style="font-family:monospace;" />
-          </div>
-          <div style="width:100px;">
-            <label class="label">Office</label>
-            <input id="cwmsLocOffice" type="text" class="input" placeholder="LRN" />
-          </div>
-          <button onclick="loadCwmsLocTimeseries()" class="btn-primary" style="white-space:nowrap;">Load timeseries</button>
-        </div>
-        <div id="cwmsLocResults"></div>
-      </div>
-    </div>
-
-    <!-- ══ TAB 4: CWMS Catalog ══════════════════════════════════════════════════ -->
+    <!-- ══ TAB 3: CWMS Catalog ══════════════════════════════════════════════════ -->
     <div class="tab-panel" id="panel-cwms" style="flex-direction:column;gap:12px;overflow:hidden;">
       <div style="display:flex;gap:8px;align-items:flex-end;flex-shrink:0;flex-wrap:wrap;">
         <div>
           <label class="label">Office / District</label>
-          <input id="cwmsCatalogOffice" type="text" class="input" placeholder="LRN" style="width:80px;" />
+          <input id="cwmsCatalogOffice" type="text" class="input" placeholder="e.g. NWP" style="width:80px;" value="<%= cwmsOffice %>" />
         </div>
         <div style="flex:1;min-width:160px;">
           <label class="label">Filter by name (optional)</label>
@@ -502,6 +452,8 @@ let _cwmsSelTs      = new Set();
 let _cwmsCatalogData = [];
 let _discUsgs        = [];    // raw discovered USGS sites (last bbox OR text search)
 let _discCwms        = [];    // raw discovered CWMS sites (last bbox OR text search)
+let _cwmsCoordsMissing = false; // true when CDA returned sites without coordinates
+let _discPairs       = new Map(); // siteId → { partnerId, reason } for discovered co-located pairs
 let _discSearchActive = false; // true when _discUsgs/_discCwms came from text search
 let _discActiveBbox   = null;  // {minLon,minLat,maxLon,maxLat} when a box was drawn
 let _discSearchTimer  = null;  // debounce timer handle
@@ -652,8 +604,9 @@ let _mapPopup   = null;
 let _srcVisible = { usgs: true, cwms: true, combined: true };
 
 const SRC_EXISTING  = 'existing-sites';
-const SRC_DISC_USGS = 'disc-usgs';
-const SRC_DISC_CWMS = 'disc-cwms';
+const SRC_DISC_USGS      = 'disc-usgs';
+const SRC_DISC_CWMS      = 'disc-cwms';
+const SRC_DISC_COMBINED  = 'disc-combined';
 const SRC_BBOX      = 'bbox-box';
 const SRC_BASIN     = 'basin-poly';
 
@@ -736,6 +689,17 @@ function initMap() {
       }
     });
 
+    // ── Discovered combined pairs (dual-ring: amber outer + blue inner) ─────────
+    _map.addSource(SRC_DISC_COMBINED, { type: 'geojson', data: emptyGeo() });
+    _map.addLayer({ id: 'disc-combined-outer', type: 'circle', source: SRC_DISC_COMBINED,
+      paint: { 'circle-radius': 12, 'circle-color': 'rgba(0,0,0,0)',
+               'circle-stroke-color': '#f59e0b', 'circle-stroke-width': 2.5, 'circle-opacity': 0.9 }
+    });
+    _map.addLayer({ id: 'disc-combined-inner', type: 'circle', source: SRC_DISC_COMBINED,
+      paint: { 'circle-radius': 7, 'circle-color': 'rgba(0,0,0,0)',
+               'circle-stroke-color': '#38bdf8', 'circle-stroke-width': 2, 'circle-opacity': 0.9 }
+    });
+
     // ── Existing sites — filled circles, USGS blue / CWMS amber ──────────────
     _map.addSource(SRC_EXISTING, { type: 'geojson', data: sitesToGeo(_allSites) });
 
@@ -781,7 +745,7 @@ function initMap() {
     });
 
     // ── Click handlers ────────────────────────────────────────────────────────
-    const clickableLayers = ['existing-combined-cwms', 'existing-fill', 'disc-usgs-ring', 'disc-cwms-ring'];
+    const clickableLayers = ['existing-combined-cwms', 'existing-fill', 'disc-usgs-ring', 'disc-cwms-ring', 'disc-combined-outer'];
     clickableLayers.forEach(layer => {
       _map.on('mouseenter', layer, () => {
         if (!_drawMode) _map.getCanvas().style.cursor = 'pointer';
@@ -839,9 +803,37 @@ function initMap() {
 
 // ── Node popup — Add or Remove only ──────────────────────────────────────────
 function showNodePopup(feature, lngLat) {
-  const p        = feature.properties;
-  const id       = p.site_id || p.id;
-  const srcColor = p.source === 'cwms' ? '#f59e0b' : '#38bdf8';
+  const p  = feature.properties;
+  const id = p.site_id || p.id;
+
+  // Combined discovered pair — show both names with "Add Both"
+  if (p.kind === 'discovered' && p.source === 'combined' && p.cwmsId && p.usgsId) {
+    const cwmsSite = _discCwms.find(s => s.id === p.cwmsId);
+    const usgsSite = _discUsgs.find(s => s.id === p.usgsId);
+    const bothArg  = JSON.stringify([
+      { source: 'cwms', id: p.cwmsId, name: p.name,        type: cwmsSite?.type || 'dam',   lat: p.lat, lon: p.lon, office: cwmsSite?.office || null },
+      { source: 'usgs', id: p.usgsId, name: p.partnerName, type: usgsSite?.type || 'river', lat: usgsSite?.lat, lon: usgsSite?.lon },
+    ]).replace(/"/g, '&quot;');
+    _mapPopup.setLngLat(lngLat).setHTML(`
+      <div style="padding:14px;min-width:200px;">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+          <span style="padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;
+                       background:rgba(167,139,250,0.15);color:#a78bfa;">COMBINED</span>
+          <span style="font-size:11px;color:#64748b;">Not in DB</span>
+        </div>
+        <div style="font-size:11px;color:#f59e0b;margin-bottom:2px;">▪ ${esc(p.name || p.cwmsId)}</div>
+        <div style="font-size:11px;color:#38bdf8;margin-bottom:8px;">▪ ${esc(p.partnerName || p.usgsId)}</div>
+        <button onclick="popupAddBoth(${bothArg},this)"
+          style="width:100%;padding:6px 0;border-radius:6px;border:none;
+                 background:#0369a1;color:#fff;font-size:12px;cursor:pointer;font-weight:500;">
+          + Add Both to Sites
+        </button>
+      </div>
+    `).addTo(_map);
+    return;
+  }
+
+  const srcColor = p.source === 'cwms' ? '#f59e0b' : p.source === 'combined' ? '#a78bfa' : '#38bdf8';
   const srcLabel = (p.source || 'usgs').toUpperCase();
   const inDb     = !!_allSites.find(s => s.site_id === id);
 
@@ -868,7 +860,7 @@ function showNodePopup(feature, lngLat) {
     <div style="padding:14px;">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
         <span style="padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;
-                     background:${p.source==='cwms'?'rgba(245,158,11,0.15)':'rgba(56,189,248,0.15)'};
+                     background:${p.source==='cwms'?'rgba(245,158,11,0.15)':p.source==='combined'?'rgba(167,139,250,0.15)':'rgba(56,189,248,0.15)'};
                      color:${srcColor};">${srcLabel}</span>
         <span style="font-size:11px;color:#64748b;">${inDb ? 'In your sites' : 'Not in DB'}</span>
       </div>
@@ -877,6 +869,21 @@ function showNodePopup(feature, lngLat) {
       <div style="margin-top:10px;">${actionBtn}</div>
     </div>
   `).addTo(_map);
+}
+
+async function popupAddBoth(sites, btn) {
+  btn.disabled = true; btn.textContent = 'Adding…';
+  for (const s of sites) {
+    await fetch('/api/sites', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: s.source, id: s.id, name: s.name, type: s.type, lat: s.lat, lon: s.lon }),
+    });
+  }
+  _mapPopup.remove();
+  await loadSites();
+  refreshMapSites();
+  renderDiscoveryRings();
+  renderDiscCards();
 }
 
 async function popupAddSite(site, btn) {
@@ -961,56 +968,130 @@ function renderDiscCards() {
 
   // Discovered sites in viewport that are NOT already in DB
   const dbIds = new Set(_allSites.map(s => s.site_id));
-  const discInView = [..._discUsgs, ..._discCwms].filter(s =>
-    inBounds(s.lat, s.lon) && !dbIds.has(s.id)
-  );
 
-  // Unified list: DB first (with Remove), then new discovered (with Add)
-  const cards = [
-    ...dbInView.map(s => ({
-      id: s.site_id, name: s.name, source: s.source,
-      lat: s.latitude, lon: s.longitude, type: s.type, inDb: true,
-    })),
-    ...discInView.map(s => ({
-      id: s.id, name: s.name, source: s.source || 'usgs',
-      lat: s.lat, lon: s.lon, type: s.type || 'river', inDb: false,
-    })),
+  // Build card list — paired CWMS+USGS sites appear as one combined card.
+  const handledDisc = new Set();
+  const discCards   = [];
+
+  // Combined pairs first (anchor at CWMS position)
+  for (const c of _discCwms) {
+    if (!inBounds(c.lat, c.lon) || dbIds.has(c.id)) continue;
+    const pInfo = _discPairs.get(c.id);
+    if (!pInfo) continue;
+    const u = _discUsgs.find(s => s.id === pInfo.partnerId);
+    if (!u) continue;
+    discCards.push({ kind: 'combined', cwms: c, usgs: u });
+    handledDisc.add(c.id);
+    handledDisc.add(u.id);
+  }
+
+  // Remaining individual discovered sites
+  for (const s of [..._discUsgs, ..._discCwms]) {
+    if (handledDisc.has(s.id) || !inBounds(s.lat, s.lon) || dbIds.has(s.id)) continue;
+    discCards.push({ kind: 'single', id: s.id, name: s.name,
+                     source: s.source || 'usgs', lat: s.lat, lon: s.lon,
+                     type: s.type || 'river' });
+    handledDisc.add(s.id);
+  }
+
+  // CWMS sites with no coordinates — show in a separate section below the cards
+  const noCoordsNewCwms = _cwmsCoordsMissing
+    ? _discCwms.filter(s => s.lat == null && s.lon == null && !dbIds.has(s.id))
+    : [];
+
+  const allCards = [
+    ...dbInView.map(s => ({ kind: 'db', id: s.site_id, name: s.name, source: s.source,
+                             lat: s.latitude, lon: s.longitude, type: s.type })),
+    ...discCards,
   ];
 
   // Update count badge
   const hdr = document.getElementById('discPanelCount');
-  if (hdr) hdr.textContent = cards.length ? `${cards.length}` : '';
+  if (hdr) hdr.textContent = (allCards.length + noCoordsNewCwms.length) ? `${allCards.length + noCoordsNewCwms.length}` : '';
 
-  if (!cards.length) {
+  if (!allCards.length && !noCoordsNewCwms.length) {
     list.innerHTML = '<div class="empty-state" style="font-size:12px;">No sites in current view</div>';
     return;
   }
 
-  list.innerHTML = cards.map(s => {
-    const sc  = s.source === 'cwms' ? '#f59e0b' : '#38bdf8';
-    const sbg = s.source === 'cwms' ? 'rgba(245,158,11,0.15)' : 'rgba(56,189,248,0.15)';
-    const siteArg = JSON.stringify({ id: s.id, name: s.name, type: s.type, source: s.source, lat: s.lat, lon: s.lon }).replace(/"/g, '&quot;');
-    const btn = s.inDb
-      ? `<button onclick="cardRemoveSite('${esc(s.id)}',this)"
-           style="padding:3px 10px;border-radius:5px;border:1px solid #7f1d1d;
-                  background:none;color:#f87171;font-size:11px;cursor:pointer;white-space:nowrap;">
-           Remove
-         </button>`
-      : `<button onclick="cardAddSite(${siteArg},this)"
-           style="padding:3px 10px;border-radius:5px;border:none;
-                  background:#0369a1;color:#fff;font-size:11px;cursor:pointer;white-space:nowrap;">
-           + Add
-         </button>`;
-    return `<div style="padding:8px 10px;border-radius:6px;border:1px solid #${s.inDb ? '1e3a2f' : '1e293b'};background:#${s.inDb ? '0d2018' : '1e293b'};">
+  list.innerHTML = allCards.map(card => {
+    if (card.kind === 'combined') {
+      const bothArg = JSON.stringify([
+        { source: 'cwms', id: card.cwms.id, name: card.cwms.name, type: card.cwms.type || 'dam',   lat: card.cwms.lat, lon: card.cwms.lon, office: card.cwms.office || null },
+        { source: 'usgs', id: card.usgs.id, name: card.usgs.name, type: card.usgs.type || 'river', lat: card.usgs.lat, lon: card.usgs.lon },
+      ]).replace(/"/g, '&quot;');
+      return `<div style="padding:8px 10px;border-radius:6px;border:1px solid #2d2a1e;background:#1a1a12;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;">
+          <span style="padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;
+                       background:rgba(167,139,250,0.15);color:#a78bfa;">COMBINED</span>
+          <button onclick="cardAddBoth(${bothArg},this)"
+            style="padding:3px 10px;border-radius:5px;border:none;
+                   background:#0369a1;color:#fff;font-size:11px;cursor:pointer;white-space:nowrap;">
+            + Add Both
+          </button>
+        </div>
+        <div style="font-size:11px;color:#f59e0b;">▪ ${esc(card.cwms.name || card.cwms.id)}</div>
+        <div style="font-size:11px;color:#38bdf8;">▪ ${esc(card.usgs.name || card.usgs.id)}</div>
+      </div>`;
+    }
+
+    if (card.kind === 'db') {
+      const sc  = card.source === 'cwms' ? '#f59e0b' : card.source === 'combined' ? '#a78bfa' : '#38bdf8';
+      const sbg = card.source === 'cwms' ? 'rgba(245,158,11,0.15)' : card.source === 'combined' ? 'rgba(167,139,250,0.15)' : 'rgba(56,189,248,0.15)';
+      return `<div style="padding:8px 10px;border-radius:6px;border:1px solid #1e3a2f;background:#0d2018;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;">
+          <span style="padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;
+                       background:${sbg};color:${sc};">${(card.source || 'usgs').toUpperCase()}</span>
+          <button onclick="cardRemoveSite('${esc(card.id)}',this)"
+            style="padding:3px 10px;border-radius:5px;border:1px solid #7f1d1d;
+                   background:none;color:#f87171;font-size:11px;cursor:pointer;white-space:nowrap;">
+            Remove
+          </button>
+        </div>
+        <div style="font-size:12px;font-weight:600;color:#e2e8f0;line-height:1.3;">${esc(card.name || card.id)}</div>
+        <div style="font-family:monospace;font-size:10px;color:#64748b;margin-top:1px;">${esc(card.id)}</div>
+      </div>`;
+    }
+
+    // Single discovered site
+    const sc  = card.source === 'cwms' ? '#f59e0b' : '#38bdf8';
+    const sbg = card.source === 'cwms' ? 'rgba(245,158,11,0.15)' : 'rgba(56,189,248,0.15)';
+    const siteArg = JSON.stringify({ id: card.id, name: card.name, type: card.type, source: card.source, lat: card.lat, lon: card.lon }).replace(/"/g, '&quot;');
+    return `<div style="padding:8px 10px;border-radius:6px;border:1px solid #1e293b;background:#1e293b;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;">
         <span style="padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;
-                     background:${sbg};color:${sc};">${(s.source || 'usgs').toUpperCase()}</span>
-        ${btn}
+                     background:${sbg};color:${sc};">${(card.source || 'usgs').toUpperCase()}</span>
+        <button onclick="cardAddSite(${siteArg},this)"
+          style="padding:3px 10px;border-radius:5px;border:none;
+                 background:#0369a1;color:#fff;font-size:11px;cursor:pointer;white-space:nowrap;">
+          + Add
+        </button>
       </div>
-      <div style="font-size:12px;font-weight:600;color:#e2e8f0;line-height:1.3;">${esc(s.name || s.id)}</div>
-      <div style="font-family:monospace;font-size:10px;color:#64748b;margin-top:1px;">${esc(s.id)}</div>
+      <div style="font-size:12px;font-weight:600;color:#e2e8f0;line-height:1.3;">${esc(card.name || card.id)}</div>
+      <div style="font-family:monospace;font-size:10px;color:#64748b;margin-top:1px;">${esc(card.id)}</div>
     </div>`;
   }).join('');
+
+  // Append no-coords CWMS section when CDA doesn't supply coordinates
+  if (noCoordsNewCwms.length) {
+    list.innerHTML += `
+      <div style="margin-top:8px;padding:8px 10px;border-radius:6px;border:1px solid rgba(245,158,11,0.2);background:rgba(245,158,11,0.05);">
+        <div style="font-size:10px;font-weight:600;color:#f59e0b;letter-spacing:.05em;margin-bottom:6px;">
+          CWMS · ${noCoordsNewCwms.length} SITES (no coordinates in CDA)
+        </div>
+        ${noCoordsNewCwms.slice(0, 50).map(s => {
+          const siteArg = JSON.stringify({ id: s.id, name: s.name, type: s.type || 'site', source: 'cwms', lat: null, lon: null, office: s.office || null }).replace(/"/g, '&quot;');
+          return `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 0;border-bottom:1px solid rgba(245,158,11,0.1);">
+            <div style="font-size:11px;color:#cbd5e1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name || s.id)}</div>
+            <button onclick="cardAddSite(${siteArg},this)"
+              style="flex-shrink:0;padding:2px 8px;border-radius:4px;border:none;background:#0369a1;color:#fff;font-size:10px;cursor:pointer;">
+              + Add
+            </button>
+          </div>`;
+        }).join('')}
+        ${noCoordsNewCwms.length > 50 ? `<div style="font-size:10px;color:#64748b;margin-top:4px;">…and ${noCoordsNewCwms.length - 50} more. Use the Catalog tab to browse all.</div>` : ''}
+      </div>`;
+  }
 }
 
 async function cardAddSite(site, btn) {
@@ -1021,6 +1102,21 @@ async function cardAddSite(site, btn) {
   });
   await loadSites();
   refreshMapSites();
+  renderDiscCards();
+}
+
+async function cardAddBoth(sites, btn) {
+  btn.disabled = true; btn.textContent = '…';
+  for (const s of sites) {
+    await fetch('/api/sites', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: s.source, id: s.id, name: s.name, type: s.type,
+                             lat: s.lat, lon: s.lon, office: s.office || null }),
+    });
+  }
+  await loadSites();
+  refreshMapSites();
+  renderDiscoveryRings();
   renderDiscCards();
 }
 
@@ -1112,7 +1208,7 @@ async function discoverBbox(minLon, minLat, maxLon, maxLat) {
 
   // Clear previous results
   _discUsgs = [];
-  _discCwms = [];
+  _discCwms = []; _cwmsCoordsMissing = false;
   renderDiscoveryRings();
   renderDiscCards();
 
@@ -1156,10 +1252,35 @@ async function discoverBbox(minLon, minLat, maxLon, maxLat) {
   // ── CWMS — fires independently ────────────────────────────────────────────
   const cwmsPromise = fetch(`/api/sites/discover/cwms/bbox?bbox=${encodeURIComponent(bbox)}`)
     .then(r => r.json())
-    .then(data => {
-      // Server now stamps source:'cwms', but guard in case it doesn't
+    .then(async data => {
       _discCwms = Array.isArray(data.sites)
         ? data.sites.map(s => ({ ...s, source: s.source || 'cwms' })) : [];
+      _cwmsCoordsMissing = !!data.coordsMissing;
+
+      // Sync CDA coords for any sites already in DB where coords differ.
+      const dbIds = new Set(_allSites.map(s => s.site_id));
+      const coordUpdates = _discCwms.filter(s => {
+        if (!dbIds.has(s.id) || s.lat == null || s.lon == null) return false;
+        const dbSite = _allSites.find(x => x.site_id === s.id);
+        if (!dbSite) return false;
+        return Math.abs((dbSite.latitude  || 0) - s.lat) > 0.001 ||
+               Math.abs((dbSite.longitude || 0) - s.lon) > 0.001;
+      });
+      if (coordUpdates.length) {
+        await Promise.allSettled(coordUpdates.map(s => {
+          const dbSite = _allSites.find(x => x.site_id === s.id);
+          return fetch(`/api/sites/${encodeURIComponent(s.id)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat: s.lat, lon: s.lon }),
+          }).then(() => {
+            if (dbSite) { dbSite.latitude = s.lat; dbSite.longitude = s.lon; }
+            console.log(`[Coords] synced ${s.id} from CDA: (${s.lat.toFixed(5)}, ${s.lon.toFixed(5)})`);
+          });
+        }));
+        refreshMapSites();
+      }
+
       cwmsCount = _discCwms.length;
       cwmsState = data.warning && !cwmsCount ? 'error' : 'ok';
       cwmsErr   = data.warning || null;
@@ -1182,6 +1303,9 @@ async function discoverBbox(minLon, minLat, maxLon, maxLat) {
     hint.textContent = 'No sites found in that area.';
     setTimeout(() => { hint.textContent = 'Drag a box — discovers USGS + CWMS sites in that area'; clearBbox(); }, 4000);
   }
+
+  // Match discovered sites by COMID/proximity and redraw with combined pairs.
+  _matchDiscoveredSites().catch(() => {});
 }
 
 function clearBbox() {
@@ -1193,7 +1317,8 @@ function clearBbox() {
 function clearDiscovery() {
   clearBbox();
   _discUsgs = [];
-  _discCwms = [];
+  _discCwms = []; _cwmsCoordsMissing = false;
+  _discPairs = new Map();
   if (_discSearchActive) {
     // bbox cleared — re-run text search without spatial constraint
     discoverByText();
@@ -1333,7 +1458,7 @@ async function discoverByText() {
 
   _discSearchActive = true;
   _discUsgs = [];
-  _discCwms = [];
+  _discCwms = []; _cwmsCoordsMissing = false;
   applySearchMapFilter();
   renderDiscoveryRings();
   renderDiscCards();
@@ -1400,9 +1525,34 @@ async function discoverByText() {
   const cwmsPromise = !doCwms ? Promise.resolve() :
     fetch(`/api/sites/discover/cwms/search?name=${encodeURIComponent(query)}`)
       .then(r => r.json())
-      .then(data => {
+      .then(async data => {
         if (!data.ok && data.warning) { cwmsWarn = data.warning; console.warn('[CWMS search]', data.warning); }
         _discCwms = bboxFilter(Array.isArray(data.sites) ? data.sites : []);
+
+        // For CWMS sites already in DB, sync coordinates from CDA if they differ.
+        // CDA-reported coords come from the Corps survey; config-seeded coords may be stale.
+        const coordUpdates = _discCwms.filter(s => {
+          if (!existing.has(s.id) || s.lat == null || s.lon == null) return false;
+          const dbSite = _allSites.find(x => x.site_id === s.id);
+          if (!dbSite) return false;
+          return Math.abs((dbSite.latitude  || 0) - s.lat) > 0.001 ||
+                 Math.abs((dbSite.longitude || 0) - s.lon) > 0.001;
+        });
+        if (coordUpdates.length) {
+          await Promise.allSettled(coordUpdates.map(s => {
+            const dbSite = _allSites.find(x => x.site_id === s.id);
+            return fetch(`/api/sites/${encodeURIComponent(s.id)}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ lat: s.lat, lon: s.lon }),
+            }).then(() => {
+              if (dbSite) { dbSite.latitude = s.lat; dbSite.longitude = s.lon; }
+              console.log(`[Coords] synced ${s.id} from CDA: (${s.lat.toFixed(5)}, ${s.lon.toFixed(5)})`);
+            });
+          }));
+          refreshMapSites();
+        }
+
         cwmsCount = _discCwms.length;
         cwmsState = 'ok';
         renderDiscoveryRings();
@@ -1417,6 +1567,9 @@ async function discoverByText() {
 
   _discSearching = false;
   _setDiscInputState('idle');
+
+  // Match discovered sites by COMID/proximity and redraw with combined pairs.
+  _matchDiscoveredSites().catch(() => {});
 
   if (!_discUsgs.length && !_discCwms.length) {
     const errParts = [];
@@ -1441,7 +1594,8 @@ function clearDiscSearch() {
   _discSearchActive = false;
   _discSearching = false;
   _discUsgs = [];
-  _discCwms = [];
+  _discCwms = []; _cwmsCoordsMissing = false;
+  _discPairs = new Map();
   applySearchMapFilter();
   renderDiscoveryRings();
   renderDiscCards();
@@ -1468,15 +1622,44 @@ function _fitDiscResults() {
   );
 }
 
+// After both USGS and CWMS queries settle, ask the server to match discovered
+// sites by COMID / proximity and redraw rings with combined pairs highlighted.
+async function _matchDiscoveredSites() {
+  _discPairs = new Map();
+  if (!_discUsgs.length || !_discCwms.length) { renderDiscoveryRings(); return; }
+  try {
+    const r = await fetch('/api/sites/discover/match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        usgs: _discUsgs.map(s => ({ id: s.id, lat: s.lat, lon: s.lon })),
+        cwms: _discCwms.map(s => ({ id: s.id, lat: s.lat, lon: s.lon })),
+      }),
+    });
+    const data = await r.json();
+    for (const p of (data.pairs || [])) {
+      _discPairs.set(p.cwmsId, { partnerId: p.usgsId, reason: p.reason });
+      _discPairs.set(p.usgsId, { partnerId: p.cwmsId, reason: p.reason });
+    }
+  } catch (_) {}
+  renderDiscoveryRings();
+  renderDiscCards();
+}
+
 // Re-render discovery rings for all found sites from the last bbox search.
 // Source-toggle visibility is controlled separately via setLayoutProperty.
 // Call this any time _discUsgs/_discCwms change, or after _allSites updates.
 function renderDiscoveryRings() {
   if (!_map || !_map.getSource(SRC_DISC_USGS)) return;
 
+  // Split paired vs unpaired discovered sites.
+  const pairedUsgs = new Set(_discUsgs.filter(s => _discPairs.has(s.id)).map(s => s.id));
+  const pairedCwms = new Set(_discCwms.filter(s => _discPairs.has(s.id)).map(s => s.id));
+
+  // Unpaired USGS — hollow blue ring
   _map.getSource(SRC_DISC_USGS).setData({
     type: 'FeatureCollection',
-    features: _discUsgs.filter(s => s.lat && s.lon).map(s => ({
+    features: _discUsgs.filter(s => s.lat && s.lon && !pairedUsgs.has(s.id)).map(s => ({
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
       properties: { id: s.id, site_id: s.id, name: s.name, source: 'usgs',
@@ -1484,15 +1667,35 @@ function renderDiscoveryRings() {
     })),
   });
 
+  // Unpaired CWMS — hollow amber ring
   _map.getSource(SRC_DISC_CWMS).setData({
     type: 'FeatureCollection',
-    features: _discCwms.filter(s => s.lat && s.lon).map(s => ({
+    features: _discCwms.filter(s => s.lat && s.lon && !pairedCwms.has(s.id)).map(s => ({
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
       properties: { id: s.id, site_id: s.id, name: s.name, source: 'cwms',
                     type: s.type || 'dam', kind: 'discovered',
                     office: s.office, lat: s.lat, lon: s.lon },
     })),
+  });
+
+  // Paired — dual-ring at CWMS position; feature carries both IDs for the popup
+  _map.getSource(SRC_DISC_COMBINED).setData({
+    type: 'FeatureCollection',
+    features: _discCwms.filter(s => s.lat && s.lon && pairedCwms.has(s.id)).map(s => {
+      const pInfo   = _discPairs.get(s.id);
+      const partner = _discUsgs.find(u => u.id === pInfo?.partnerId);
+      return {
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+        properties: {
+          id: s.id, site_id: s.id, name: s.name, source: 'combined',
+          cwmsId: s.id, usgsId: pInfo?.partnerId || '',
+          partnerName: partner?.name || '', matchReason: pInfo?.reason || '',
+          kind: 'discovered', lat: s.lat, lon: s.lon,
+        },
+      };
+    }),
   });
 }
 
@@ -1553,12 +1756,12 @@ async function _refreshBasinSections() {
   // Section 2 — local HUC-hierarchy recommendations
   const activeCodes  = _basinActive.map(b => b.huc8_code);
   const excludeCodes = [...new Set([...activeCodes, ..._basinViewport.map(b => b.huc8_code)])];
-  const recParams    = new URLSearchParams({
-    active:  activeCodes.join(','),
-    exclude: excludeCodes.join(','),
-  });
   try {
-    const r    = await fetch('/api/basins/recommendations?' + recParams);
+    const r    = await fetch('/api/basins/recommendations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: activeCodes, exclude: excludeCodes }),
+    });
     const data = await r.json();
     _basinSuggest = Array.isArray(data) ? data.map(_toOpt) : [];
   } catch (_) { _basinSuggest = []; }
@@ -1575,13 +1778,12 @@ async function _refreshBasinSections() {
 async function _fetchAiSuggestions(activeCodes, excludeCodes, bounds) {
   const center   = bounds.getCenter();
   const viewport = `${center.lat.toFixed(2)}°N ${Math.abs(center.lng).toFixed(2)}°${center.lng < 0 ? 'W' : 'E'}`;
-  const aiParams = new URLSearchParams({
-    active:   activeCodes.join(','),
-    exclude:  excludeCodes.join(','),
-    viewport,
-  });
   try {
-    const r    = await fetch('/api/basins/ai-suggestions?' + aiParams);
+    const r    = await fetch('/api/basins/ai-suggestions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: activeCodes, exclude: excludeCodes, viewport }),
+    });
     const data = await r.json();
     if (Array.isArray(data) && data.length) {
       // Merge AI picks into suggestions, keeping local recs that aren't duplicated
@@ -1756,7 +1958,7 @@ function clearBasin() {
   if (hint) hint.textContent = '';
   if (_map && _map.getSource(SRC_BASIN)) _map.getSource(SRC_BASIN).setData(emptyGeo());
   _discUsgs = [];
-  _discCwms = [];
+  _discCwms = []; _cwmsCoordsMissing = false;
   renderDiscoveryRings();
   renderDiscCards();
   updateBboxOverlay();
@@ -1785,7 +1987,7 @@ async function discoverBasin(huc8Code) {
   updateBboxOverlay();
 
   _discUsgs = [];
-  _discCwms = [];
+  _discCwms = []; _cwmsCoordsMissing = false;
   renderDiscoveryRings();
   renderDiscCards();
 
@@ -1986,12 +2188,14 @@ function extractTsIds(data) {
 }
 
 async function loadCwmsCatalog() {
-  const office = document.getElementById('cwmsCatalogOffice').value.trim() || 'LRN';
+  const office = document.getElementById('cwmsCatalogOffice').value.trim(); // empty → server uses configured office
   const filter = document.getElementById('cwmsCatalogFilter').value.trim();
   const list   = document.getElementById('cwmsCatalogList');
   list.innerHTML = `<div style="text-align:center;padding:12px;color:#64748b;font-size:12px;"><span class="spin">↻</span> Loading…</div>`;
   try {
-    let url = `/api/sites/discover/cwms/locations?office=${encodeURIComponent(office)}`;
+    let url = office
+      ? `/api/sites/discover/cwms/locations?office=${encodeURIComponent(office)}`
+      : `/api/sites/discover/cwms/locations`;
     if (filter) url += `&like=${encodeURIComponent(filter)}`;
     const r    = await fetch(url);
     const data = await r.json();
@@ -2084,13 +2288,21 @@ async function addCwmsFromCatalog() {
   const selected = document.querySelectorAll('#cwmsTsList .ts-pill.selected');
   const tsIds    = Array.from(selected).map(p => p.dataset.ts);
 
-  const entry = _cwmsCatalogData[idx] || {};
-  const lat   = entry.latitude  != null ? entry.latitude  : null;
-  const lon   = entry.longitude != null ? entry.longitude : null;
+  const entry    = _cwmsCatalogData[idx] || {};
+  const lat      = entry.latitude  != null ? entry.latitude  : null;
+  const lon      = entry.longitude != null ? entry.longitude : null;
+  const siteName = entry['public-name'] || entry['long-name'] || entry.name || locId;
+  const siteType = (entry.kind || entry['location-kind'] || 'site').toLowerCase();
+  // Use the resolved office from entry if the input was left blank
+  const resolvedOffice = office || entry.office || '';
 
   await fetch('/api/sites', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source: 'cwms', locationId: locId, name: locId, type: 'dam', lat, lon, timeseries: tsIds })
+    body: JSON.stringify({
+      source: 'cwms', locationId: locId, name: siteName,
+      type: siteType, lat, lon, timeseries: tsIds,
+      office: resolvedOffice
+    })
   });
 
   // Visual feedback

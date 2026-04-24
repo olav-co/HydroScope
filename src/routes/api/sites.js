@@ -132,7 +132,7 @@ router.get('/', (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { source, id, locationId, name, type, lat, lon, timeseries, enabled,
-            huc8_code, huc8_name } = req.body;
+            huc8_code, huc8_name, office } = req.body;
     const siteId = id || locationId;
     if (!source || !siteId) return res.status(400).json({ error: 'source and id are required' });
 
@@ -145,6 +145,7 @@ router.post('/', async (req, res) => {
       longitude: lon  != null ? lon  : null,
       huc8_code: huc8_code || null,
       huc8_name: huc8_name || null,
+      office:    office || null,
     });
 
     if (Array.isArray(timeseries)) db.replaceSiteTimeseries(siteId, timeseries);
@@ -160,6 +161,27 @@ router.post('/', async (req, res) => {
       } catch (_) {}
     }
 
+    // Ensure this office's CDA aliases are cached before pairing runs.
+    if (source === 'cwms' && office) {
+      try {
+        const { ensureOfficeAliases } = require('../../services/cwmsAliases');
+        const dsCfg  = getDatasourcesConfig();
+        const cwmsCfg = dsCfg.cwms || {};
+        const base   = cwmsCfg.baseUrl || 'https://cwms-data.usace.army.mil/cwms-data';
+        await ensureOfficeAliases(office, base);
+      } catch (aliasErr) {
+        console.warn('[Sites API] alias fetch error:', aliasErr.message);
+      }
+    }
+
+    // Run pairing now so the combined site exists before the response is returned.
+    try {
+      const { detectAndPairSites } = require('../../services/pairing');
+      await detectAndPairSites();
+    } catch (pairErr) {
+      console.error('[Sites API] pairing error after add:', pairErr.message);
+    }
+
     const site = db.getAllSitesWithTimeseries().find(s => s.site_id === siteId);
     res.json({ ok: true, site });
   } catch (err) {
@@ -170,13 +192,16 @@ router.post('/', async (req, res) => {
 
 // ── PUT /api/sites/:id ────────────────────────────────────────────────────────
 
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   try {
     const siteId = req.params.id;
     const existing = db.getAllSitesWithTimeseries().find(s => s.site_id === siteId);
     if (!existing) return res.status(404).json({ error: 'Site not found' });
 
     const { name, type, lat, lon, timeseries, enabled } = req.body;
+
+    const coordsChanged = (lat != null && lat !== existing.latitude) ||
+                          (lon != null && lon !== existing.longitude);
 
     db.upsertSite({
       source:    existing.source,
@@ -192,6 +217,17 @@ router.put('/:id', (req, res) => {
     }
 
     if (enabled !== undefined) db.setSiteEnabled(siteId, enabled ? 1 : 0);
+
+    // Coord change invalidates the snapped COMID — clear it so next pairing re-fetches.
+    if (coordsChanged) {
+      db.setSiteComid(siteId, null);
+      try {
+        const { detectAndPairSites } = require('../../services/pairing');
+        await detectAndPairSites();
+      } catch (pairErr) {
+        console.error('[Sites API] pairing error after coord update:', pairErr.message);
+      }
+    }
 
     const site = db.getAllSitesWithTimeseries().find(s => s.site_id === siteId);
     res.json({ ok: true, site });
@@ -303,6 +339,71 @@ router.patch('/:id/sources/:childId', (req, res) => {
   }
 });
 
+// ── POST /api/sites/discover/match ───────────────────────────────────────────
+// Pure-geometry co-location match for discovered (not-yet-saved) sites.
+// No NLDI calls — those happen later when a site is actually added to DB.
+// A Corps dam and its tailwater USGS gauge are almost always ≤5 km apart;
+// COMID-based matching isn't viable here because adjacent NHD reaches have
+// different COMIDs, and firing hundreds of NLDI requests would rate-limit.
+// Body: { usgs: [{id, lat, lon}], cwms: [{id, lat, lon}] }
+// Response: { pairs: [{cwmsId, usgsId, reason}] }
+router.post('/discover/match', (req, res) => {
+  try {
+    const usgs = Array.isArray(req.body.usgs) ? req.body.usgs : [];
+    const cwms = Array.isArray(req.body.cwms) ? req.body.cwms : [];
+    if (!usgs.length || !cwms.length) return res.json({ ok: true, pairs: [] });
+
+    function haversineKm(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2
+        + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
+        * Math.sin(dLon / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    const { buildAliasMap } = require('../../services/cwmsAliases');
+    const aliasMap  = buildAliasMap(); // Map<cwmsId, usgsId> from DB
+    const usgsIndex = new Map(usgs.map(u => [u.id, u]));
+
+    const PROXIMITY_KM = 5.0;
+    const pairs    = [];
+    const usedUsgs = new Set();
+
+    for (const c of cwms) {
+      // Priority 1: CDA alias
+      const aliasUsgsId = aliasMap.get(c.id)
+        ?? aliasMap.get(c.id.replace(/-[^-]+$/, ''));
+      if (aliasUsgsId && usgsIndex.has(aliasUsgsId) && !usedUsgs.has(aliasUsgsId)) {
+        pairs.push({ cwmsId: c.id, usgsId: aliasUsgsId, reason: `CDA alias → ${aliasUsgsId}` });
+        usedUsgs.add(aliasUsgsId);
+        continue;
+      }
+
+      // Priority 2: proximity ≤5 km
+      if (c.lat == null || c.lon == null) continue;
+      let bestDist = PROXIMITY_KM, bestUsgs = null;
+      for (const u of usgs) {
+        if (usedUsgs.has(u.id) || u.lat == null || u.lon == null) continue;
+        const d = haversineKm(c.lat, c.lon, u.lat, u.lon);
+        if (d < bestDist) { bestDist = d; bestUsgs = u; }
+      }
+      if (bestUsgs) {
+        pairs.push({ cwmsId: c.id, usgsId: bestUsgs.id,
+                     reason: `proximity ${bestDist.toFixed(2)} km` });
+        usedUsgs.add(bestUsgs.id);
+      }
+    }
+
+    console.log(`[Match] ${pairs.length} pair(s) from ${cwms.length} CWMS + ${usgs.length} USGS`);
+    res.json({ ok: true, pairs });
+  } catch (err) {
+    console.error('[Sites API] /discover/match error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── GET /api/sites/discover/usgs ──────────────────────────────────────────────
 // bbox = "minLon,minLat,maxLon,maxLat"
 // USGS documents a 25° per-side limit. If the drawn box exceeds that we split
@@ -312,13 +413,23 @@ router.patch('/:id/sources/:childId', (req, res) => {
 const USGS_BASE     = 'https://waterservices.usgs.gov/nwis/site/?format=rdb&siteStatus=active';
 const USGS_MAX_DEG  = 25;
 
-async function usgsQuery(wLon, sLat, eLon, nLat) {
-  const url  = `${USGS_BASE}&bBox=${wLon},${sLat},${eLon},${nLat}`;
-  console.log('[USGS] GET', url);
-  const text = await fetchText(url, 45000);
-  const warn = extractUsgsRdbError(text);
-  if (warn) console.warn('[USGS] RDB warning:', warn);
-  return parseUsgsRdb(text).map(usgsRowToSite).filter(s => s.lat && s.lon);
+async function usgsQuery(wLon, sLat, eLon, nLat, attempt = 0) {
+  const url = `${USGS_BASE}&bBox=${wLon},${sLat},${eLon},${nLat}`;
+  if (attempt === 0) console.log('[USGS] GET', url);
+  try {
+    const text = await fetchText(url, 45000);
+    const warn = extractUsgsRdbError(text);
+    if (warn) console.warn('[USGS] RDB warning:', warn);
+    return parseUsgsRdb(text).map(usgsRowToSite).filter(s => s.lat && s.lon);
+  } catch (err) {
+    if (attempt < 3) {
+      const delay = (attempt + 1) * 2000;
+      console.warn(`[USGS] attempt ${attempt + 1} failed (${err.message}), retrying in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+      return usgsQuery(wLon, sLat, eLon, nLat, attempt + 1);
+    }
+    throw err;
+  }
 }
 
 router.get('/discover/usgs', async (req, res) => {
@@ -422,50 +533,128 @@ router.get('/discover/cwms/bbox', async (req, res) => {
 
     const [minLon, minLat, maxLon, maxLat] = parts;
 
-    const dsCfg = getDatasourcesConfig();
-    const cwms  = dsCfg.cwms || {};
-    const base  = cwms.baseUrl || 'https://cwms-data.usace.army.mil/cwms-data';
+    const dsCfg   = getDatasourcesConfig();
+    const cwms    = dsCfg.cwms || {};
+    const base    = cwms.baseUrl || 'https://cwms-data.usace.army.mil/cwms-data';
+    const office  = cwms.office || '';
 
-    // CDA accepts bounding-box as "minLon,minLat,maxLon,maxLat"
-    const bbParam = encodeURIComponent(bbox);
+    // Strategy 1: ask CDA to filter by bounding-box (supported on national CDA and newer local)
+    // Strategy 2: if bbox not supported, fall back to fetching all locations for the configured office
+    const bbParam  = encodeURIComponent(bbox);
+    const officeQ  = office ? `&office=${encodeURIComponent(office)}` : '';
     const allEntries = [];
-    let nextPage = null;
+    let   nextPage   = null;
+    let   usedBbox   = true;
 
-    do {
-      const url = `${base}/catalog/LOCATIONS?bounding-box=${bbParam}&page-size=500`
-        + (nextPage ? `&page=${encodeURIComponent(nextPage)}` : '');
-      const data = await fetchJson(url);
-      const entries = data.entries || (Array.isArray(data) ? data : []);
-      allEntries.push(...entries);
-      nextPage = data['next-page'] || null;
-      console.log(`[CWMS] fetched ${entries.length} entries, nextPage=${!!nextPage}`);
-    } while (nextPage);
+    try {
+      do {
+        const url = `${base}/catalog/LOCATIONS?format=json&bounding-box=${bbParam}&page-size=500${officeQ}`
+          + (nextPage ? `&page=${encodeURIComponent(nextPage)}` : '');
+        const data = await fetchJson(url);
+        const entries = _normCdaLocEntries(data);
+        allEntries.push(...entries);
+        nextPage = (data && data['next-page']) || null;
+        console.log(`[CWMS bbox] fetched ${entries.length} entries, nextPage=${!!nextPage}`);
+      } while (nextPage);
+    } catch (bboxErr) {
+      // bounding-box not supported — fall back to all locations for the office
+      console.warn('[CWMS bbox] bounding-box param failed, falling back to office-wide fetch:', bboxErr.message);
+      usedBbox = false;
+      const tryUrls = [
+        `${base}/catalog/LOCATIONS?format=json&page-size=1000${officeQ}`,
+        `${base}/catalog/LOCATIONS?page-size=1000${officeQ}`,
+      ];
+      let fallbackData;
+      for (const url of tryUrls) {
+        try { fallbackData = await fetchJson(url); break; } catch (_) {}
+      }
+      if (fallbackData) allEntries.push(..._normCdaLocEntries(fallbackData));
+    }
+
+    // Check whether entries include coordinates at all
+    const hasCoords = allEntries.some(e => e.latitude != null && e.longitude != null);
 
     const seen  = new Set();
     const sites = allEntries
-      .filter(e => e.latitude != null && e.longitude != null)
-      // CDA bounding-box param doesn't actually filter geographically — do it ourselves
-      .filter(e =>
-        e.latitude  >= minLat && e.latitude  <= maxLat &&
-        e.longitude >= minLon && e.longitude <= maxLon
-      )
+      // Only geo-filter if entries actually carry coordinates AND we have reliable bbox coverage
+      .filter(e => {
+        if (!hasCoords) return true; // CDA didn't return coords — trust its own bbox filter / show all
+        if (e.latitude == null || e.longitude == null) return false;
+        if (!usedBbox) return true;  // no bbox applied server-side — show all with coords
+        // Server-side bbox confirmation (national CDA bbox param is approximate)
+        return e.latitude  >= minLat && e.latitude  <= maxLat &&
+               e.longitude >= minLon && e.longitude <= maxLon;
+      })
       .map(e => ({
-        id:     e['location-id'] || e.name,
-        name:   e['location-id'] || e.name,
+        id:     e['location-id'] || e.name || e.id,
+        name:   e['public-name'] || e['long-name'] || e['location-id'] || e.name || e.id,
         office: e.office,
-        type:   (e['location-kind'] || 'dam').toLowerCase(),
-        lat:    e.latitude,
-        lon:    e.longitude,
+        type:   (e['location-kind'] || e.kind || 'site').toLowerCase(),
+        lat:    e.latitude  != null ? e.latitude  : null,
+        lon:    e.longitude != null ? e.longitude : null,
         source: 'cwms',
       }))
       .filter(s => s.id && !seen.has(s.id) && seen.add(s.id));
 
     const offices = [...new Set(sites.map(s => s.office).filter(Boolean))];
-    res.json({ ok: true, sites, offices, count: sites.length });
+    console.log(`[CWMS bbox] returning ${sites.length} sites (hasCoords=${hasCoords}, usedBbox=${usedBbox})`);
+    res.json({ ok: true, sites, offices, count: sites.length, coordsMissing: !hasCoords });
   } catch (err) {
     console.error('[Sites API] CWMS bbox error:', err.message);
     res.json({ ok: false, sites: [], offices: [], count: 0, warning: err.message });
   }
+});
+
+// ── GET /api/sites/discover/cwms/probe ────────────────────────────────────────
+// Tests the configured CDA connection. Returns offices list + raw response for debugging.
+
+router.get('/discover/cwms/probe', async (req, res) => {
+  const dsCfg = getDatasourcesConfig();
+  const cwms  = dsCfg.cwms || {};
+  const base  = cwms.baseUrl || 'https://cwms-data.usace.army.mil/cwms-data';
+  const office = cwms.office || '';
+  const results = { baseUrl: base, office, offices: null, officesError: null, locSample: null, locSampleError: null, locRawPreview: null };
+
+  // 1. Fetch offices list — some CDA versions return XML; capture raw text too
+  try {
+    results.offices = await fetchJson(`${base}/offices`);
+  } catch (e) {
+    results.officesError = e.message;
+    // Try fetching raw text to see what actually came back
+    try {
+      const raw = await fetchText(`${base}/offices`);
+      results.officesRawPreview = raw.slice(0, 300).replace(/\s+/g, ' ').trim();
+    } catch (_) {}
+  }
+
+  // 2. Try catalog/LOCATIONS with multiple param styles + format=json
+  const probeUrls = [
+    `${base}/catalog/LOCATIONS?format=json&page-size=5` + (office ? `&office=${encodeURIComponent(office)}` : ''),
+    `${base}/catalog/LOCATIONS?page-size=5`            + (office ? `&office=${encodeURIComponent(office)}` : ''),
+    `${base}/catalog/LOCATIONS?format=json&pageSize=5` + (office ? `&office=${encodeURIComponent(office)}` : ''),
+    `${base}/catalog/LOCATIONS?pageSize=5`             + (office ? `&office=${encodeURIComponent(office)}` : ''),
+  ];
+
+  let probeOk = false;
+  for (const url of probeUrls) {
+    try {
+      results.locSample = await fetchJson(url);
+      results.locUrlUsed = url;
+      probeOk = true;
+      break;
+    } catch (e) {
+      results.locSampleError = e.message;
+      // If it's a JSON parse error, capture raw so we can see the actual format
+      if (e.message.startsWith('JSON parse')) {
+        try {
+          const raw = await fetchText(url);
+          results.locRawPreview = raw.slice(0, 500).replace(/\s+/g, ' ').trim();
+        } catch (_) {}
+      }
+    }
+  }
+
+  res.json({ ok: true, probeSuccess: probeOk, ...results });
 });
 
 // ── GET /api/sites/discover/cwms/locations ─────────────────────────────────────
@@ -473,19 +662,54 @@ router.get('/discover/cwms/bbox', async (req, res) => {
 //   office = "LRN"  (Corps district office code)
 //   like   = "partial name filter" (optional)
 
+// Normalise a raw CDA locations response into a flat entries array,
+// handling multiple response shapes across CDA versions.
+function _normCdaLocEntries(data) {
+  if (!data) return [];
+  if (Array.isArray(data))          return data;           // bare array
+  if (Array.isArray(data.entries))  return data.entries;   // { entries: [...] }
+  if (Array.isArray(data.locations)) return data.locations; // { locations: [...] }
+  // Some versions nest under the office name
+  for (const key of Object.keys(data)) {
+    if (Array.isArray(data[key])) return data[key];
+  }
+  return [];
+}
+
 router.get('/discover/cwms/locations', async (req, res) => {
   try {
     const dsCfg  = getDatasourcesConfig();
     const cwms   = dsCfg.cwms || {};
     const base   = cwms.baseUrl || 'https://cwms-data.usace.army.mil/cwms-data';
-    const office = req.query.office || cwms.office || 'LRN';
+    const office = req.query.office || cwms.office || '';
     const like   = req.query.like || '';
 
-    let url = `${base}/catalog/LOCATIONS?office=${encodeURIComponent(office)}&pageSize=500`;
-    if (like) url += `&like=${encodeURIComponent(like)}`;
+    // Try format=json + kebab-case first, then without format param, then camelCase, then /locations path
+    let data;
+    const officeQ = office ? `&office=${encodeURIComponent(office)}` : '';
+    const likeQ   = like   ? `&like=${encodeURIComponent(like)}`     : '';
+    const tryUrls = [
+      `${base}/catalog/LOCATIONS?format=json&page-size=1000${officeQ}${likeQ}`,
+      `${base}/catalog/LOCATIONS?page-size=1000${officeQ}${likeQ}`,
+      `${base}/catalog/LOCATIONS?format=json&pageSize=1000${officeQ}${likeQ}`,
+      `${base}/catalog/LOCATIONS?pageSize=1000${officeQ}${likeQ}`,
+      `${base}/locations?format=json&page-size=1000${officeQ}`,
+      `${base}/locations?page-size=1000${officeQ}`,
+    ];
 
-    const data = await fetchJson(url);
-    res.json({ ok: true, data });
+    let lastErr;
+    for (const url of tryUrls) {
+      try { data = await fetchJson(url); break; }
+      catch (e) { lastErr = e; }
+    }
+    if (!data) throw lastErr;
+
+    // Normalise and log raw shape for debugging
+    const entries = _normCdaLocEntries(data);
+    console.log(`[CWMS Catalog] Got ${entries.length} locations from ${base} (office=${office||'*'})`);
+    if (entries.length) console.log('[CWMS Catalog] Sample entry keys:', Object.keys(entries[0]).join(', '));
+
+    res.json({ ok: true, data: { entries } });
   } catch (err) {
     console.error('[Sites API] CWMS locations error:', err.message);
     res.status(500).json({ error: err.message });
@@ -502,15 +726,28 @@ router.get('/discover/cwms/timeseries', async (req, res) => {
     const dsCfg      = getDatasourcesConfig();
     const cwms       = dsCfg.cwms || {};
     const base       = cwms.baseUrl || 'https://cwms-data.usace.army.mil/cwms-data';
-    const office     = req.query.office     || cwms.office || 'LRN';
+    const office     = req.query.office     || cwms.office || '';
     const locationId = req.query.locationId || '';
 
     if (!locationId) return res.status(400).json({ error: 'locationId is required' });
 
     const like = `${locationId}.*`;
-    const url  = `${base}/catalog/TIMESERIES?office=${encodeURIComponent(office)}&like=${encodeURIComponent(like)}&pageSize=500`;
+    let data, lastErr;
+    const officeQ = office ? `&office=${encodeURIComponent(office)}` : '';
+    const tryUrls = [
+      `${base}/catalog/TIMESERIES?format=json&page-size=500${officeQ}&like=${encodeURIComponent(like)}`,
+      `${base}/catalog/TIMESERIES?page-size=500${officeQ}&like=${encodeURIComponent(like)}`,
+      `${base}/catalog/TIMESERIES?format=json&pageSize=500${officeQ}&like=${encodeURIComponent(like)}`,
+      `${base}/catalog/TIMESERIES?pageSize=500${officeQ}&like=${encodeURIComponent(like)}`,
+      `${base}/timeseries?format=json&page-size=500${officeQ}&name=${encodeURIComponent(like)}`,
+      `${base}/timeseries?page-size=500${officeQ}&name=${encodeURIComponent(like)}`,
+    ];
+    for (const url of tryUrls) {
+      try { data = await fetchJson(url); break; }
+      catch (e) { lastErr = e; }
+    }
+    if (!data) throw lastErr;
 
-    const data = await fetchJson(url);
     res.json({ ok: true, data });
   } catch (err) {
     console.error('[Sites API] CWMS timeseries error:', err.message);

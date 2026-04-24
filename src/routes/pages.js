@@ -98,8 +98,11 @@ router.get('/settings', (req, res) => {
 });
 
 router.get('/sites', (req, res) => {
+  const { getDatasourcesConfig } = require('../services/config');
+  const dsCfg = getDatasourcesConfig();
+  const cwmsCfg = dsCfg.cwms || {};
   const { ...locals } = baseLocals(req);
-  res.render('sites', { ...locals, activePage: 'sites' });
+  res.render('sites', { ...locals, cwmsOffice: cwmsCfg.office || '', activePage: 'sites' });
 });
 
 router.get('/radar', (req, res) => {

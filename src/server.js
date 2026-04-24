@@ -4,6 +4,7 @@ const cookieParser = require('cookie-parser');
 const db           = require('./db/database');
 const { startScheduler, drainWaterwayPairs } = require('./services/scheduler');
 const { detectAndPairSites } = require('./services/pairing');
+const { refreshAllOfficeAliases } = require('./services/cwmsAliases');
 const { ensureMigrated, applySeedFile, getDatasourcesConfig } = require('./services/config');
 
 const pagesRouter       = require('./routes/pages');
@@ -111,11 +112,16 @@ async function boot() {
   ensureMigrated(db);
   applySeedFile(db);
 
-  const dsCfg = getDatasourcesConfig();
-  const PORT  = process.env.PORT || (dsCfg.server && dsCfg.server.port) || 3000;
-  const HOST  = process.env.HOST || (dsCfg.server && dsCfg.server.host) || '0.0.0.0';
+  const dsCfg    = getDatasourcesConfig();
+  const PORT     = process.env.PORT || (dsCfg.server && dsCfg.server.port) || 3000;
+  const HOST     = process.env.HOST || (dsCfg.server && dsCfg.server.host) || '0.0.0.0';
+  const cwmsBase = (dsCfg.cwms && dsCfg.cwms.baseUrl) || 'https://cwms-data.usace.army.mil/cwms-data';
 
-  detectAndPairSites();
+  // Fetch CDA Agency Aliases in the background, then pair.
+  refreshAllOfficeAliases(cwmsBase)
+    .then(() => detectAndPairSites())
+    .catch(() => detectAndPairSites()); // pair even if alias fetch fails
+
   startScheduler();
   app.listen(PORT, HOST, () => {
     console.log(`[HydroScope] Listening on http://${HOST}:${PORT}`);

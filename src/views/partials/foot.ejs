@@ -186,6 +186,10 @@ body.light .ai-mode-btn:hover { border-color:#cbd5e1;color:#64748b; }
   var _history = [];
   // Display entries: [{type:'user'|'ai'|'clarify'|'mode-switch', text, mode, label}]
   var _display = [];
+  // When the server responds with needs_context, we store the original query here.
+  // The user's next input will be combined with it ("original\nContext provided: answer")
+  // and sent as a single enriched request. Cleared after use.
+  var _pendingQuery = null;
 
   var _page = (typeof activePage !== 'undefined' ? activePage : null)
     || document.body.getAttribute('data-page') || 'unknown';
@@ -342,8 +346,18 @@ body.light .ai-mode-btn:hover { border-color:#cbd5e1;color:#64748b; }
   window.submitFloat = async function() {
     if (_loading) return;
     var input = document.getElementById('ai-float-input');
-    var query = input.value.trim();
-    if (!query) return;
+    var rawInput = input.value.trim();
+    if (!rawInput) return;
+
+    // If we're responding to a needs_context question, combine with the original query.
+    // The user only sees their short answer in the chat; the server sees the full intent.
+    var query;
+    if (_pendingQuery) {
+      query = _pendingQuery + '\nContext provided: ' + rawInput;
+      _pendingQuery = null;
+    } else {
+      query = rawInput;
+    }
 
     // Auto-switch to analyst mode when query is clearly asking for metric calculations
     var _metricTerms = ['minimum','maximum',' min ',' max ','mean','average','median','variance',
@@ -366,8 +380,8 @@ body.light .ai-mode-btn:hover { border-color:#cbd5e1;color:#64748b; }
     var emptyEl = document.getElementById('ai-float-empty');
     if (emptyEl) emptyEl.remove();
 
-    // Render user bubble immediately
-    var userEntry = { type:'user', text:query };
+    // Render user bubble — show what the user actually typed, not the combined payload
+    var userEntry = { type:'user', text: rawInput };
     _display.push(userEntry);
     appendDisplayEntry(histEl, userEntry);
 
@@ -383,22 +397,31 @@ body.light .ai-mode-btn:hover { border-color:#cbd5e1;color:#64748b; }
       if (el) el.textContent = t;
     }
 
-    // Page context — always include current page; eagerly collect all available selectors
-    var siteEl   = document.getElementById('siteSelect');
-    var paramEl  = document.getElementById('paramSelect');
-    var hoursEl  = document.getElementById('hoursSelect') || document.getElementById('fnHours');
-    var pageCtx  = { current_page: _page };
-    if (siteEl && siteEl.value) {
-      pageCtx.site_id    = siteEl.value;
-      pageCtx.site_name  = siteEl.selectedOptions[0] ? siteEl.selectedOptions[0].textContent.split('—')[0].trim() : siteEl.value;
-      pageCtx.param_code = paramEl && paramEl.value ? paramEl.value : undefined;
-      pageCtx.param_name = paramEl && paramEl.selectedOptions[0] ? paramEl.selectedOptions[0].textContent.replace('★','').trim() : null;
-    }
-    if (hoursEl && hoursEl.value) pageCtx.visible_hours = hoursEl.value;
+    // Build page context — eagerly collect everything available from the DOM.
+    // The AI planner uses this to resolve ambiguous queries without asking.
+    var pageCtx = { current_page: _page };
+    (function() {
+      var siteEl  = document.getElementById('siteSelect');
+      var paramEl = document.getElementById('paramSelect');
+      var hoursEl = document.getElementById('hoursSelect') || document.getElementById('fnHours');
+      if (siteEl && siteEl.value) {
+        pageCtx.site_id   = siteEl.value;
+        pageCtx.site_name = siteEl.selectedOptions[0] ? siteEl.selectedOptions[0].textContent.split('—')[0].trim() : siteEl.value;
+      }
+      if (paramEl && paramEl.value) {
+        pageCtx.param_code = paramEl.value;
+        pageCtx.param_name = paramEl.selectedOptions[0] ? paramEl.selectedOptions[0].textContent.replace('★','').trim() : paramEl.value;
+      }
+      if (hoursEl && hoursEl.value) pageCtx.visible_hours = hoursEl.value;
+      // Compare page multi-site selection
+      if (typeof _compareSiteIds !== 'undefined' && _compareSiteIds && _compareSiteIds.length) {
+        pageCtx.site_ids = _compareSiteIds;
+      }
+    })();
 
     var payload = JSON.stringify({ query, mode: _mode, history: _history, page_context: pageCtx });
 
-    // Retry up to 2 times with delay
+    // Retry up to 2 times on network/server errors
     var MAX_ATTEMPTS = 2;
     var json = null;
     var lastErr = null;
@@ -417,51 +440,8 @@ body.light .ai-mode-btn:hover { border-color:#cbd5e1;color:#64748b; }
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         var candidate = await resp.json();
 
-        // Backend needs more context — silently collect all requested fields and resubmit
-        if (candidate.needs_context && candidate.fields && attempt === 1) {
-          var enriched = JSON.parse(payload);
-          if (!enriched.page_context) enriched.page_context = {};
-          candidate.fields.forEach(function(f) {
-            switch(f) {
-              case 'current_page':
-                enriched.page_context.current_page = _page;
-                break;
-              case 'selected_site': {
-                var sel = document.getElementById('siteSelect');
-                if (sel && sel.value) {
-                  enriched.page_context.site_id = sel.value;
-                  enriched.page_context.site_name = sel.selectedOptions[0] ? sel.selectedOptions[0].textContent.split('—')[0].trim() : sel.value;
-                }
-                break;
-              }
-              case 'selected_param': {
-                var par = document.getElementById('paramSelect');
-                if (par && par.value) {
-                  enriched.page_context.param_code = par.value;
-                  enriched.page_context.param_name = par.selectedOptions[0] ? par.selectedOptions[0].textContent.replace('★','').trim() : par.value;
-                }
-                break;
-              }
-              case 'selected_sites': {
-                // Compare page stores multi-site selection in _compareSiteIds
-                if (typeof _compareSiteIds !== 'undefined' && _compareSiteIds.length) {
-                  enriched.page_context.site_ids = _compareSiteIds;
-                }
-                break;
-              }
-              case 'visible_hours': {
-                var hoursEl = document.getElementById('hoursSelect') || document.getElementById('fnHours');
-                if (hoursEl && hoursEl.value) enriched.page_context.visible_hours = hoursEl.value;
-                break;
-              }
-            }
-          });
-          payload = JSON.stringify(enriched);
-          throw new Error('needs_context'); // triggers retry loop with enriched payload
-        }
-
         // Treat server error or blank response as failure worth retrying
-        if (candidate.ok === false || (!candidate.blocked && !candidate.clarification && (!candidate.response || !candidate.response.trim()))) {
+        if (candidate.ok === false || (!candidate.blocked && !candidate.clarification && !candidate.needs_context && (!candidate.response || !candidate.response.trim()))) {
           throw new Error(candidate.error || 'empty response');
         }
         json = candidate;

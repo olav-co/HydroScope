@@ -198,13 +198,12 @@ router.post('/sync', (req, res) => {
   res.json({ ok: true, updated: done, not_found: failed });
 });
 
-// ── GET /api/basins/recommendations ──────────────────────────────────────────
+// ── POST /api/basins/recommendations ─────────────────────────────────────────
 // Local HUC-hierarchy suggestions.
-// ?active=code1,code2  — active basin codes
-// ?exclude=code1,code2 — codes already shown elsewhere (active + viewport)
-router.get('/recommendations', (req, res) => {
-  const active  = (req.query.active  || '').split(',').map(s => s.trim()).filter(Boolean);
-  const exclude = (req.query.exclude || '').split(',').map(s => s.trim()).filter(Boolean);
+// Body: { active: [...], exclude: [...] }
+router.post('/recommendations', (req, res) => {
+  const active  = Array.isArray(req.body.active)  ? req.body.active  : (req.body.active  || '').split(',').map(s => s.trim()).filter(Boolean);
+  const exclude = Array.isArray(req.body.exclude) ? req.body.exclude : (req.body.exclude || '').split(',').map(s => s.trim()).filter(Boolean);
   try {
     res.json(db.getBasinRecommendations(active, exclude));
   } catch (err) {
@@ -212,18 +211,16 @@ router.get('/recommendations', (req, res) => {
   }
 });
 
-// ── GET /api/basins/ai-suggestions ───────────────────────────────────────────
+// ── POST /api/basins/ai-suggestions ──────────────────────────────────────────
 // AI-picked basin suggestions. Cached server-side per active-basin fingerprint.
-// ?active=code1,code2  — active basin codes (used as cache key + prompt context)
-// ?exclude=code1,code2 — codes to leave out of the answer
-// ?viewport=           — human-readable viewport hint (e.g. "Pacific Northwest")
+// Body: { active: [...], exclude: [...], viewport: "..." }
 const _aiSuggestCache = new Map(); // fingerprint → { basins, ts }
 const AI_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
-router.get('/ai-suggestions', async (req, res) => {
-  const active   = (req.query.active  || '').split(',').map(s => s.trim()).filter(Boolean);
-  const exclude  = new Set((req.query.exclude || '').split(',').map(s => s.trim()).filter(Boolean));
-  const viewport = (req.query.viewport || '').trim();
+router.post('/ai-suggestions', async (req, res) => {
+  const active   = Array.isArray(req.body.active)  ? req.body.active  : (req.body.active  || '').split(',').map(s => s.trim()).filter(Boolean);
+  const exclude  = new Set(Array.isArray(req.body.exclude) ? req.body.exclude : (req.body.exclude || '').split(',').map(s => s.trim()).filter(Boolean));
+  const viewport = (req.body.viewport || '').trim();
 
   if (!active.length) return res.json([]);
 

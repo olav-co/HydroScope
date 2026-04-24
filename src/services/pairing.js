@@ -1,26 +1,8 @@
 'use strict';
 
 const db = require('../db/database');
-
-// Words that don't distinguish dam/gauge names — ignored during name matching
-const NOISE = new Set([
-  'dam', 'reservoir', 'lake', 'river', 'station', 'gauge', 'gage',
-  'the', 'and', 'at', 'on', 'or', 'near', 'below', 'above', 'bl', 'ab', 'nr',
-]);
-
-function keyWords(name) {
-  return name.toLowerCase()
-    .replace(/[^a-z0-9 ]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length > 2 && !NOISE.has(w));
-}
-
-function nameSimilarity(cwmsName, usgsName) {
-  const ck = keyWords(cwmsName);
-  const uk = new Set(keyWords(usgsName));
-  if (!ck.length) return 0;
-  return ck.filter(w => uk.has(w)).length / ck.length;
-}
+const { getSiteComid }  = require('./waterways');
+const { buildAliasMap } = require('./cwmsAliases');
 
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -38,15 +20,32 @@ function makeCombinedName(cwmsName) {
     .trim() + ' [CWMS+USGS]';
 }
 
-function detectAndPairSites() {
+// ── Concurrency guard ─────────────────────────────────────────────────────────
+let _running = false;
+let _queued  = false;
+
+async function detectAndPairSites() {
+  if (_running) { _queued = true; return; }
+  _running = true;
+  try {
+    await _doPairing();
+  } finally {
+    _running = false;
+    if (_queued) {
+      _queued = false;
+      detectAndPairSites().catch(() => {});
+    }
+  }
+}
+
+async function _doPairing() {
   const allSites  = db.getAllSites();
   const cwmsSites = allSites.filter(s => s.source === 'cwms' && s.latitude && s.longitude);
   const usgsSites = allSites.filter(s => s.source === 'usgs' && s.latitude && s.longitude);
 
   if (!cwmsSites.length || !usgsSites.length) return;
 
-  // Save existing source-enabled states before clearing so user toggles survive restarts.
-  // Combined site IDs are deterministic (CMBO_ + cwmsId) so they'll match after re-creation.
+  // Save enabled states before wiping combined sites.
   const savedStates = {};
   for (const p of allSites.filter(s => s.source === 'combined')) {
     for (const c of db.getSiteChildren(p.site_id)) {
@@ -56,26 +55,70 @@ function detectAndPairSites() {
 
   db.clearCombinedSites();
 
+  // Priority 1: CDA Agency Aliases — human-configured, authoritative.
+  const aliasMap  = buildAliasMap(); // Map<cwmsId, usgsId>
+  const usgsById  = new Map(usgsSites.map(s => [s.site_id, s]));
+  const usedUsgs  = new Set();
+
+  // Priority 2: NHD COMID — fetch for all sites (DB-cached; NLDI on miss).
+  const comidMap = {};
+  await Promise.all([...cwmsSites, ...usgsSites].map(async s => {
+    try {
+      const comid = await getSiteComid(s.site_id);
+      if (comid) comidMap[s.site_id] = comid;
+    } catch (_) {}
+  }));
+
   let pairCount = 0;
 
   for (const cwms of cwmsSites) {
-    let best = null, bestScore = 0;
+    let best = null, matchReason = '';
 
-    for (const usgs of usgsSites) {
-      const sim  = nameSimilarity(cwms.name, usgs.name);
-      const dist = haversineKm(cwms.latitude, cwms.longitude, usgs.latitude, usgs.longitude);
-      // Proximity bonus (max 0.3) for sites within 25 km — covers dam + tailwater gauge distance
-      const prox  = dist <= 25 ? (1 - dist / 25) * 0.3 : 0;
-      const score = sim + prox;
+    // ── Priority 1: CDA alias (exact human-configured mapping) ───────────────
+    const aliasUsgsId = aliasMap.get(cwms.site_id)
+      // Sub-location fallback: "Cheatham-TW" → try parent "Cheatham"
+      ?? aliasMap.get(cwms.site_id.replace(/-[^-]+$/, ''));
 
-      // Require ≥ 40 % name overlap to avoid false positives across different drainages
-      if (sim >= 0.40 && score > bestScore) {
-        bestScore = score;
-        best = usgs;
+    if (aliasUsgsId && usgsById.has(aliasUsgsId) && !usedUsgs.has(aliasUsgsId)) {
+      best = usgsById.get(aliasUsgsId);
+      matchReason = `CDA alias → ${aliasUsgsId}`;
+    }
+
+    // ── Priority 2: NHD COMID match ──────────────────────────────────────────
+    if (!best) {
+      const cwmsComid = comidMap[cwms.site_id];
+      if (cwmsComid) {
+        for (const usgs of usgsSites) {
+          if (usedUsgs.has(usgs.site_id)) continue;
+          if (comidMap[usgs.site_id] === cwmsComid) {
+            best = usgs;
+            matchReason = `COMID ${cwmsComid}`;
+            break;
+          }
+        }
+      }
+    }
+
+    // ── Priority 3: proximity ≤2 km ──────────────────────────────────────────
+    // Corps dam and tailwater gauge are on adjacent NHD reaches (different COMIDs)
+    // but always within a few hundred metres of each other.
+    if (!best) {
+      const cwmsComid = comidMap[cwms.site_id];
+      let bestDist = 2.0;
+      for (const usgs of usgsSites) {
+        if (usedUsgs.has(usgs.site_id)) continue;
+        const dist = haversineKm(cwms.latitude, cwms.longitude, usgs.latitude, usgs.longitude);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = usgs;
+          matchReason = `proximity ${dist.toFixed(2)} km (cwms_comid=${cwmsComid || 'none'} usgs_comid=${comidMap[usgs.site_id] || 'none'})`;
+        }
       }
     }
 
     if (best) {
+      usedUsgs.add(best.site_id);
+
       const parentId = 'CMBO_' + cwms.site_id;
       db.createCombinedSite({
         site_id:   parentId,
@@ -88,15 +131,20 @@ function detectAndPairSites() {
       db.setParentSite(cwms.site_id, parentId);
       db.setParentSite(best.site_id, parentId);
 
-      // Restore previously saved enabled states
       const ck = `${parentId}|${cwms.site_id}`;
       const uk = `${parentId}|${best.site_id}`;
       if (ck in savedStates) db.setSiteSourceEnabled(parentId, cwms.site_id, savedStates[ck]);
       if (uk in savedStates) db.setSiteSourceEnabled(parentId, best.site_id, savedStates[uk]);
 
       pairCount++;
-      const distKm = haversineKm(cwms.latitude, cwms.longitude, best.latitude, best.longitude).toFixed(1);
-      console.log(`[Pairing] ${cwms.name} ↔ ${best.name} (score: ${bestScore.toFixed(2)}, ${distKm} km) → ${parentId}`);
+      console.log(`[Pairing] ${cwms.name} ↔ ${best.name} (${matchReason}) → ${parentId}`);
+    } else {
+      const nearest = usgsSites.map(u => ({
+        name: u.name,
+        dist: haversineKm(cwms.latitude, cwms.longitude, u.latitude, u.longitude),
+      })).sort((a, b) => a.dist - b.dist)[0];
+      const cwmsComid = comidMap[cwms.site_id];
+      console.log(`[Pairing] no match for CWMS "${cwms.name}" (comid=${cwmsComid || 'none'}, alias=${aliasMap.get(cwms.site_id) || 'none'})${nearest ? ` nearest="${nearest.name}" ${nearest.dist.toFixed(1)}km` : ''}`);
     }
   }
 

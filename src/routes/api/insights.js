@@ -110,7 +110,7 @@ router.post('/chat', async (req, res) => {
     const result = await generateChat(profile, history, q, enrichedPageCtx, requestedMode);
 
     if (result.blocked)       return res.json({ ok: true, blocked: true });
-    if (result.needs_context) return res.json({ ok: true, needs_context: true, fields: result.fields });
+    if (result.needs_context) return res.json({ ok: true, needs_context: true, question: result.question, mode: result.mode, modeChanged: result.modeChanged });
     if (result.clarification) return res.json({ ok: true, clarification: result.clarification, mode: result.mode, modeChanged: result.modeChanged });
 
     res.json({

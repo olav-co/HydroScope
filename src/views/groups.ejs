@@ -254,6 +254,56 @@
   </div><!-- /body -->
 </main>
 
+<!-- Unsaved changes modal -->
+<div id="unsaved-modal"
+  style="display:none;position:fixed;inset:0;z-index:60;background:rgba(0,0,0,0.65);align-items:center;justify-content:center;">
+  <div style="background:#1e293b;border:1px solid #334155;border-radius:16px;padding:26px 28px;width:420px;max-width:92vw;box-shadow:0 24px 48px rgba(0,0,0,0.5);"
+    onclick="event.stopPropagation()">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;">
+      <div style="width:36px;height:36px;border-radius:10px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.2);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;">
+        <svg width="17" height="17" fill="none" stroke="#f59e0b" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+        </svg>
+      </div>
+      <div>
+        <div style="font-size:14px;font-weight:600;color:#f1f5f9;">Unsaved changes</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px;">
+          Changes to <span id="unsaved-group-name" style="color:#94a3b8;font-style:italic;"></span> will be lost if you continue without saving.
+        </div>
+      </div>
+    </div>
+
+    <!-- Change summary -->
+    <div id="unsaved-summary"
+      style="margin-bottom:20px;padding:12px 14px;border-radius:10px;background:rgba(15,23,42,0.8);border:1px solid #1e293b;font-size:12px;min-height:44px;display:flex;flex-direction:column;gap:8px;">
+    </div>
+
+    <!-- Actions -->
+    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      <button onclick="unsavedCancel()"
+        style="padding:7px 16px;border-radius:8px;border:1px solid #334155;background:none;color:#94a3b8;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s;"
+        onmouseover="this.style.background='rgba(30,41,59,0.6)';this.style.color='#e2e8f0'"
+        onmouseout="this.style.background='none';this.style.color='#94a3b8'">
+        Stay on page
+      </button>
+      <button onclick="unsavedDiscard()"
+        style="padding:7px 16px;border-radius:8px;border:1px solid rgba(248,113,113,0.25);background:rgba(248,113,113,0.07);color:#f87171;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s;"
+        onmouseover="this.style.background='rgba(248,113,113,0.14)'"
+        onmouseout="this.style.background='rgba(248,113,113,0.07)'">
+        Discard &amp; continue
+      </button>
+      <button onclick="unsavedSave()"
+        style="padding:7px 18px;border-radius:8px;border:none;background:#0ea5e9;color:#fff;font-size:12px;font-weight:600;cursor:pointer;transition:background .15s;"
+        onmouseover="this.style.background='#0284c7'"
+        onmouseout="this.style.background='#0ea5e9'">
+        Save &amp; continue
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- Create group modal -->
 <div id="create-modal"
   style="display:none;position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.55);align-items:center;justify-content:center;"
@@ -530,7 +580,19 @@ function renderGroupList() {
 }
 
 function selectGroup(id) {
-  if (_dirty && !confirm('You have unsaved changes. Discard them?')) return;
+  var g = _groups.find(function(x) { return x.id === id; });
+  if (!g || (_activeGroup && _activeGroup.id === id)) return;
+  if (_dirty) {
+    showUnsavedModal(
+      function() { saveMembers(function() { _doSelectGroup(id); }); },
+      function() { _doSelectGroup(id); }
+    );
+    return;
+  }
+  _doSelectGroup(id);
+}
+
+function _doSelectGroup(id) {
   var g = _groups.find(function(x) { return x.id === id; });
   if (!g) return;
   _activeGroup = g;
@@ -653,8 +715,8 @@ function selectNone() {
 
 // ── Save ──────────────────────────────────────────────────────────────────────
 
-function saveMembers() {
-  if (!_activeGroup || !_dirty) return;
+function saveMembers(onDone) {
+  if (!_activeGroup || !_dirty) { if (onDone) onDone(); return; }
   fetch('/api/groups/' + _activeGroup.id + '/members', {
     method:  'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -666,7 +728,8 @@ function saveMembers() {
       _savedSet = new Set(_memberSet);
       _dirty    = false;
       updateDirtyUI();
-      loadGroups(); // refresh counts in sidebar
+      loadGroups();
+      if (onDone) onDone();
     }
   })
   .catch(function(e) { alert('Save failed: ' + e.message); });
@@ -959,6 +1022,17 @@ function syncActiveGroup() {
 // ── Browse Shared panel ───────────────────────────────────────────────────────
 
 function browseShared() {
+  if (_dirty) {
+    showUnsavedModal(
+      function() { saveMembers(function() { _doBrowseShared(); }); },
+      function() { _doBrowseShared(); }
+    );
+    return;
+  }
+  _doBrowseShared();
+}
+
+function _doBrowseShared() {
   document.getElementById('grp-center').style.display    = 'none';
   document.getElementById('grp-map-wrap').style.display  = 'none';
   document.getElementById('shared-panel').style.display  = 'flex';
@@ -1057,4 +1131,118 @@ function syncFromBrowse(localId, btn) {
       if (_activeGroup && _activeGroup.id === localId) loadMembers(localId);
     });
 }
+
+// ── Unsaved-changes modal ─────────────────────────────────────────────────────
+
+var _unsavedOnSave    = null;
+var _unsavedOnDiscard = null;
+
+function _buildDiffSummary() {
+  var added = [], removed = [];
+  _memberSet.forEach(function(id) {
+    if (!_savedSet.has(id)) {
+      var s = SITES.find(function(x) { return x.site_id === id; });
+      added.push(s ? s.name : id);
+    }
+  });
+  _savedSet.forEach(function(id) {
+    if (!_memberSet.has(id)) {
+      var s = SITES.find(function(x) { return x.site_id === id; });
+      removed.push(s ? s.name : id);
+    }
+  });
+  return { added: added, removed: removed };
+}
+
+function showUnsavedModal(onSave, onDiscard) {
+  _unsavedOnSave    = onSave;
+  _unsavedOnDiscard = onDiscard;
+
+  var diff      = _buildDiffSummary();
+  var groupName = _activeGroup ? _activeGroup.name : 'this group';
+
+  document.getElementById('unsaved-group-name').textContent = '"' + groupName + '"';
+
+  var html = '';
+  if (diff.added.length) {
+    var preview = diff.added.slice(0, 6).map(function(n) { return escHtml(n); }).join(', ');
+    if (diff.added.length > 6) preview += ' <span style="color:#475569;">+' + (diff.added.length - 6) + ' more</span>';
+    html += '<div>' +
+      '<div style="color:#4ade80;font-size:11px;font-weight:600;margin-bottom:3px;">+ ' + diff.added.length + ' site' + (diff.added.length !== 1 ? 's' : '') + ' added</div>' +
+      '<div style="color:#64748b;line-height:1.5;">' + preview + '</div>' +
+    '</div>';
+  }
+  if (diff.removed.length) {
+    var preview2 = diff.removed.slice(0, 6).map(function(n) { return escHtml(n); }).join(', ');
+    if (diff.removed.length > 6) preview2 += ' <span style="color:#475569;">+' + (diff.removed.length - 6) + ' more</span>';
+    html += '<div>' +
+      '<div style="color:#f87171;font-size:11px;font-weight:600;margin-bottom:3px;">− ' + diff.removed.length + ' site' + (diff.removed.length !== 1 ? 's' : '') + ' removed</div>' +
+      '<div style="color:#64748b;line-height:1.5;">' + preview2 + '</div>' +
+    '</div>';
+  }
+  if (!html) {
+    html = '<div style="color:#475569;font-style:italic;">Membership unchanged — name or color edits pending.</div>';
+  }
+
+  document.getElementById('unsaved-summary').innerHTML = html;
+  document.getElementById('unsaved-modal').style.display = 'flex';
+}
+
+function hideUnsavedModal() {
+  document.getElementById('unsaved-modal').style.display = 'none';
+  _unsavedOnSave    = null;
+  _unsavedOnDiscard = null;
+}
+
+function unsavedCancel() {
+  hideUnsavedModal();
+}
+
+function unsavedDiscard() {
+  var cb = _unsavedOnDiscard;
+  hideUnsavedModal();
+  _dirty = false;
+  updateDirtyUI();
+  if (cb) cb();
+}
+
+function unsavedSave() {
+  var cb = _unsavedOnSave;
+  hideUnsavedModal();
+  if (cb) cb();
+}
+
+// ── Navigation interception ───────────────────────────────────────────────────
+
+// Intercept in-app nav link clicks when there are unsaved changes
+document.addEventListener('click', function(e) {
+  if (!_dirty) return;
+  var a = e.target.closest('a[href]');
+  if (!a) return;
+  var href = a.getAttribute('href');
+  if (!href || href === '#' || href.startsWith('javascript')) return;
+  // Only intercept same-origin page navigations
+  try {
+    var url = new URL(href, window.location.href);
+    if (url.origin !== window.location.origin) return;
+    if (url.pathname === window.location.pathname) return;
+  } catch (_) { return; }
+
+  e.preventDefault();
+  e.stopImmediatePropagation();
+
+  var dest = href;
+  showUnsavedModal(
+    function() { saveMembers(function() { window.location.href = dest; }); },
+    function() { _dirty = false; window.location.href = dest; }
+  );
+});
+
+// Catch browser back/close/reload when dirty
+window.addEventListener('beforeunload', function(e) {
+  if (_dirty) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 </script>
